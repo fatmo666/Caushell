@@ -39,8 +39,8 @@ pub(crate) fn module_contract_evidence(
             ExecutionFrameBinding::for_request(ctx.request(), "unobserved-executor")
         });
     projection.resolved.iter().filter_map(|candidate| {
-        let runtime=candidate.module_runtime.as_ref()?;
-        let invocation=ModuleInvocation{binding:binding.clone(),node_id:parent_id.into(),runtime:runtime.clone(),module:candidate.command.text.clone(),command:parent_record.rendered_command_text.clone(),cwd:match cwd.as_slice(){[Some(c)]=>c.to_string(),_=>String::new()}};
+        let runtime=candidate.lookup_domain.module_runtime()?;
+        let invocation=ModuleInvocation{binding:binding.clone(),node_id:parent_id.into(),runtime:runtime.to_owned(),module:candidate.command.text.clone(),command:parent_record.rendered_command_text.clone(),cwd:match cwd.as_slice(){[Some(c)]=>c.to_string(),_=>String::new()}};
         let mut evidence=ModuleContractEvidence{invocation:invocation.clone(),identity_sha256:None,identity_verified:false,grant_id:None,gap:Some("module loader identity and CLI permission were not supplied by the owning host".into())};
         let child=ctx.execution_unit_resolve_records().iter().find(|r|r.parent_execution_node_id.0==parent_id && r.origin_kind==caushell_runner::ExecutionUnitOriginKind::Dispatch && r.origin_index==candidate.dispatch_index);
         if bound.operation_semantics_unresolved || !projection.unresolved.is_empty() || !matches!(child.map(|r|&r.result),Some(ResolveInvocationArtifactResult::Resolved(r)) if !r.bound.operation_semantics_unresolved && r.bound.residuals.is_empty()) || invocation.cwd.is_empty(){

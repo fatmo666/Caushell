@@ -777,6 +777,14 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                     Some(other) => literal(other, exact, &mut prefix, &mut suffix, &mut spelling),
                     None => return ArgumentStructure::unknown(),
                 },
+                // Tilde expansion is lexical, before pathname generation.
+                // A preceding glob atom cannot expose a new tilde prefix:
+                // every member of *~ still ends in the literal '~'. Keep
+                // brace-generated starts and assignment/colon contexts outside
+                // this proof; those can introduce another tilde-expansion site.
+                '~' if !spelling.is_empty() && !arg.text.contains(['{', '}', '=', ':']) => {
+                    literal('~', exact, &mut prefix, &mut suffix, &mut spelling);
+                }
                 // No prefix survives an unquoted expansion: later split fields
                 // do not inherit it. ./ $value must not become a safety proof.
                 '$' | '`' | '~' => return ArgumentStructure::unknown(),

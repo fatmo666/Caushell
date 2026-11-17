@@ -1,6 +1,11 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: permuted_options
+# GNU coreutils and BSD head controls only select input bytes/records, headers
+# or diagnostics. They do not open output paths, load code or dispatch commands.
+# Unknown argv keeps all possible input sources and no output-size certificate.
+read_only_control_surface: true
+native_argv_effect_envelope: content_read
 
 identity:
   canonical_name: head

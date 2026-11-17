@@ -13,7 +13,7 @@ pub use directory::{
     MAX_DIRECTORY_OBSERVATIONS,
 };
 mod evidence;
-pub use evidence::NonShellScriptExecutionEvidence;
+pub use evidence::{NonShellScriptExecutionEvidence, ShellArgumentFieldsEvidence};
 pub use evidence::{ArchiveMemberEvidence, ArchiveMembersEvidence};
 mod file_content;
 pub use file_content::{
@@ -22,14 +22,16 @@ pub use file_content::{
 mod execution;
 mod execution_frame;
 mod execution_frame_variable;
+mod git_runtime;
 mod pip_runtime;
 pub use execution_frame_variable::{ExecutionFrameVariable, ExecutionFrameVariableValue};
+pub use git_runtime::{GIT_2_39_5_VARIANT, GitRuntimeLayout};
 pub use pip_runtime::{PIP_25_3_LINUX_VARIANT, PipRuntimeLayout};
 mod resource;
 pub use execution_frame::{
     ExecutionFrameBinding, ExecutionFrameEvidence, ExecutionFrameObservation,
     ExecutionFrameObserver, ExecutionFramePlan, ExecutionFramePlanRequest,
-    ExecutionFrameRequirements,
+    ExecutionFrameRequirements, IndexedEnvironmentRequirement,
 };
 pub use resource::{ResourceAuthorizationEvidence, ResourceTargetEvidence, StateResourceSelector};
 mod finding;
@@ -65,7 +67,7 @@ mod state_candidate;
 mod stream_records;
 pub use stream_records::{
     MAX_OBSERVED_STREAM_BYTES, MAX_OBSERVED_STREAM_RECORDS, NativeInputDecodeEvidence,
-    NativeInputEffectEvidence, ObservedStreamRecord, StdoutRecordsEvidence, StreamRecordEncoding,
+    NativeInputEffectEvidence, NativeBoundEffectsProof, NativePathEffectReference, NativeArgvEffectEnvelope, ObservedStreamRecord, StdoutRecordsEvidence, StreamRecordEncoding,
     StreamRecordOrder,
 };
 

@@ -43,14 +43,15 @@ fn module(command: &str) -> BoundInvocation {
     let children = collect_dispatch_command_candidates(&parent);
     assert_eq!(children.len(), 1);
     let child = &children[0];
-    assert_eq!(child.module_runtime.as_deref(), Some("python"));
+    assert_eq!(child.lookup_domain.module_runtime(), Some("python"));
     let registry = ProfileRegistry::built_in().unwrap();
-    match resolve_invocation_in_namespace(
+    match resolve_invocation_in_lookup_domain_with_stdout_proofs(
         &registry,
         &child.to_command_fact(),
         InvocationRuntimeContext::new(),
         &SessionBindings::new(),
-        child.module_runtime.as_deref(),
+        &child.lookup_domain,
+        &[],
     ) {
         ResolveInvocationResult::Resolved(r) => {
             assert!(
@@ -249,13 +250,16 @@ fn compilation_stdin_filename_lists_do_not_claim_complete_effects() {
     let children = collect_dispatch_command_candidates(&parent);
     let child = &children[0];
     let registry = ProfileRegistry::built_in().unwrap();
-    let ResolveInvocationResult::Resolved(result) = resolve_invocation_in_namespace(
-        &registry,
-        &child.to_command_fact(),
-        InvocationRuntimeContext::new(),
-        &SessionBindings::new(),
-        child.module_runtime.as_deref(),
-    ) else {
+    let ResolveInvocationResult::Resolved(result) =
+        resolve_invocation_in_lookup_domain_with_stdout_proofs(
+            &registry,
+            &child.to_command_fact(),
+            InvocationRuntimeContext::new(),
+            &SessionBindings::new(),
+            &child.lookup_domain,
+            &[],
+        )
+    else {
         panic!("stdin form must remain represented, with its incompleteness");
     };
     assert_eq!(result.bound.form_id.as_str(), "stdin_list");

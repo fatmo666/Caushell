@@ -627,6 +627,8 @@ pub struct ExecutionSemanticsFact {
     pub mutates_current_shell: bool,
     #[serde(default, skip_serializing_if = "crate::execution::is_false")]
     pub terminates_current_shell: bool,
+    #[serde(default, skip_serializing_if = "crate::execution::is_false")]
+    pub returns_from_shell_scope: bool,
     pub executes_remote_command: bool,
     pub executes_hook: bool,
     pub executes_imported_package_logic: bool,
@@ -2210,6 +2212,7 @@ mod tests {
                     interactive_escape_requires_tty: false,
                     mutates_current_shell: false,
                     terminates_current_shell: false,
+                    returns_from_shell_scope: false,
                     executes_remote_command: false,
                     executes_hook: false,
                     executes_imported_package_logic: false,
@@ -2379,6 +2382,7 @@ mod tests {
                         interactive_escape_requires_tty: false,
                         mutates_current_shell: false,
                         terminates_current_shell: false,
+                        returns_from_shell_scope: false,
                         executes_remote_command: false,
                         executes_hook: false,
                         executes_imported_package_logic: false,
@@ -2796,6 +2800,7 @@ mod tests {
                 interactive_escape_requires_tty: false,
                 mutates_current_shell: false,
                 terminates_current_shell: false,
+                returns_from_shell_scope: false,
                 executes_remote_command: false,
                 executes_hook: false,
                 executes_imported_package_logic: false,

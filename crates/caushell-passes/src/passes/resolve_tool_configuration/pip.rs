@@ -64,6 +64,7 @@ pub(super) fn run(registry: &ProfileRegistry, session: SessionView<'_>, ctx: &mu
             byte_limit: 262144,
             tokens: Vec::new(),
             evidence: ToolConfigParseEvidence {
+                unresolved_inputs: Vec::new(),
                 node_id: record.source_node_id().0.clone(),
                 command: original.normalized_command_name.clone(),
                 complete: false,

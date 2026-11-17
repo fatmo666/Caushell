@@ -4,6 +4,7 @@ option_scope: leading_options
 opaque_on_unresolved: true
 
 identity:
+  execution_domain: shell_builtin
   canonical_name: command
   aliases: []
 
@@ -72,6 +73,7 @@ forms:
       - kind: dispatch_command
         target:
           kind: dispatch
+          lookup_domain: shell
           command: wrapped_command
           argv:
             - wrapped_args

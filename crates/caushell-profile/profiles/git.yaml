@@ -1,5 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+native_configuration: git
 option_scope: leading_options
 opaque_on_unresolved: true
 
@@ -151,6 +152,10 @@ modifiers:
     matcher: {kind: any_flag, flags: ["-c"]}
     parameters:
       - {name: configuration_overrides, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: configuration_environment
+    matcher: {kind: any_flag, flags: [--config-env]}
+    parameters:
+      - {name: configuration_environment, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
   - id: pager
     matcher: {kind: any_flag, flags: ['-p', --paginate, '-P', --no-pager]}
     effects_when:
@@ -971,6 +976,7 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers:
         - {id: status_output, matcher: {kind: any_flag, flags: ["--short", "-s", "--branch", "-b", "--show-stash", "-z"]}}
         - id: porcelain
@@ -981,6 +987,7 @@ subcommands:
       extensions: {}
 
     - name: diff
+      option_scope: permuted_options
       aliases: []
       forms:
         - id: inspect_diff_pathspecs
@@ -1008,6 +1015,7 @@ subcommands:
               target:
                 kind: none
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: inspect_diff
           selector:
             kind: no_dash_dash
@@ -1026,7 +1034,16 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers:
+        - {id: diff_query_flags, matcher: {kind: any_flag, flags: [--check, --name-only, --name-status, --raw, --summary, --patch, -p, -u, --no-patch, -s, --exit-code, --quiet, -q, --cached, --staged, -R, --reverse, -w, --ignore-all-space, -b, --ignore-space-change, --ignore-space-at-eol, --ignore-cr-at-eol, --ignore-blank-lines, --minimal, --patience, --histogram, --no-color]}}
+        - id: diff_optional_display
+          matcher: {kind: any_flag, flags: [--stat, --numstat, --shortstat, --color, --word-diff, --relative]}
+          parameters:
+            - {name: diff_display_value, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_only}, cardinality: optional_many}
+        - {id: diff_no_index, matcher: {kind: any_flag, flags: [--no-index]}}
+        - {id: diff_external_control, matcher: {kind: any_flag, flags: [--ext-diff, --no-ext-diff]}}
+        - {id: diff_textconv_control, matcher: {kind: any_flag, flags: [--textconv, --no-textconv]}}
         - id: order_file
           matcher:
             kind: any_flag
@@ -1048,6 +1065,7 @@ subcommands:
                 kind: slot
                 name: order_file
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: output_file
           matcher:
             kind: any_flag
@@ -1068,6 +1086,7 @@ subcommands:
               target:
                 kind: slot
                 name: output_path
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       children: []
       default_behavior: reject_unknown
       extensions:
@@ -1455,6 +1474,7 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers: []
       children: []
       default_behavior: reject_unknown
@@ -1488,6 +1508,8 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
+
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
 
         - id: interactive_index_update
           selector:
@@ -2689,6 +2711,7 @@ subcommands:
                 kind: mutation_scope
                 scope_kind: repository_worktree
                 path_set: tracked
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers: []
       children:
         - name: list
@@ -2706,6 +2729,7 @@ subcommands:
                 - kind: transform_data
                   target:
                     kind: none
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers: []
           children: []
           default_behavior: reject_unknown
@@ -2732,6 +2756,7 @@ subcommands:
                 - kind: transform_data
                   target:
                     kind: none
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers: []
           children: []
           default_behavior: reject_unknown
@@ -2765,6 +2790,7 @@ subcommands:
                     kind: mutation_scope
                     scope_kind: repository_worktree
                     path_set: tracked
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers:
             - id: message
               matcher:
@@ -2811,6 +2837,7 @@ subcommands:
                     path: .git/index
                     convention: git.index
                     purpose: generic_operand
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers: []
           children: []
           default_behavior: reject_unknown
@@ -2847,6 +2874,7 @@ subcommands:
                     path: .git
                     convention: git.repository_metadata
                     purpose: generic_operand
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers: []
           children: []
           default_behavior: reject_unknown
@@ -2870,6 +2898,7 @@ subcommands:
                   target:
                     kind: none
                   repository_operation: saved_state_destroy
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers: []
           children: []
           default_behavior: reject_unknown
@@ -2900,6 +2929,7 @@ subcommands:
                     kind: mutation_scope
                     scope_kind: repository_worktree
                     path_set: tracked
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers: []
           children: []
           default_behavior: reject_unknown
@@ -2919,6 +2949,7 @@ subcommands:
                     path: .git
                     convention: git.repository_metadata
                     purpose: generic_operand
+                - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
           modifiers: []
           children: []
           default_behavior: reject_unknown
@@ -2959,6 +2990,7 @@ subcommands:
                 scope_kind: repository_worktree
                 path_set: tracked
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: switch_worktree
           selector:
             kind: all
@@ -2986,6 +3018,7 @@ subcommands:
                 kind: mutation_scope
                 scope_kind: repository_worktree
                 path_set: tracked
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers:
         - id: create
           matcher:
@@ -3057,6 +3090,7 @@ subcommands:
                 kind: none
               repository_operation: forced_worktree_switch
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: discard_changes
           matcher:
             kind: any_flag
@@ -3068,6 +3102,7 @@ subcommands:
                 kind: none
               repository_operation: forced_worktree_switch
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: mode
           matcher:
             kind: any_flag
@@ -4466,6 +4501,7 @@ subcommands:
               target:
                 kind: none
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: apply_mailbox_no_verify
           selector:
             kind: all
@@ -4515,6 +4551,7 @@ subcommands:
                 kind: mutation_scope
                 scope_kind: repository_worktree
                 path_set: patch_selected_tracked
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers:
         - {id: no_verify, matcher: {kind: any_flag, flags: [--no-verify]}}
       children: []
@@ -5157,6 +5194,7 @@ subcommands:
               target:
                 kind: none
               repository_operation: tracked_worktree_discard
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers: []
       children: []
       default_behavior: reject_unknown
@@ -5225,6 +5263,7 @@ subcommands:
                 kind: none
               repository_operation: tracked_worktree_discard
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: restore_dashdash_pathspecs
           selector:
             kind: all
@@ -5261,6 +5300,7 @@ subcommands:
                 kind: none
               repository_operation: tracked_worktree_discard
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: restore_explicit_pathspecs
           selector:
             kind: all
@@ -5313,6 +5353,7 @@ subcommands:
               target:
                 kind: none
               repository_operation: tracked_worktree_discard
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers:
         - id: source
           matcher:
@@ -5424,6 +5465,7 @@ subcommands:
                 kind: none
               repository_operation: tracked_worktree_discard
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: checkout_branch_worktree
           selector:
             kind: all
@@ -5442,6 +5484,7 @@ subcommands:
                 scope_kind: repository_worktree
                 path_set: tracked
 
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
         - id: checkout_explicit_pathspecs
           selector:
             kind: all
@@ -5473,6 +5516,7 @@ subcommands:
               target:
                 kind: none
               repository_operation: tracked_worktree_discard
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       modifiers:
         - id: force
           matcher:
@@ -5485,6 +5529,7 @@ subcommands:
               target:
                 kind: none
               repository_operation: forced_worktree_switch
+            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
       children: []
       default_behavior: reject_unknown
       extensions: {}

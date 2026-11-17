@@ -12,9 +12,8 @@ use crate::path::{
     resolved_path_purpose_for_profile_purpose, resolved_path_role_for_profile_role,
 };
 use crate::support::{
-    ImplicitStartupEnvironmentSource, collect_implicit_startup_config_candidates,
-    command_env_artifact_node_id, command_env_value_artifact, implicit_startup_path_fact_index,
-    implicit_startup_slot_name, inherited_env_artifact_node_id, inherited_env_value_artifact,
+    collect_implicit_startup_config_candidates, command_env_artifact_node_id,
+    command_env_value_artifact, implicit_startup_path_fact_index, implicit_startup_slot_name,
 };
 
 pub struct ExtractImplicitStartupConfigPass;
@@ -51,33 +50,17 @@ impl SessionTransformPass for ExtractImplicitStartupConfigPass {
                 relation: edge_kind_for_path_role(PathRole::Config),
             });
 
-            let env_artifact_node_id = match candidate.environment_source {
-                ImplicitStartupEnvironmentSource::InheritedEnvironment => {
-                    inherited_env_artifact_node_id(&candidate.environment_name, version)
-                }
-                ImplicitStartupEnvironmentSource::CommandPrefixAssignment => {
-                    command_env_artifact_node_id(
-                        &candidate.source_node_id,
-                        &candidate.environment_name,
-                    )
-                }
-            };
-            let env_artifact = match candidate.environment_source {
-                ImplicitStartupEnvironmentSource::InheritedEnvironment => {
-                    inherited_env_value_artifact(
-                        &candidate.environment_name,
-                        candidate.environment_state.clone(),
-                        version,
-                    )
-                }
-                ImplicitStartupEnvironmentSource::CommandPrefixAssignment => {
-                    command_env_value_artifact(
-                        &candidate.environment_name,
-                        candidate.environment_state.clone(),
-                        version,
-                    )
-                }
-            };
+            // Values belong to execution points, even when inherited unchanged.
+            // Two launches in one request must never overwrite one value node.
+            let env_artifact_node_id = command_env_artifact_node_id(
+                &candidate.source_node_id,
+                &candidate.environment_name,
+            );
+            let env_artifact = command_env_value_artifact(
+                &candidate.environment_name,
+                candidate.environment_state.clone(),
+                version,
+            );
 
             ctx.stage_mutation(PendingMutation::AddProvenanceArtifact {
                 source_node_id: candidate.source_node_id.clone(),
@@ -206,12 +189,13 @@ mod tests {
             ctx.pending_mutations()
                 .contains(&PendingMutation::AddProvenanceArtifact {
                     source_node_id: NodeId::new("command:sess-1:2:0"),
-                    node_id: NodeId::new("artifact:inherited-env-value:BASH_ENV:2"),
-                    artifact: ProvenanceArtifact::InheritedEnvValue {
+                    node_id: NodeId::new("artifact:command-env-value:command:sess-1:2:0:BASH_ENV"),
+                    artifact: ProvenanceArtifact::VariableValue {
                         name: "BASH_ENV".to_string(),
                         state: caushell_types::ProvenanceVariableValueState::ExactScalar {
                             value: "../shared/team.rc".to_string(),
                         },
+                        exported: true,
                         version: 2,
                     },
                     relation: EdgeKind::Consumes,
@@ -249,7 +233,9 @@ mod tests {
         assert!(
             ctx.pending_mutations()
                 .contains(&PendingMutation::AddProvenanceArtifact {
-                    source_node_id: NodeId::new("artifact:inherited-env-value:BASH_ENV:2"),
+                    source_node_id: NodeId::new(
+                        "artifact:command-env-value:command:sess-1:2:0:BASH_ENV"
+                    ),
                     node_id: NodeId::new("artifact:path-content:/tmp/project/shared/team.rc"),
                     artifact: ProvenanceArtifact::PathContent {
                         path: "/tmp/project/shared/team.rc".to_string(),
@@ -360,7 +346,7 @@ mod tests {
             matches!(
                 mutation,
                 PendingMutation::AddProvenanceArtifact {
-                    artifact: ProvenanceArtifact::InheritedEnvValue { name, .. },
+                    artifact: ProvenanceArtifact::VariableValue { name, .. },
                     ..
                 } if name == "BASH_ENV"
             )

@@ -22,10 +22,10 @@ fn execution_sources(bound: &BoundInvocation) -> BTreeSet<ExecutionSource> {
     for effect in &bound.effects {
         if effect.kind == EffectKind::DispatchCommand
             && let EffectTarget::Dispatch(target) = &effect.target
-            && let Some(runtime) = &target.module_runtime
+            && let Some(runtime) = target.lookup_domain.module_runtime()
         {
             sources.insert(ExecutionSource {
-                language: runtime.clone(),
+                language: runtime.to_owned(),
                 source: "module".into(),
                 file_slot: None,
             });

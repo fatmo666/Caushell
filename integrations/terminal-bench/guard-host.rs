@@ -51,6 +51,7 @@ fn failed(path: &str, limit: usize, detail: &str) -> FileContentRead {
 struct Remote {
     channel: Mutex<(BufReader<UnixStream>, UnixStream, u64)>,
     pip_runtimes: std::collections::BTreeMap<String, PipRuntimeLayout>,
+    git_runtimes: std::collections::BTreeMap<String, GitRuntimeLayout>,
 }
 #[cfg(unix)]
 impl Remote {
@@ -69,6 +70,9 @@ impl Remote {
 }
 #[cfg(unix)]
 impl FilesystemView for Remote {
+    fn git_runtime(&self, command: &str) -> Option<GitRuntimeLayout> {
+        self.git_runtimes.get(command).cloned()
+    }
     fn pip_runtime(&self, command: &str) -> Option<PipRuntimeLayout> {
         self.pip_runtimes.get(command).cloned()
     }
@@ -265,12 +269,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     }
     #[cfg(unix)]
     {
-        if !matches!(args.len(), 4 | 5) || args[0] != "serve" {
-            return Err("usage: trusted-filesystem-host observe | serve FD CONFIG STORE [PRIVATE_PIP_LAYOUT_JSON]".into());
+        if !matches!(args.len(), 4 | 5 | 6) || args[0] != "serve" {
+            return Err("usage: trusted-filesystem-host observe | serve FD CONFIG STORE [PRIVATE_PIP_LAYOUT_JSON [PRIVATE_GIT_LAYOUT_JSON]]".into());
         }
         // Deployment-only data, never read from stdin or a task's tool request.
         // The operator must protect this file and attest the immutable startup.
-        let pip_runtimes: std::collections::BTreeMap<String, PipRuntimeLayout> = if args.len() == 5
+        let pip_runtimes: std::collections::BTreeMap<String, PipRuntimeLayout> = if args.len() >= 5
         {
             let read = LocalFilesystem.read_file(&args[4], 65536);
             let bytes = read
@@ -291,6 +295,27 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         } else {
             Default::default()
         };
+        let git_runtimes: std::collections::BTreeMap<String, GitRuntimeLayout> = if args.len() == 6
+        {
+            let read = LocalFilesystem.read_file(&args[5], 65536);
+            let bytes = read
+                .complete_bytes(&args[5], 65536)
+                .ok_or("private Git layout is not a stable bounded regular file")?;
+            let rows: std::collections::BTreeMap<String, GitRuntimeLayout> =
+                serde_json::from_slice(bytes)?;
+            if rows.len() > 16 {
+                return Err("private Git layout count exceeds budget".into());
+            }
+            for (name, row) in &rows {
+                if name.is_empty() || name.len() > 4096 || name.contains(['\0', '\n']) {
+                    return Err("invalid Git command identity".into());
+                }
+                row.validate()?;
+            }
+            rows
+        } else {
+            Default::default()
+        };
         let fd: i32 = args[1].parse()?;
         if fd < 3 {
             return Err("private observation FD must not be stdio".into());
@@ -301,6 +326,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         let view = Remote {
             channel: Mutex::new((BufReader::new(stream.try_clone()?), stream, 0)),
             pip_runtimes,
+            git_runtimes,
         };
         if view.execution_account().is_none() {
             return Err("execution account observation unavailable".into());

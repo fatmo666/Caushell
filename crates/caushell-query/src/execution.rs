@@ -894,6 +894,10 @@ impl<'a> ExecutionSemanticsRef<'a> {
         self.semantics.terminates_current_shell
     }
 
+    pub fn returns_from_shell_scope(&self) -> bool {
+        self.semantics.returns_from_shell_scope
+    }
+
     pub fn executes_remote_command(&self) -> bool {
         self.semantics.executes_remote_command
     }
@@ -958,6 +962,7 @@ impl<'a> ExecutionSemanticsRef<'a> {
             process_control_broad_target: self.process_control_broad_target(),
             mutates_current_shell: self.mutates_current_shell(),
             terminates_current_shell: self.terminates_current_shell(),
+            returns_from_shell_scope: self.returns_from_shell_scope(),
             executes_remote_command: self.executes_remote_command(),
             executes_hook: self.executes_hook(),
             executes_imported_package_logic: self.executes_imported_package_logic(),
@@ -1686,6 +1691,7 @@ mod tests {
                 process_control_broad_target: false,
                 mutates_current_shell: false,
                 terminates_current_shell: false,
+                returns_from_shell_scope: false,
                 executes_remote_command: false,
                 executes_hook: false,
                 executes_imported_package_logic: false,

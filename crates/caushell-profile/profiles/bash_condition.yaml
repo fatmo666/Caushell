@@ -1,7 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 word_context: scalar
-identity: {canonical_name: '[[', aliases: []}
+identity: {canonical_name: '[[', aliases: [], execution_domain: shell_builtin}
 trust: {tier: tier_a, source: built_in}
 platform:
   os_families: [posix, linux, macos]

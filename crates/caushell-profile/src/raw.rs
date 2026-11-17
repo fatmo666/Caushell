@@ -19,12 +19,14 @@ pub struct RawCommandProfile {
     pub implicit_config_files: Vec<crate::ImplicitConfigFile>,
     pub configuration_files: Option<crate::ConfigurationFileContract>,
     pub native_configuration: Option<crate::NativeConfigurationSyntax>,
+    pub native_variable_writes: Option<crate::NativeVariableWrites>,
     pub argument_regions: Vec<RawArgumentRegion>,
     pub argument_control_vocabulary: Option<RawArgumentControlVocabulary>,
     pub selection_failure_effects: Vec<RawEffect>,
     pub opaque_on_unresolved: bool,
     pub read_only_control_surface: bool,
     pub native_argv_read_envelope: bool,
+    pub native_argv_effect_envelope: Option<caushell_types::NativeArgvEffectEnvelope>,
     pub forms: Vec<RawForm>,
     pub modifiers: Vec<RawModifier>,
     pub option_scope: RawOptionScopePolicy,
@@ -132,6 +134,7 @@ pub enum RawOptionPrefixPolicy {
 #[serde(default, deny_unknown_fields)]
 pub struct RawCommandIdentity {
     pub canonical_name: String,
+    pub execution_domain: crate::ProfileExecutionDomain,
     pub aliases: Vec<String>,
     /// Module-only profiles must not enter the executable name index.
     pub module_only: bool,
@@ -1049,6 +1052,7 @@ pub enum RawEffectKind {
     ConsumeStdin,
     BindVariableFromRuntimeInput,
     TerminateCurrentShell,
+    ReturnFromShellScope,
     ShellJobOperation,
     PrivilegeModifier,
     NetworkEndpoint,
@@ -1206,6 +1210,8 @@ pub enum RawEffectTarget {
         source: RawImplicitInputSource,
     },
     Dispatch {
+        #[serde(default)]
+        lookup_domain: Option<crate::DispatchLookupDomain>,
         #[serde(default)]
         module_runtime: Option<String>,
         #[serde(default)]

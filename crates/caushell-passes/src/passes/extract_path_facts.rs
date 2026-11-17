@@ -1,7 +1,5 @@
 use caushell_graph::EdgeKind;
-use caushell_profile::{
-    EffectKind, EffectTarget, PathPurpose, PathRole, ResolveInvocationArtifactResult,
-};
+use caushell_profile::{EffectKind, PathPurpose, PathRole, ResolveInvocationArtifactResult};
 use caushell_query::IoTarget;
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{PathResolution, ResolvedPathPurpose, ResolvedPathRole};
@@ -14,10 +12,7 @@ use crate::path::{
     resolved_path_role_for_profile_role,
 };
 use crate::path::{effective_cwd_cases, project_path_at_cwd};
-use crate::path::{join_shell_path, normalize_shell_path};
-use crate::support::git_hooks::{
-    git_effective_cwd, git_hook_slot_name, git_nonlocal_config_sources, resolve_git_hook_paths,
-};
+use crate::support::git_hooks::git_hook_slot_name;
 use crate::support::{
     ExecutionResolveRecordRef, StreamSemanticsIndex, annotate_stream_output, bound_invocation,
     execution_content_io_target, graph_backed_execution_resolve_records,
@@ -702,104 +697,87 @@ fn project_redirection_path_mutations(
 }
 
 fn collect_git_hook_path_mutations(
-    ctx: &RunnerContext,
+    _ctx: &RunnerContext,
     records: &[ExecutionResolveRecordRef<'_>],
-    cwd: &str,
+    _cwd: &str,
 ) -> Vec<PendingMutation> {
-    let request = ctx.request();
     let mut mutations = Vec::new();
-
     for record in records {
         let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
             continue;
         };
-
-        let Some(hook_kind) = crate::support::git_hooks::hook_kind(&resolved.bound) else {
+        if !resolved.bound.native_configuration_resolved {
             continue;
-        };
-
-        let effective_cwd = git_effective_cwd(cwd, &resolved.bound);
-
-        let Some(config_path) =
-            resolved
-                .bound
-                .effects
-                .iter()
-                .find_map(|effect| match &effect.target {
-                    EffectTarget::ToolConventionPath(target)
-                        if effect.kind == EffectKind::LoadConfig
-                            && target.convention == "git.local_config" =>
-                    {
-                        Some(if target.path.starts_with('/') {
-                            normalize_shell_path(&target.path)
-                        } else {
-                            join_shell_path(&effective_cwd, &target.path)
-                        })
-                    }
-                    _ => None,
-                })
-        else {
-            continue;
-        };
-
-        for config_fact in git_nonlocal_config_path_facts(request) {
-            mutations.push(
-                config_fact
-                    .path_mutation(record.source_node_id(), &resolved.normalized_command_name),
-            );
-            mutations.push(
-                config_fact.provenance_mutation(
-                    record.source_node_id(),
-                    &resolved.normalized_command_name,
-                ),
-            );
         }
-
-        let mut hook_paths = resolve_git_hook_paths(
-            request,
-            &config_path,
-            &effective_cwd,
-            &resolved.bound,
-            hook_kind,
-        );
-        crate::support::git_hooks::project_resolved_hook_inputs(
-            &mut hook_paths,
-            ctx,
-            record.source_node_id(),
-            record.command_index(),
-        );
-
-        for hook_path in hook_paths {
-            let slot_name = git_hook_slot_name(hook_path.stage);
-            let node_id = path_fact_node_id(
-                record.source_node_id(),
-                record.command_index(),
-                &slot_name,
-                &hook_path.resolution,
-            );
-
+        let mut facts = Vec::new();
+        for input in &resolved.bound.configured_inputs {
+            facts.push((
+                input.path.clone(),
+                ResolvedPathRole::Config,
+                ResolvedPathPurpose::ToolConfig,
+                input.id.clone(),
+            ));
+        }
+        for source in &resolved.bound.configured_execution_sources {
+            if let caushell_profile::ConfiguredExecutionValue::File {
+                path, hook_stage, ..
+            } = &source.value
+            {
+                facts.push((
+                    path.clone(),
+                    if source.may_execute {
+                        ResolvedPathRole::Read
+                    } else {
+                        ResolvedPathRole::Config
+                    },
+                    if source.may_execute {
+                        ResolvedPathPurpose::ScriptSource
+                    } else {
+                        ResolvedPathPurpose::ToolConfig
+                    },
+                    hook_stage
+                        .as_deref()
+                        .map_or_else(|| source.id.replace([':', '-'], "_"), git_hook_slot_name),
+                ));
+            }
+        }
+        for (path, role, purpose, slot) in facts {
             mutations.push(PendingMutation::AddPathFact {
                 source_node_id: record.source_node_id().clone(),
-                node_id,
-                resolution: hook_path.resolution.clone(),
-                role: ResolvedPathRole::Read,
-                purpose: Some(ResolvedPathPurpose::ScriptSource),
-                slot_name: slot_name.clone(),
+                node_id: path_fact_node_id(
+                    record.source_node_id(),
+                    record.command_index(),
+                    &slot,
+                    &path,
+                ),
+                resolution: path.clone(),
+                role,
+                purpose: Some(purpose),
+                slot_name: slot.clone(),
                 normalized_command_name: Some(resolved.normalized_command_name.clone()),
                 relation: EdgeKind::Reads,
             });
-
-            if let Some(path_string) = hook_path.resolution.concrete_path() {
+            if let Some(path) = path.concrete_path() {
+                let profile_role = if role == ResolvedPathRole::Config {
+                    PathRole::Config
+                } else {
+                    PathRole::Read
+                };
+                let profile_purpose = if purpose == ResolvedPathPurpose::ToolConfig {
+                    PathPurpose::ToolConfig
+                } else {
+                    PathPurpose::ScriptSource
+                };
                 if let Some((relation, semantics)) = provenance_edge_for_path_fact(
-                    PathRole::Read,
-                    Some(PathPurpose::ScriptSource),
-                    &slot_name,
-                    Some(resolved.normalized_command_name.as_str()),
+                    profile_role,
+                    Some(profile_purpose),
+                    &slot,
+                    Some(&resolved.normalized_command_name),
                 ) {
                     mutations.push(PendingMutation::AddProvenanceArtifact {
                         source_node_id: record.source_node_id().clone(),
-                        node_id: provenance_path_artifact_node_id(path_string),
-                        artifact: provenance_artifact_for_path(path_string),
+                        node_id: provenance_path_artifact_node_id(path),
+                        artifact: provenance_artifact_for_path(path),
                         relation,
                         semantics,
                     });
@@ -807,76 +785,7 @@ fn collect_git_hook_path_mutations(
             }
         }
     }
-
     mutations
-}
-
-#[derive(Debug, Clone)]
-struct GitConfigPathFact {
-    slot_name: String,
-    resolution: PathResolution,
-}
-
-impl GitConfigPathFact {
-    fn path_mutation(
-        &self,
-        source_node_id: &caushell_graph::NodeId,
-        normalized_command_name: &str,
-    ) -> PendingMutation {
-        PendingMutation::AddPathFact {
-            source_node_id: source_node_id.clone(),
-            node_id: path_fact_node_id(source_node_id, 0, &self.slot_name, &self.resolution),
-            resolution: self.resolution.clone(),
-            role: ResolvedPathRole::Config,
-            purpose: Some(ResolvedPathPurpose::ToolConfig),
-            slot_name: self.slot_name.clone(),
-            normalized_command_name: Some(normalized_command_name.to_string()),
-            relation: EdgeKind::Reads,
-        }
-    }
-
-    fn provenance_mutation(
-        &self,
-        source_node_id: &caushell_graph::NodeId,
-        normalized_command_name: &str,
-    ) -> PendingMutation {
-        let path = self
-            .resolution
-            .concrete_path()
-            .expect("git config path fact should always be concrete");
-        let (relation, semantics) = provenance_edge_for_path_fact(
-            PathRole::Config,
-            Some(PathPurpose::ToolConfig),
-            &self.slot_name,
-            Some(normalized_command_name),
-        )
-        .expect("tool config provenance should exist");
-
-        PendingMutation::AddProvenanceArtifact {
-            source_node_id: source_node_id.clone(),
-            node_id: provenance_path_artifact_node_id(path),
-            artifact: provenance_artifact_for_path(path),
-            relation,
-            semantics,
-        }
-    }
-}
-
-fn git_nonlocal_config_path_facts(
-    request: &caushell_types::CheckRequest,
-) -> Vec<GitConfigPathFact> {
-    let mut facts = Vec::new();
-
-    for source in git_nonlocal_config_sources(request) {
-        if std::path::Path::new(&source.path).exists() {
-            facts.push(GitConfigPathFact {
-                slot_name: source.slot_name.to_string(),
-                resolution: PathResolution::Concrete { path: source.path },
-            });
-        }
-    }
-
-    facts
 }
 
 #[cfg(test)]
@@ -1109,7 +1018,66 @@ modifiers:
         ));
     }
 
+    struct ObservedFixtureFiles;
+    impl caushell_runner::FilesystemView for ObservedFixtureFiles {
+        fn entry(&self, path: &str) -> caushell_types::FilesystemEntry {
+            use caushell_types::FilesystemEntry as E;
+            match fs::symlink_metadata(path) {
+                Ok(m) if m.file_type().is_symlink() => fs::read_link(path)
+                    .ok()
+                    .and_then(|p| p.to_str().map(str::to_owned))
+                    .map(|target| E::Symlink { target })
+                    .unwrap_or_else(|| E::Unavailable {
+                        reason: "fixture link unreadable".into(),
+                    }),
+                Ok(m) if m.is_dir() => E::Directory,
+                Ok(_) => E::File,
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => E::Missing,
+                Err(e) => E::Unavailable {
+                    reason: e.to_string(),
+                },
+            }
+        }
+        fn read_file(&self, path: &str, limit: usize) -> caushell_runner::FileContentRead {
+            use caushell_types::{FileContentSource as S, FileContentStatus as Status};
+            use std::io::Read;
+            let bytes = fs::File::open(path).and_then(|f| {
+                let mut b = Vec::new();
+                f.take(limit as u64 + 1).read_to_end(&mut b)?;
+                Ok(b)
+            });
+            match bytes {
+                Ok(b) if b.len() <= limit => caushell_runner::FileContentRead::complete(
+                    S::SuppliedView,
+                    path,
+                    limit,
+                    None,
+                    b,
+                ),
+                _ => caushell_runner::FileContentRead::failed(
+                    S::SuppliedView,
+                    path,
+                    limit,
+                    Status::Unavailable,
+                    "fixture content unavailable or exceeds limit",
+                ),
+            }
+        }
+    }
     fn run_pass_with_request(request: CheckRequest, registry: ProfileRegistry) -> RunnerContext {
+        run_pass_using_view(request, registry, false)
+    }
+    fn run_pass_with_observed_request(
+        request: CheckRequest,
+        registry: ProfileRegistry,
+    ) -> RunnerContext {
+        run_pass_using_view(request, registry, true)
+    }
+    fn run_pass_using_view(
+        request: CheckRequest,
+        registry: ProfileRegistry,
+        observe_fixture: bool,
+    ) -> RunnerContext {
         let mut runner = PassRunner::new();
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
@@ -1121,6 +1089,9 @@ modifiers:
         let graph = SessionGraph::new();
         let summary = SessionSummary::new();
         let mut ctx = RunnerContext::new(request);
+        if observe_fixture {
+            ctx.set_filesystem_view(std::sync::Arc::new(ObservedFixtureFiles));
+        }
 
         runner.run(SessionView::new(&graph, &summary), &mut ctx);
         ctx
@@ -1206,12 +1177,18 @@ modifiers:
         )
         .expect("expected git config to be written");
 
+        fs::create_dir_all(temp_dir.join(".githooks")).unwrap();
+        fs::write(temp_dir.join(".githooks/pre-commit"), "printf SAFE").unwrap();
         let mut request = sample_request("git commit -m 'ship it'", Some("/home/alice"));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true)
+                .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
 
         assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
             mutation,
@@ -1250,10 +1227,14 @@ modifiers:
 
         let mut request = sample_request("git commit -m 'ship it'", Some("/home/alice"));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true)
+                .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
 
         assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
             mutation,
@@ -1296,10 +1277,14 @@ modifiers:
         let mut request =
             sample_request("git commit -m 'ship it'", Some(&home_dir.to_string_lossy()));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true)
+                .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
 
         assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
             mutation,
@@ -1348,10 +1333,14 @@ modifiers:
         let mut request =
             sample_request("git commit -m 'ship it'", Some(&home_dir.to_string_lossy()));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true)
+                .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
 
         assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
             mutation,
@@ -1395,7 +1384,7 @@ modifiers:
                 .with_variable_knowledge(caushell_types::ShellStateKnowledge::ExportedOnly);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
 
         assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
             mutation,
@@ -1437,10 +1426,14 @@ modifiers:
         let mut request =
             sample_request("git commit --no-verify -m 'ship it'", Some("/home/alice"));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true)
+                .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
         let slot_names = ctx
             .pending_mutations()
             .iter()
@@ -1470,10 +1463,14 @@ modifiers:
 
         let mut request = sample_request("git commit --amend --no-edit", Some("/home/alice"));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true)
+                .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
 
         assert!(ctx.pending_mutations().iter().any(|mutation| matches!(
             mutation,
@@ -1496,10 +1493,13 @@ modifiers:
 
         let mut request = sample_request("git am patch.mbox", Some("/home/alice"));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
         let slot_names = ctx
             .pending_mutations()
             .iter()
@@ -1528,10 +1528,13 @@ modifiers:
 
         let mut request = sample_request("git am --no-verify patch.mbox", Some("/home/alice"));
         request.shell_state_before =
-            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned());
+            caushell_types::ShellStateSnapshot::new(temp_dir.to_string_lossy().into_owned())
+                // These fixture controls select native HOME; account metadata is separate.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete)
+                .with_exact_scalar_variable("HOME", request.home.as_deref().unwrap_or(""), true);
         request.workspace_root = Some(temp_dir.to_string_lossy().into_owned());
 
-        let ctx = run_pass_with_request(request, built_in_registry());
+        let ctx = run_pass_with_observed_request(request, built_in_registry());
         let slot_names = ctx
             .pending_mutations()
             .iter()

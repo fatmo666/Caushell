@@ -38,12 +38,24 @@ impl ExecutionFrameBinding {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ExecutionFrameRequirements {
+    /// Count-selected exports (for native KEY_0/VALUE_0 protocols), not a
+    /// blanket claim that every export was observed.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub environment_series: Vec<IndexedEnvironmentRequirement>,
     pub environment_names: BTreeSet<String>,
     /// Referenced variable roots, independently of their export attribute.
     /// An observer may supply a bounded literal nameref closure as typed values.
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     pub variable_names: BTreeSet<String>,
     pub pathname: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct IndexedEnvironmentRequirement {
+    pub count_name: String,
+    pub prefixes: Vec<String>,
+    pub max_entries: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -114,6 +126,42 @@ impl ExecutionFrameObservation {
         {
             return Err("execution frame requirements exceed their bounds".into());
         }
+        let mut environment = requirements
+            .environment_names
+            .iter()
+            .map(|name| (name.clone(), observer.environment(name)))
+            .collect::<std::collections::BTreeMap<_, _>>();
+        for series in &requirements.environment_series {
+            if !requirements.environment_names.contains(&series.count_name)
+                || series.max_entries > 32
+                || series.prefixes.len() > 4
+                || series
+                    .prefixes
+                    .iter()
+                    .any(|p| !valid_name(&format!("{p}0")))
+            {
+                return Err("invalid indexed environment requirements".into());
+            }
+            let count = match environment.get(&series.count_name) {
+                Some(ShellEnvironmentValue::Present { value }) => value.parse::<usize>().ok(),
+                _ => None,
+            };
+            // Over-budget/unknown native counts retain unknown pair values.
+            // Their presence must never be inferred as absence.
+            if let Some(n) = count.filter(|n| *n <= series.max_entries) {
+                for i in 0..n {
+                    for prefix in &series.prefixes {
+                        let name = format!("{prefix}{i}");
+                        if !environment.contains_key(&name) {
+                            if environment.len() >= 128 {
+                                return Err("indexed environment exceeds frame budget".into());
+                            }
+                            environment.insert(name.clone(), observer.environment(&name));
+                        }
+                    }
+                }
+            }
+        }
         let observation = Self {
             binding,
             variable_values: observer.variable_values(&requirements.variable_names),
@@ -132,13 +180,9 @@ impl ExecutionFrameObservation {
                     value: observer.variable(name),
                 })
                 .collect(),
-            environment: requirements
-                .environment_names
-                .iter()
-                .map(|name| ShellEnvironmentSnapshot {
-                    name: name.clone(),
-                    value: observer.environment(name),
-                })
+            environment: environment
+                .into_iter()
+                .map(|(name, value)| ShellEnvironmentSnapshot { name, value })
                 .collect(),
             pathname: requirements.pathname.then(|| observer.pathname()).flatten(),
         };
@@ -588,6 +632,7 @@ mod tests {
             }
         }
         let requirements = ExecutionFrameRequirements {
+            environment_series: Vec::new(),
             environment_names: BTreeSet::new(),
             variable_names: ["LOCAL".into()].into_iter().collect(),
             pathname: false,

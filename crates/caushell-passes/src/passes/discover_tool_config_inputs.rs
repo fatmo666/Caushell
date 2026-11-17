@@ -4,7 +4,7 @@ use caushell_profile::{
     ArgumentFieldCount, BoundInvocation, ConfiguredPathMissing, ConfiguredPathTarget, Effect,
     EffectKind, EffectTarget, EnvironmentValueRef, ImplicitConfigFile, ImplicitConfigSource,
     PathPurpose, PathRole, ProfileRegistry, ResolveInvocationArtifactResult, SessionValue,
-    argument_structure, materialize_command_name, materialize_prefix_environment,
+    argument_structure, materialize_command_name,
 };
 use caushell_runner::{RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
@@ -66,10 +66,10 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
             else {
                 continue;
             };
-            let Some(command) = record.command() else {
+            let Some(_command) = record.command() else {
                 continue;
             };
-            let prefix = materialize_prefix_environment(command, record.bindings());
+            let environment = record.environment();
             for input in &profile.implicit_config_files {
                 if disabled(input, record) {
                     discovered.push(evidence(
@@ -85,14 +85,6 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
                     continue;
                 }
                 for (index, source) in input.sources.iter().enumerate() {
-                    let environment = |name: &str| {
-                        prefix
-                            .iter()
-                            .rev()
-                            .find(|(key, _)| key == name)
-                            .map(|(_, value)| EnvironmentValueRef::Present(value))
-                            .unwrap_or_else(|| record.bindings().environment_value(name))
-                    };
                     let (origin, directory, suffix, suppressed) = match source {
                         ImplicitConfigSource::EnvironmentDirectory {
                             name,
@@ -100,18 +92,17 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
                             unless_environment_set,
                             ..
                         } => {
-                            let origin = if prefix.iter().any(|(key, _)| key == name) {
-                                format!("command_prefix:{name}")
-                            } else {
-                                format!("environment:{name}")
-                            };
+                            let origin = format!("execution_environment:{name}");
                             let suppressed =
                                 unless_environment_set.as_deref().is_some_and(|name| {
-                                    matches!(environment(name), EnvironmentValueRef::Present(_))
+                                    matches!(
+                                        environment.value(name),
+                                        EnvironmentValueRef::Present(_)
+                                    )
                                 });
                             (
                                 origin,
-                                scalar_environment(environment(name)),
+                                scalar_environment(environment.value(name)),
                                 suffix,
                                 suppressed,
                             )

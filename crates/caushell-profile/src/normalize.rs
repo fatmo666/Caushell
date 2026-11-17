@@ -81,11 +81,17 @@ pub enum NormalizeError {
     InvalidStreamGrowth(String),
     InvalidVariableTarget(String),
     InvalidDispatchOverride(String),
+    InvalidLookupDomain(String),
     InvalidImplicitConfig(String),
     InvalidConfigurationFiles(String),
 }
 
 pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfile, NormalizeError> {
+    if raw.native_variable_writes.is_some() && raw.read_only_control_surface {
+        return Err(NormalizeError::InvalidOptionScope(
+            "native variable writers cannot declare a read-only control surface".into(),
+        ));
+    }
     if raw.dsl_version != PROFILE_DSL_VERSION {
         return Err(NormalizeError::InvalidDslVersion(raw.dsl_version));
     }
@@ -339,64 +345,38 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         &forms,
         &exact_option_words,
     )?;
-    if raw.native_argv_read_envelope && !raw.read_only_control_surface {
-        return Err(NormalizeError::InvalidOptionScope(
-            "native_argv_read_envelope requires a reviewed read_only_control_surface".into(),
-        ));
-    }
-    if raw.native_argv_read_envelope {
-        let data_effect = |e: &Effect| {
-            matches!(
-                e.kind,
-                EffectKind::ReadPath | EffectKind::ConsumeStdin | EffectKind::TransformData
-            ) && e.namespace_effect.is_none()
-                && e.state_operation.is_none()
-                && e.repository_operation.is_none()
-                && e.database_operation.is_none()
-                && e.terminal_session_operation.is_none()
-                && e.shell_job_operation.is_none()
-                && e.interactive_escape_surface.is_none()
-        };
-        let data_parameter = |p: &Parameter| {
-            matches!(
-                p.semantic,
-                SemanticType::PlainValue
-                    | SemanticType::Path(PathSemantic {
-                        role: PathRole::Read,
-                        ..
-                    })
-            )
-        };
+    let native_argv_effect_envelope = match (raw.native_argv_read_envelope, raw.native_argv_effect_envelope) {
+        (true, Some(_)) => return Err(NormalizeError::InvalidOptionScope("declare either the legacy read contract or the typed effect contract, not both".into())),
+        (true, None) => Some(caushell_types::NativeArgvEffectEnvelope::ContentRead),
+        (false, contract) => contract,
+    };
+    if let Some(contract) = native_argv_effect_envelope {
+        if !raw.read_only_control_surface || raw.native_variable_writes.is_some() {
+            return Err(NormalizeError::InvalidOptionScope("native_argv_effect_envelope requires an explicitly reviewed read_only_control_surface".into()));
+        }
         if !raw.implicit_config_files.is_empty()
-            || raw.configuration_files.is_some()
-            || raw.native_configuration.is_some()
+            || raw.configuration_files.is_some() || raw.native_configuration.is_some()
             || !raw.dispatch_overrides.is_empty()
-            || forms.iter().any(|f| {
-                f.effects.iter().any(|e| !data_effect(e))
-                    || f.parameters.iter().any(|p| !data_parameter(p))
-                    || f.implicit_inputs.iter().any(|i| {
-                        i.source != ImplicitInputSource::StdinData
-                            || i.semantic != SemanticType::PlainValue
-                    })
-            })
-            || modifiers.iter().any(|m| {
-                m.effects.iter().any(|e| !data_effect(e))
-                    || m.parameters.iter().any(|p| !data_parameter(p))
-            })
+            || forms.iter().any(|f| f.effects.iter().any(|e| !crate::native_effect_contract_allows_effect(contract,e))
+                || f.parameters.iter().any(|p| !crate::native_effect_envelope::native_effect_contract_allows_parameter(contract,p))
+                || f.implicit_inputs.iter().any(|i| i.source!=ImplicitInputSource::StdinData || i.semantic!=SemanticType::PlainValue))
+            || modifiers.iter().any(|m| m.effects.iter().any(|e| !crate::native_effect_contract_allows_effect(contract,e))
+                || m.parameters.iter().any(|p| !crate::native_effect_envelope::native_effect_contract_allows_parameter(contract,p)))
         {
-            return Err(NormalizeError::InvalidOptionScope(
-                "native_argv_read_envelope requires direct read/data inputs without configuration, dispatch or controlled side effects".into()));
+            return Err(NormalizeError::InvalidOptionScope("native_argv_effect_envelope does not admit configuration, dispatch, unreviewed annotations or effects/parameters outside its declared class".into()));
         }
     }
     if raw.read_only_control_surface {
         let query_effect = |effect: &Effect| {
-            matches!(
+            (matches!(
                 effect.kind,
                 EffectKind::ReadPath
                     | EffectKind::TargetPath
                     | EffectKind::ConsumeStdin
                     | EffectKind::TransformData
-            ) && effect.catastrophic.semantic_class.is_none()
+            ) || effect.kind == EffectKind::NetworkEndpoint
+                && native_argv_effect_envelope.is_some_and(|c| c.queries_network()))
+                && effect.catastrophic.semantic_class.is_none()
                 && effect.host_risk.semantic_class.is_none()
         };
         if subcommands.is_some()
@@ -652,12 +632,13 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         implicit_config_files: raw.implicit_config_files,
         configuration_files: raw.configuration_files,
         native_configuration: raw.native_configuration,
+        native_variable_writes: raw.native_variable_writes,
         argument_regions,
         argument_control_vocabulary,
         selection_failure_effects,
         opaque_on_unresolved: raw.opaque_on_unresolved,
         read_only_control_surface: raw.read_only_control_surface,
-        native_argv_read_envelope: raw.native_argv_read_envelope,
+        native_argv_effect_envelope,
         forms,
         modifiers,
         option_scope,
@@ -1263,6 +1244,7 @@ fn normalize_identity(raw: RawCommandIdentity) -> Result<CommandIdentity, Normal
     }
     Ok(CommandIdentity {
         canonical_name: CommandName::new(raw.canonical_name),
+        execution_domain: raw.execution_domain,
         aliases,
         module_only: raw.module_only,
         module_entrypoints,
@@ -3060,19 +3042,21 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         if !matches!(
             target,
             EffectTarget::ImplicitInput(ImplicitInputSource::StdinData)
-        ) || !matches!(
-            kind,
-            EffectKind::ReadPath
-                | EffectKind::WritePath
-                | EffectKind::DeletePath
-                | EffectKind::MovePath
-                | EffectKind::ChangeMode
-                | EffectKind::ChangeOwner
-                | EffectKind::ChangeGroup
-                | EffectKind::MetadataMutation
-        ) {
+        ) && !(kind == EffectKind::ReadPath && matches!(target, EffectTarget::Slot(_)))
+            || !matches!(
+                kind,
+                EffectKind::ReadPath
+                    | EffectKind::WritePath
+                    | EffectKind::DeletePath
+                    | EffectKind::MovePath
+                    | EffectKind::ChangeMode
+                    | EffectKind::ChangeOwner
+                    | EffectKind::ChangeGroup
+                    | EffectKind::MetadataMutation
+            )
+        {
             return Err(NormalizeError::InvalidPathList(
-                "path_list requires a filesystem effect on stdin_data".into(),
+                "path_list requires a filesystem effect on stdin_data or a read_path effect on a filename-list slot".into(),
             ));
         }
         if contract
@@ -3160,6 +3144,10 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     if let Some(effect) = raw.namespace_effect {
         let valid = raw.path_scope.is_none()
             && match effect {
+                caushell_types::PathNamespaceEffect::EntryRelocation => {
+                    matches!(kind, EffectKind::MovePath | EffectKind::WritePath)
+                        && matches!(target, EffectTarget::Slot(_))
+                }
                 caushell_types::PathNamespaceEffect::EntryRemoval => {
                     matches!(kind, EffectKind::MovePath | EffectKind::DeletePath)
                         && matches!(target, EffectTarget::Slot(_))
@@ -3199,10 +3187,11 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
     }
     if raw.path_access.is_some()
         && (!matches!(kind, EffectKind::ReadPath | EffectKind::WritePath)
-            || !matches!(target, EffectTarget::Slot(_) | EffectTarget::DerivedPath(_)))
+            || !(matches!(target, EffectTarget::Slot(_) | EffectTarget::DerivedPath(_))
+                || raw.path_list.is_some()))
     {
         return Err(NormalizeError::InvalidPathAccess(
-            "content_open requires a read_path/write_path effect with a slot or derived path target"
+            "content_open requires a read_path/write_path effect with a slot, derived path or filename-list target"
                 .into(),
         ));
     }
@@ -3412,6 +3401,26 @@ fn validate_effect_input_contracts(
                     }
                 }
             }
+            if effect.path_list.is_some()
+                && let EffectTarget::Slot(slot) = &effect.target
+            {
+                if !available.contains(slot.as_str()) {
+                    return Err(NormalizeError::InvalidPathList(format!(
+                        "undeclared filename-list source slot {:?}",
+                        slot.as_str()
+                    )));
+                }
+                if !effects.iter().any(|source| {
+                    source.kind == EffectKind::ReadPath
+                        && source.target == effect.target
+                        && source.path_list.is_none()
+                }) {
+                    return Err(NormalizeError::InvalidPathList(format!(
+                        "filename-list source {:?} requires its own direct read_path effect",
+                        slot.as_str()
+                    )));
+                }
+            }
             if let Some(name) = effect
                 .path_list
                 .as_ref()
@@ -3586,6 +3595,7 @@ fn normalize_effect_kind(raw: RawEffectKind) -> EffectKind {
         RawEffectKind::ConsumeAuxiliaryValue => EffectKind::ConsumeAuxiliaryValue,
         RawEffectKind::BindVariableFromRuntimeInput => EffectKind::BindVariableFromRuntimeInput,
         RawEffectKind::TerminateCurrentShell => EffectKind::TerminateCurrentShell,
+        RawEffectKind::ReturnFromShellScope => EffectKind::ReturnFromShellScope,
         RawEffectKind::ShellJobOperation => EffectKind::ShellJobOperation,
         RawEffectKind::PrivilegeModifier => EffectKind::PrivilegeModifier,
         RawEffectKind::NetworkEndpoint => EffectKind::NetworkEndpoint,
@@ -3949,6 +3959,7 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
             normalize_implicit_input_source(source),
         )),
         RawEffectTarget::Dispatch {
+            lookup_domain,
             module_runtime,
             command,
             command_literal,
@@ -4080,12 +4091,18 @@ fn normalize_effect_target(raw: RawEffectTarget) -> Result<EffectTarget, Normali
                 }
             }
             Ok(EffectTarget::Dispatch(DispatchTarget {
-                module_runtime: module_runtime
-                    .map(|runtime| {
+                lookup_domain: match (module_runtime, lookup_domain) {
+                    (Some(_), Some(_)) => {
+                        return Err(NormalizeError::InvalidLookupDomain(
+                            "module_runtime and lookup_domain are mutually exclusive".into(),
+                        ));
+                    }
+                    (Some(runtime), None) => {
                         ensure_non_empty(&runtime, "effects.target.module_runtime")?;
-                        Ok(runtime)
-                    })
-                    .transpose()?,
+                        crate::CommandLookupDomain::Module(runtime)
+                    }
+                    (None, domain) => domain.unwrap_or_default().into(),
+                },
                 command,
                 argv_prefix,
                 argv: normalize_slot_names(argv, "effects.target.argv")?,
@@ -4438,6 +4455,7 @@ mod tests {
             implicit_config_files: Vec::new(),
             configuration_files: None,
             native_configuration: None,
+            native_variable_writes: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4445,6 +4463,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4651,6 +4670,7 @@ mod tests {
             implicit_config_files: Vec::new(),
             configuration_files: None,
             native_configuration: None,
+            native_variable_writes: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4658,6 +4678,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4778,6 +4799,7 @@ mod tests {
             implicit_config_files: Vec::new(),
             configuration_files: None,
             native_configuration: None,
+            native_variable_writes: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4785,6 +4807,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4905,6 +4928,7 @@ mod tests {
             implicit_config_files: Vec::new(),
             configuration_files: None,
             native_configuration: None,
+            native_variable_writes: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -4912,6 +4936,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
@@ -4986,6 +5011,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -5083,6 +5109,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             dsl_version: "wrong".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -5111,6 +5138,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
             kind: "command_profile".to_string(),
             identity: RawCommandIdentity {
@@ -5149,6 +5177,7 @@ mod tests {
             implicit_config_files: Vec::new(),
             configuration_files: None,
             native_configuration: None,
+            native_variable_writes: None,
             argument_files: Vec::new(),
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
@@ -5156,6 +5185,7 @@ mod tests {
             opaque_on_unresolved: false,
             read_only_control_surface: false,
             native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             option_scope: Default::default(),
             option_matching: Default::default(),
             exact_option_words: Vec::new(),

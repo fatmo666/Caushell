@@ -92,7 +92,9 @@ mod tests {
             session_id: SessionId::new("sess-1"),
             sequence_no: CommandSequenceNo::new(1),
             command: command.to_string(),
-            shell_state_before: caushell_types::ShellStateSnapshot::new(cwd.to_string()),
+            shell_state_before: caushell_types::ShellStateSnapshot::new(cwd.to_string())
+                // File/trust-policy controls assume an empty exported environment.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete),
             shell_kind: ShellKind::Bash,
             runtime: RuntimeMetadata {
                 runtime_name: "claude_code".to_string(),

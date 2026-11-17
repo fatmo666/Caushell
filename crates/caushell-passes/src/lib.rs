@@ -31,3 +31,4 @@ pub use passes::{
 };
 #[cfg(test)]
 mod test_support;
+pub use passes::ValidateNativeEffectsPass;

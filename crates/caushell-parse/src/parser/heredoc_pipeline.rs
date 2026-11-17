@@ -21,6 +21,11 @@ pub(super) fn project(root: Node<'_>, source: &[u8]) -> Option<(Vec<u8>, Vec<Pro
         return None;
     }
     let evaluations = extract_shell_evaluations(root, source, ShellKind::Bash);
+    let bodies: std::collections::BTreeMap<_, _> =
+        crate::word_boundary::heredoc_bodies(root, source)
+            .into_iter()
+            .map(|b| (b.node_start, b))
+            .collect();
     let mut projections = Vec::new();
     walk(root, &mut |node| {
         if node.kind() != "heredoc_redirect" || !node.has_error() {
@@ -62,7 +67,12 @@ pub(super) fn project(root: Node<'_>, source: &[u8]) -> Option<(Vec<u8>, Vec<Pro
         {
             return;
         }
-        let fact = parse_heredoc(node, source);
+        let mut fact = parse_heredoc(node, source);
+        if let Some(canonical) = bodies.get(&node.start_byte())
+            && !restore_heredoc_content_fact(&mut fact, canonical, source)
+        {
+            return;
+        }
         if !matches!(fact.operator.as_deref(), Some("<<" | "<<-")) {
             return;
         }

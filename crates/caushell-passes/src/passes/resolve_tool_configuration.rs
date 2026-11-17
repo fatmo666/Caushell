@@ -162,6 +162,7 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
                 byte_limit: remaining_bytes.min(262_144),
                 tokens: Vec::new(),
                 evidence: ToolConfigParseEvidence {
+                    unresolved_inputs: Vec::new(),
                     node_id: record.source_node_id().0.clone(),
                     command: original.normalized_command_name.clone(),
                     complete: false,

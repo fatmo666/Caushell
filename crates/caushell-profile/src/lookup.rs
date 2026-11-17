@@ -55,20 +55,19 @@ pub fn normalize_command_name(command_name: &str) -> String {
     ))
 }
 
+/// Only lexical shell escaping is removed here. Executable pathname/family
+/// normalization cannot establish the identity of a shell builtin.
+pub(crate) fn command_name_without_shell_escape(command_name: &str) -> &str {
+    command_name
+        .strip_prefix('\\')
+        .filter(|stripped| stripped.chars().all(is_simple_command_char))
+        .unwrap_or(command_name)
+}
+
 pub(crate) fn normalize_command_name_without_family_coalescing(command_name: &str) -> String {
-    if command_name.is_empty() {
-        return String::new();
-    }
-
-    let mut normalized = command_name;
-
-    if let Some(stripped) = normalized.strip_prefix('\\') {
-        if stripped.chars().all(is_simple_command_char) {
-            normalized = stripped;
-        }
-    }
-
-    normalize_executable_name_without_family_coalescing(normalized)
+    normalize_executable_name_without_family_coalescing(command_name_without_shell_escape(
+        command_name,
+    ))
 }
 
 pub(crate) fn normalize_executable_name_without_family_coalescing(normalized: &str) -> String {

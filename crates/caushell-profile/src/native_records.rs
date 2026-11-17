@@ -1,5 +1,6 @@
+use crate::native_find_expression::{self, Expression, NativeFindEvaluation};
 use crate::{ResolvedInvocationArtifact, StdoutRecordSyntax, argument_structure};
-use caushell_types::{DirectoryEntryKind, MAX_DIRECTORY_DEPTH};
+use caushell_types::DirectoryEntryKind;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum NativePathPredicate {
@@ -29,8 +30,7 @@ pub struct NativePathOutputPlan {
     pub roots: Vec<String>,
     pub min_depth: usize,
     pub max_depth: Option<usize>,
-    pub predicates: Vec<NativePathPredicate>,
-    pub output: Vec<NativeRecordFormat>,
+    expression: Expression,
 }
 
 impl ResolvedInvocationArtifact {
@@ -59,185 +59,84 @@ impl ResolvedInvocationArtifact {
 
 impl NativePathOutputPlan {
     pub fn find(argv: &[String]) -> Result<Self, &'static str> {
-        if argv.len() > 256 || argv.iter().any(|a| a.len() > 4096 || a.contains('\0')) {
-            return Err("producer argv budget exceeded");
-        }
-        let mut args = argv.iter().map(String::as_str).peekable();
-        while args.peek() == Some(&"-P") {
-            args.next();
-        }
-        if args.peek() == Some(&"--") {
-            args.next();
-        }
-        let mut roots = Vec::new();
-        while args
-            .peek()
-            .is_some_and(|a| !a.starts_with('-') && !matches!(*a, "!" | "(" | ")" | ","))
-        {
-            let root = args.next().unwrap();
-            if root.is_empty() {
-                return Err("empty search root");
-            }
-            roots.push(root.into());
-        }
-        if roots.is_empty() {
-            roots.push(".".into());
-        }
-        let mut plan = Self {
-            roots,
-            min_depth: 0,
-            max_depth: None,
-            predicates: Vec::new(),
-            output: Vec::new(),
-        };
-        let mut needs_test = false;
-        while let Some(word) = args.next() {
-            let mut predicate = None;
-            match word {
-                "-a" | "-and"
-                    if !plan.predicates.is_empty() && !needs_test && plan.output.is_empty() =>
-                {
-                    needs_test = true;
-                    continue;
-                }
-                "-name" | "-iname" | "-path" | "-ipath" => {
-                    let pattern = args.next().ok_or("missing name pattern")?;
-                    // No locale-sensitive classes, ranges, '?' or escapes.
-                    if !pattern.is_ascii() || pattern.contains(['[', ']', '?', '\\']) {
-                        return Err("unsupported native name pattern");
-                    }
-                    let insensitive = matches!(word, "-iname" | "-ipath");
-                    predicate = Some(if matches!(word, "-name" | "-iname") {
-                        NativePathPredicate::Name {
-                            pattern: pattern.into(),
-                            insensitive,
-                        }
-                    } else {
-                        NativePathPredicate::Path {
-                            pattern: pattern.into(),
-                            insensitive,
-                        }
-                    });
-                }
-                "-type" => {
-                    predicate = Some(NativePathPredicate::Kind(match args.next() {
-                        Some("f") => DirectoryEntryKind::File,
-                        Some("d") => DirectoryEntryKind::Directory,
-                        Some("l") => DirectoryEntryKind::Symlink,
-                        _ => return Err("unsupported native type test"),
-                    }))
-                }
-                "-true" | "-false" => {
-                    predicate = Some(NativePathPredicate::Constant(word == "-true"))
-                }
-                "-mindepth" | "-maxdepth" if plan.output.is_empty() => {
-                    let value = args
-                        .next()
-                        .filter(|v| !v.is_empty() && v.bytes().all(|b| b.is_ascii_digit()))
-                        .and_then(|v| v.parse::<usize>().ok())
-                        .filter(|v| *v <= MAX_DIRECTORY_DEPTH)
-                        .ok_or("unsupported traversal depth")?;
-                    if word == "-mindepth" {
-                        plan.min_depth = value;
-                    } else {
-                        plan.max_depth = Some(value);
-                    }
-                }
-                "-print" => plan.output.push(NativeRecordFormat::Line),
-                "-print0" => plan.output.push(NativeRecordFormat::Nul),
-                "-printf" => plan.output.push(NativeRecordFormat::Format(format_parts(
-                    args.next().ok_or("missing output format")?,
-                )?)),
-                _ => return Err("unsupported native output expression"),
-            }
-            if let Some(predicate) = predicate {
-                if !plan.output.is_empty() {
-                    return Err("predicate follows output action");
-                }
-                plan.predicates.push(predicate);
-                needs_test = false;
-            } else if needs_test {
-                return Err("incomplete conjunction");
-            }
-        }
-        if needs_test {
-            return Err("incomplete conjunction");
-        }
-        if plan.output.is_empty() {
-            plan.output.push(NativeRecordFormat::Line);
-        }
-        Ok(plan)
+        let parsed = native_find_expression::parse(argv)?;
+        Ok(Self {
+            roots: parsed.roots,
+            min_depth: parsed.min_depth,
+            max_depth: parsed.max_depth,
+            expression: parsed.expression,
+        })
     }
 
-    pub fn accepts(
+    pub fn record_encoding(&self) -> caushell_types::StreamRecordEncoding {
+        self.expression.record_encoding()
+    }
+
+    pub fn needs_case_locale(&self) -> bool {
+        self.expression.needs_case_locale()
+    }
+
+    /// One evaluation owns both predicate control flow and the bytes/actions it
+    /// actually executes. Callers must not combine a flattened filter with an
+    /// unconditional encoder.
+    pub fn evaluate(
         &self,
         path: &str,
+        relative: &str,
         name: &str,
         kind: DirectoryEntryKind,
         depth: usize,
-    ) -> Result<bool, &'static str> {
-        if depth < self.min_depth {
-            return Ok(false);
+    ) -> Result<NativeFindEvaluation, &'static str> {
+        let mut result = NativeFindEvaluation::default();
+        if depth >= self.min_depth {
+            self.expression
+                .evaluate(path, relative, name, kind, &mut result)?;
         }
-        for test in &self.predicates {
-            let matched = match test {
-                NativePathPredicate::Constant(v) => *v,
-                NativePathPredicate::Kind(v) => *v == kind,
-                NativePathPredicate::Name {
-                    pattern,
-                    insensitive,
-                } => glob(pattern, name, *insensitive)?,
-                NativePathPredicate::Path {
-                    pattern,
-                    insensitive,
-                } => glob(pattern, path, *insensitive)?,
-            };
-            if !matched {
-                return Ok(false);
-            }
-        }
-        Ok(true)
-    }
-
-    pub fn encode(&self, path: &str, relative: &str, name: &str) -> Result<Vec<u8>, &'static str> {
-        let mut out = Vec::new();
-        fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), &'static str> {
-            if out.len().saturating_add(bytes.len()) > caushell_types::MAX_OBSERVED_STREAM_BYTES {
-                return Err("producer byte budget exceeded");
-            }
-            out.extend_from_slice(bytes);
-            Ok(())
-        }
-        for format in &self.output {
-            match format {
-                NativeRecordFormat::Line => {
-                    append(&mut out, path.as_bytes())?;
-                    append(&mut out, b"\n")?;
-                }
-                NativeRecordFormat::Nul => {
-                    append(&mut out, path.as_bytes())?;
-                    append(&mut out, b"\0")?;
-                }
-                NativeRecordFormat::Format(parts) => {
-                    for part in parts {
-                        append(
-                            &mut out,
-                            match part {
-                                NativeFormatPart::Literal(bytes) => bytes,
-                                NativeFormatPart::Path => path.as_bytes(),
-                                NativeFormatPart::RelativePath => relative.as_bytes(),
-                                NativeFormatPart::Name => name.as_bytes(),
-                            },
-                        )?;
-                    }
-                }
-            }
-        }
-        Ok(out)
+        Ok(result)
     }
 }
 
-fn glob(pattern: &str, value: &str, insensitive: bool) -> Result<bool, &'static str> {
+pub(super) fn encode_format(
+    format: &NativeRecordFormat,
+    path: &str,
+    relative: &str,
+    name: &str,
+    out: &mut Vec<u8>,
+) -> Result<(), &'static str> {
+    fn append(out: &mut Vec<u8>, bytes: &[u8]) -> Result<(), &'static str> {
+        if out.len().saturating_add(bytes.len()) > caushell_types::MAX_OBSERVED_STREAM_BYTES {
+            return Err("producer byte budget exceeded");
+        }
+        out.extend_from_slice(bytes);
+        Ok(())
+    }
+    match format {
+        NativeRecordFormat::Line => {
+            append(out, path.as_bytes())?;
+            append(out, b"\n")?;
+        }
+        NativeRecordFormat::Nul => {
+            append(out, path.as_bytes())?;
+            append(out, b"\0")?;
+        }
+        NativeRecordFormat::Format(parts) => {
+            for part in parts {
+                append(
+                    out,
+                    match part {
+                        NativeFormatPart::Literal(bytes) => bytes,
+                        NativeFormatPart::Path => path.as_bytes(),
+                        NativeFormatPart::RelativePath => relative.as_bytes(),
+                        NativeFormatPart::Name => name.as_bytes(),
+                    },
+                )?;
+            }
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn glob(pattern: &str, value: &str, insensitive: bool) -> Result<bool, &'static str> {
     if insensitive && !value.is_ascii() {
         return Err("case folding locale is unobserved");
     }
@@ -266,7 +165,7 @@ fn glob(pattern: &str, value: &str, insensitive: bool) -> Result<bool, &'static 
     Ok(true)
 }
 
-fn format_parts(format: &str) -> Result<Vec<NativeFormatPart>, &'static str> {
+pub(super) fn format_parts(format: &str) -> Result<Vec<NativeFormatPart>, &'static str> {
     let mut parts = Vec::new();
     let mut literal = Vec::new();
     let mut chars = format.chars().peekable();

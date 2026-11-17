@@ -6,6 +6,35 @@ struct BuiltInProfileSource {
 }
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
+    BuiltInProfileSource { profile_id: "swapon", content: include_str!("../profiles/swapon.yaml") },
+    BuiltInProfileSource { profile_id: "csrutil", content: include_str!("../profiles/csrutil.yaml") },
+    BuiltInProfileSource { profile_id: "kmod", content: include_str!("../profiles/kmod.yaml") },
+    BuiltInProfileSource { profile_id: "localectl", content: include_str!("../profiles/localectl.yaml") },
+    BuiltInProfileSource { profile_id: "sockstat", content: include_str!("../profiles/sockstat.yaml") },
+    BuiltInProfileSource { profile_id: "findmnt", content: include_str!("../profiles/findmnt.yaml") },
+    BuiltInProfileSource { profile_id: "colrm", content: include_str!("../profiles/colrm.yaml") },
+    BuiltInProfileSource { profile_id: "inotifywait", content: include_str!("../profiles/inotifywait.yaml") },
+    BuiltInProfileSource { profile_id: "host", content: include_str!("../profiles/host.yaml") },
+    BuiltInProfileSource { profile_id: "agrep", content: include_str!("../profiles/agrep.yaml") },
+    BuiltInProfileSource { profile_id: "uuid", content: include_str!("../profiles/uuid.yaml") },
+    BuiltInProfileSource { profile_id: "pidof", content: include_str!("../profiles/pidof.yaml") },
+    BuiltInProfileSource { profile_id: "route", content: include_str!("../profiles/route.yaml") },
+    BuiltInProfileSource { profile_id: "nslookup", content: include_str!("../profiles/nslookup.yaml") },
+    BuiltInProfileSource { profile_id: "umask", content: include_str!("../profiles/umask.yaml") },
+    BuiltInProfileSource { profile_id: "ulimit", content: include_str!("../profiles/ulimit.yaml") },
+    BuiltInProfileSource { profile_id: "lsmem", content: include_str!("../profiles/lsmem.yaml") },
+    BuiltInProfileSource { profile_id: "lsblk", content: include_str!("../profiles/lsblk.yaml") },
+    BuiltInProfileSource { profile_id: "lshw", content: include_str!("../profiles/lshw.yaml") },
+    BuiltInProfileSource { profile_id: "kldstat", content: include_str!("../profiles/kldstat.yaml") },
+    BuiltInProfileSource { profile_id: "kextstat", content: include_str!("../profiles/kextstat.yaml") },
+    BuiltInProfileSource { profile_id: "uptime", content: include_str!("../profiles/uptime.yaml") },
+    BuiltInProfileSource { profile_id: "free", content: include_str!("../profiles/free.yaml") },
+    BuiltInProfileSource { profile_id: "vmstat", content: include_str!("../profiles/vmstat.yaml") },
+    BuiltInProfileSource { profile_id: "netstat", content: include_str!("../profiles/netstat.yaml") },
+    BuiltInProfileSource { profile_id: "locale", content: include_str!("../profiles/locale.yaml") },
+    BuiltInProfileSource { profile_id: "ipcs", content: include_str!("../profiles/ipcs.yaml") },
+    BuiltInProfileSource { profile_id: "lsmod", content: include_str!("../profiles/lsmod.yaml") },
+    BuiltInProfileSource { profile_id: "lscpu", content: include_str!("../profiles/lscpu.yaml") },
     BuiltInProfileSource {
         profile_id: "bash_condition",
         content: include_str!("../profiles/bash_condition.yaml"),
@@ -1377,6 +1406,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "exit",
         content: include_str!("../profiles/exit.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "return",
+        content: include_str!("../profiles/return.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "wait",

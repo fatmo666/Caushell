@@ -1,4 +1,4 @@
-use crate::{CommandProfile, EffectTarget, ImplicitConfigSource};
+use crate::{CommandProfile, EffectTarget, ImplicitConfigSource, NativeConfigurationSyntax};
 use caushell_types::ExecutionFrameRequirements;
 
 /// Profile-declared child-environment dependencies plus native locale inputs.
@@ -6,6 +6,7 @@ pub fn execution_frame_requirements<'a>(
     profiles: impl IntoIterator<Item = &'a CommandProfile>,
 ) -> ExecutionFrameRequirements {
     let mut requirements = ExecutionFrameRequirements {
+        environment_series: Vec::new(),
         variable_names: Default::default(),
         environment_names: ["LC_ALL", "LC_CTYPE", "LANG"]
             .into_iter()
@@ -14,12 +15,26 @@ pub fn execution_frame_requirements<'a>(
         pathname: true,
     };
     for profile in profiles {
-        if profile.native_configuration.is_some() {
+        if profile.native_configuration == Some(NativeConfigurationSyntax::Pip25_3Linux) {
             requirements.environment_names.extend(
                 crate::PIP_CONFIGURATION_ENVIRONMENT
                     .iter()
                     .map(|s| (*s).into()),
             );
+        }
+        if profile.native_configuration == Some(NativeConfigurationSyntax::Git) {
+            requirements.environment_names.extend(
+                crate::GIT_CONFIGURATION_ENVIRONMENT
+                    .iter()
+                    .map(|s| (*s).into()),
+            );
+            requirements
+                .environment_series
+                .push(caushell_types::IndexedEnvironmentRequirement {
+                    count_name: "GIT_CONFIG_COUNT".into(),
+                    prefixes: vec!["GIT_CONFIG_KEY_".into(), "GIT_CONFIG_VALUE_".into()],
+                    max_entries: 32,
+                });
         }
         add_resource_inputs(&profile.forms, &profile.modifiers, &mut requirements);
         for over in &profile.dispatch_overrides {

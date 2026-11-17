@@ -19,16 +19,14 @@ fn check(command: &str) -> CheckResponse {
     })
 }
 
-fn materializations(response: &CheckResponse) -> Vec<&DerivedInvocation> {
+fn materializations(response: &CheckResponse) -> Vec<&str> {
     response
         .decision_trace
-        .derived_invocations
+        .evidence
         .iter()
-        .filter(|invocation| {
-            matches!(
-                invocation.origin,
-                DerivedInvocationOrigin::CommandSubstitutionMaterialization { .. }
-            )
+        .filter_map(|e| match &e.kind {
+            EvidenceKind::ShellArgumentFields(p) => p.materialized_command.as_deref(),
+            _ => None,
         })
         .collect()
 }
@@ -43,7 +41,7 @@ fn command_substitution_materializes_pipeline_output_once() {
         let derived = materializations(&response);
         assert_eq!(derived.len(), 1, "{command}: {response:#?}");
         assert_eq!(
-            derived[0].raw_text, "touch '/bench/workspace/cache/file'",
+            derived[0], "touch '/bench/workspace/cache/file'",
             "{response:#?}"
         );
     }
@@ -83,7 +81,7 @@ fn existing_base64_decode_reaches_both_substitution_and_script_consumers() {
     let response = check(r#"echo "$(printf ZWNobyBzYWZlCg== | base64 -d | cat)""#);
     let derived = materializations(&response);
     assert_eq!(derived.len(), 1, "{response:#?}");
-    assert_eq!(derived[0].raw_text, "echo 'echo safe'", "{response:#?}");
+    assert_eq!(derived[0], "echo 'echo safe'", "{response:#?}");
 
     for command in [
         "printf cm0gLXJmIC8K | base64 -d | sh",

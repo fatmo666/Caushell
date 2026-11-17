@@ -77,7 +77,7 @@ fn with_single_argument<T>(
     parser
         .set_language(&language_for(ShellKind::Bash).ok()?)
         .ok()?;
-    let tree = parser.parse(&source, None)?;
+    let tree = crate::word_boundary::parse(&mut parser, source.as_bytes()).ok()?;
     let root = tree.root_node();
     if root.has_error() || root.named_child_count() != 1 {
         return None;
@@ -618,7 +618,7 @@ fn planned_shell_variables(
     parser
         .set_language(&language_for(shell)?)
         .map_err(|e| ParseError::LanguageInit(e.to_string()))?;
-    let tree = parser.parse(raw, None).ok_or(ParseError::ParseCancelled)?;
+    let tree = crate::word_boundary::parse(&mut parser, raw.as_bytes())?;
     let mut names = std::collections::BTreeSet::new();
     let mut pending = vec![tree.root_node()];
     let mut visited = 0;
@@ -705,9 +705,7 @@ fn parse_with_descriptor_ownership(
                 merged[index] = byte;
             }
         }
-        tree = parser
-            .parse(merged.as_slice(), None)
-            .ok_or(ParseError::ParseCancelled)?;
+        tree = crate::word_boundary::parse(parser, merged.as_slice())?;
         heredocs = facts;
     }
     if !bytes.iter().any(|byte| matches!(byte, b'<' | b'>')) {
@@ -837,9 +835,7 @@ fn parse_with_descriptor_ownership(
         });
     });
     let mut tree = match repaired_source.as_deref() {
-        Some(repaired) => parser
-            .parse(repaired, None)
-            .ok_or(ParseError::ParseCancelled)?,
+        Some(repaired) => crate::word_boundary::parse(parser, repaired)?,
         None => tree,
     };
     // Removing an erroneous IO number can expose this second grammar error.
@@ -861,12 +857,10 @@ fn parse_with_descriptor_ownership(
             }
         });
         if retry {
-            tree = parser
-                .parse(
-                    repaired_source.as_deref().expect("repair source exists"),
-                    None,
-                )
-                .ok_or(ParseError::ParseCancelled)?;
+            tree = crate::word_boundary::parse(
+                parser,
+                repaired_source.as_deref().expect("repair source exists"),
+            )?;
         }
     }
     descriptors.sort_unstable_by_key(|descriptor| descriptor.operator_byte);
@@ -967,6 +961,7 @@ fn artifact_from_tree(
     }
     restore_descriptor_ownership(&mut artifact, source, descriptors);
     heredoc_pipeline::restore(&mut artifact, heredocs);
+    restore_heredoc_content_bytes(&mut artifact, root, source);
     redirection_precedence::restore(&mut artifact, root, source, heredocs);
     heredoc_pipeline::restore_evaluations(&mut artifact, heredocs);
     crate::backtick::restore(&mut artifact, backticks, root);
@@ -1205,6 +1200,25 @@ pub fn parse_process_substitutions(
     raw_fragment: &str,
     shell_kind: ShellKind,
 ) -> Result<Vec<ProcessSubstitutionFact>, ParseError> {
+    process_substitutions(raw_fragment, shell_kind, false)
+}
+
+/// Immediate process expansions of an original shell word, with its quoting
+/// intact. Child shell bodies are analysed recursively in their own scope;
+/// neither command-substitution contents nor nested process bodies belong here.
+/// Never pass materialized/native argv bytes to this syntax entry point.
+pub fn parse_argument_process_substitutions(
+    raw_word: &str,
+    shell_kind: ShellKind,
+) -> Result<Vec<ProcessSubstitutionFact>, ParseError> {
+    process_substitutions(raw_word, shell_kind, true)
+}
+
+fn process_substitutions(
+    raw_fragment: &str,
+    shell_kind: ShellKind,
+    immediate: bool,
+) -> Result<Vec<ProcessSubstitutionFact>, ParseError> {
     let language = language_for(shell_kind)?;
 
     let mut parser = Parser::new();
@@ -1220,23 +1234,36 @@ pub fn parse_process_substitutions(
     let root = tree.root_node();
     let mut substitutions = Vec::new();
 
-    walk(root, &mut |node| {
-        if node.kind() != "process_substitution" {
+    fn visit(
+        node: Node<'_>,
+        source: &[u8],
+        immediate: bool,
+        out: &mut Vec<ProcessSubstitutionFact>,
+    ) {
+        if immediate && matches!(node.kind(), "command_substitution" | "function_definition") {
             return;
         }
-
-        let text = source_text(node, source);
-        let Some((operator, body_text)) = process_substitution_parts(&text) else {
-            return;
-        };
-
-        substitutions.push(ProcessSubstitutionFact {
-            text,
-            body_text,
-            operator,
-            span: span_for(node),
-        });
-    });
+        if node.kind() == "process_substitution" {
+            let text = source_text(node, source);
+            if let Some((operator, body_text)) = process_substitution_parts(&text) {
+                out.push(ProcessSubstitutionFact {
+                    text,
+                    body_text,
+                    operator,
+                    span: span_for(node),
+                });
+            }
+            if immediate {
+                return;
+            }
+        }
+        for index in 0..node.child_count() {
+            if let Some(child) = child_at(node, index) {
+                visit(child, source, immediate, out);
+            }
+        }
+    }
+    visit(root, source, immediate, &mut substitutions);
 
     Ok(substitutions)
 }
@@ -2339,7 +2366,7 @@ pub fn parse_arithmetic_references(expression: &str) -> Option<Vec<crate::Arithm
     parser
         .set_language(&language_for(ShellKind::Bash).ok()?)
         .ok()?;
-    let tree = parser.parse(&source, None)?;
+    let tree = crate::word_boundary::parse(&mut parser, source.as_bytes()).ok()?;
     let root = tree.root_node();
     if root.has_error() || root.named_child_count() != 1 {
         // Some valid arithmetic expansion words (e.g. $(producer)0) are not
@@ -2570,7 +2597,7 @@ pub fn static_array_values(text: &str) -> Option<Vec<String>> {
     parser
         .set_language(&language_for(ShellKind::Bash).ok()?)
         .ok()?;
-    let tree = parser.parse(&source, None)?;
+    let tree = crate::word_boundary::parse(&mut parser, source.as_bytes()).ok()?;
     let root = tree.root_node();
     if root.has_error() || root.named_child_count() != 1 {
         return None;
@@ -2596,7 +2623,7 @@ pub fn static_array_entry_values(text: &str) -> Option<Vec<String>> {
     parser
         .set_language(&language_for(ShellKind::Bash).ok()?)
         .ok()?;
-    let tree = parser.parse(&source, None)?;
+    let tree = crate::word_boundary::parse(&mut parser, source.as_bytes()).ok()?;
     let root = tree.root_node();
     if root.has_error() || root.named_child_count() != 1 {
         return None;
@@ -2634,7 +2661,8 @@ pub fn static_array_entry_values(text: &str) -> Option<Vec<String>> {
             }
             let rhs = &source[next.start_byte() + 1..element.end_byte()];
             let value_source = format!("__value__={rhs}");
-            let value_tree = parser.parse(&value_source, None)?;
+            let value_tree =
+                crate::word_boundary::parse(&mut parser, value_source.as_bytes()).ok()?;
             let r = value_tree.root_node();
             if r.has_error() || r.named_child_count() != 1 {
                 return None;
@@ -2660,7 +2688,7 @@ pub fn array_assignment_entries(text: &str) -> Option<Vec<(Option<String>, Assig
     parser
         .set_language(&language_for(ShellKind::Bash).ok()?)
         .ok()?;
-    let tree = parser.parse(&source, None)?;
+    let tree = crate::word_boundary::parse(&mut parser, source.as_bytes()).ok()?;
     let root = tree.root_node();
     if root.has_error() || root.named_child_count() != 1 {
         return None;
@@ -2696,7 +2724,8 @@ pub fn array_assignment_entries(text: &str) -> Option<Vec<(Option<String>, Assig
             let key = source[element.start_byte() + 1..children[close].start_byte()].to_owned();
             let rhs = &source[next.start_byte() + 1..element.end_byte()];
             let value_source = format!("__value__={rhs}");
-            let value_tree = parser.parse(&value_source, None)?;
+            let value_tree =
+                crate::word_boundary::parse(&mut parser, value_source.as_bytes()).ok()?;
             let r = value_tree.root_node();
             if r.has_error() || r.named_child_count() != 1 {
                 return None;
@@ -3815,7 +3844,7 @@ fn parse_heredoc(node: Node<'_>, source: &[u8]) -> RedirectionFact {
     {
         content.command_substitutions.clear();
     } else if let Some(content) = &mut content
-        && (content.text.contains("$(") || content.text.contains('`'))
+        && heredoc_has_substitution(&content.text)
         && (content.command_substitutions.is_empty()
             || content.text.contains('`')
             || content.text.lines().any(|line| {
@@ -3847,7 +3876,91 @@ fn parse_heredoc(node: Node<'_>, source: &[u8]) -> RedirectionFact {
     }
 }
 
-fn heredoc_start_is_quoted(node: Node<'_>, source: &[u8]) -> bool {
+/// The scanner can emit here-doc body words outside an empty body node.
+/// Header/newline/end-marker ownership supplies the canonical original bytes;
+/// accepting an incomplete content node would silently turn data into empty stdin.
+fn restore_heredoc_content_bytes(
+    artifact: &mut ParsedCommandArtifact,
+    root: Node<'_>,
+    source: &[u8],
+) {
+    if !artifact
+        .redirections
+        .iter()
+        .any(|r| r.kind == RedirectionKind::HereDoc)
+    {
+        return;
+    }
+    let bodies: std::collections::BTreeMap<_, _> =
+        crate::word_boundary::heredoc_bodies(root, source)
+            .into_iter()
+            .map(|b| (b.node_start, b))
+            .collect();
+    for fact in &mut artifact.redirections {
+        if fact.kind != RedirectionKind::HereDoc {
+            continue;
+        }
+        if let Some(body) = bodies.get(&fact.span.start_byte)
+            && !restore_heredoc_content_fact(fact, body, source)
+        {
+            artifact.status = ParseStatus::Partial;
+            artifact.diagnostics.push(ParseDiagnostic {
+                kind: DiagnosticKind::ErrorNode,
+                node_kind: "unproven_heredoc_body_boundary".into(),
+                text: "here-doc body ownership could not be proved from original delimiter bytes"
+                    .into(),
+                span: fact.span.clone(),
+            });
+        }
+    }
+}
+
+fn restore_heredoc_content_fact(
+    fact: &mut RedirectionFact,
+    body: &crate::word_boundary::HeredocBody,
+    source: &[u8],
+) -> bool {
+    if fact.content.as_ref().is_some_and(|c| {
+        c.span.start_byte == body.content.start && c.span.end_byte == body.content.end
+    }) {
+        return true;
+    }
+    let Some(end) = &body.end else { return false };
+    let Ok(marker) = std::str::from_utf8(&source[body.marker.clone()]) else {
+        return false;
+    };
+    let Some(delimiter) = decode_static_shell_argument(marker, false, "concatenation") else {
+        return false;
+    };
+    let Ok(mut closing) = std::str::from_utf8(&source[end.clone()]) else {
+        return false;
+    };
+    if fact.operator.as_deref() == Some("<<-") {
+        closing = closing.trim_start_matches('\t');
+    }
+    if closing != delimiter {
+        return false;
+    }
+    let original = std::str::from_utf8(source).expect("shell source is UTF-8");
+    let mut content = RedirectionOperandFact {
+        text: original[body.content.clone()].into(),
+        quoted: false,
+        node_kind: "heredoc_body".into(),
+        span: source_span_for_offsets(original, body.content.start, body.content.end),
+        command_substitutions: Vec::new(),
+        expansion_unresolved: false,
+    };
+    if !body.quoted && heredoc_has_substitution(&content.text) {
+        match heredoc_substitutions(&content, source) {
+            Some(facts) => content.command_substitutions = facts,
+            None => content.expansion_unresolved = true,
+        }
+    }
+    fact.content = Some(content);
+    true
+}
+
+pub(crate) fn heredoc_start_is_quoted(node: Node<'_>, source: &[u8]) -> bool {
     let text = source_text(node, source);
     let delimiter = text
         .strip_prefix("<<-")
@@ -3855,6 +3968,37 @@ fn heredoc_start_is_quoted(node: Node<'_>, source: &[u8]) -> bool {
         .unwrap_or(text.as_str())
         .trim();
     delimiter.contains(['\'', '"', '\\'])
+}
+
+/// In expandable here-doc data, quotes are literal and backslash quotes a
+/// producer marker. Remove only lexical continuations before testing marker
+/// adjacency; an escaped dollar/backquote must not become an executable site.
+fn heredoc_has_substitution(text: &str) -> bool {
+    let input = text.as_bytes();
+    let mut joined = Vec::new();
+    let mut index = 0;
+    while index < input.len() {
+        if input[index] == b'\\' && input.get(index + 1) == Some(&b'\n') {
+            index += 2;
+            continue;
+        }
+        joined.push(input[index]);
+        if input[index] == b'\\' && index + 1 < input.len() {
+            index += 1;
+            joined.push(input[index]);
+        }
+        index += 1;
+    }
+    let mut index = 0;
+    while index < joined.len() {
+        match joined[index] {
+            b'\\' => index += 2,
+            b'`' => return true,
+            b'$' if joined.get(index + 1) == Some(&b'(') => return true,
+            _ => index += 1,
+        }
+    }
+    false
 }
 
 /// Reopen only the AST-designated, expandable heredoc body in its own heredoc

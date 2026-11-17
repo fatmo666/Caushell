@@ -22,6 +22,7 @@ use crate::support::{
 
 mod consumption;
 mod directory_tree;
+mod entry_relocation;
 mod namespace_state;
 
 pub struct ResolvePathTargetsPass;
@@ -39,12 +40,14 @@ pub(crate) fn path_mutation_kind(kind: EffectKind) -> Option<PathTargetOperation
     })
 }
 
+#[derive(Clone)]
 struct Input {
     fact: PathTargetFact,
     namespace_write: bool,
     pending_resolution: bool,
     cwd_dependent: bool,
     namespace_effect: Option<caushell_types::PathNamespaceEffect>,
+    relocation_scope: Option<String>,
 }
 
 impl SessionTransformPass for ResolvePathTargetsPass {
@@ -142,6 +145,12 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 }
             }
             baselines.push((resolution, observations));
+        }
+        if namespace_operations_complete(ctx, true) {
+            tree_evidence.extend(entry_relocation::close_families(
+                &mut inputs, &mut baselines, &mut resolver,
+                ctx.filesystem_view(), &mut tree_budget,
+            ));
         }
         for proof in tree_evidence {
             ctx.add_evidence(caushell_types::Evidence {
@@ -285,7 +294,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
     }
 }
 
-fn namespace_operations_complete(ctx: &RunnerContext, whole_tree: bool) -> bool {
+pub(super) fn namespace_operations_complete(ctx: &RunnerContext, whole_tree: bool) -> bool {
     use caushell_profile::ResolveInvocationArtifactResult as Result;
     ctx.unresolved_dispatch_records().is_empty()
         && graph_backed_execution_resolve_records(ctx)
@@ -399,6 +408,7 @@ fn new_input(
         pending_resolution: true,
         cwd_dependent: false,
         namespace_effect: None,
+        relocation_scope: None,
     }
 }
 
@@ -527,7 +537,8 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             input.namespace_effect = if matches!(
                                 operation,
                                 PathTargetOperation::MoveSource | PathTargetOperation::Delete
-                            ) {
+                            ) && !(effect.namespace_effect == Some(caushell_types::PathNamespaceEffect::EntryRelocation)
+                                && matches!(input.fact.lexical, PathResolution::BoundedPathSet { .. } | PathResolution::FileNamePrefix { .. })) {
                                 Some(caushell_types::PathNamespaceEffect::EntryRemoval)
                             } else {
                                 effect.namespace_effect

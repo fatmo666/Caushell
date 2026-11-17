@@ -854,7 +854,7 @@ fn build_default_runner(registry: ProfileRegistry) -> PassRunner {
     runner.register_session_transform_pass(ExtractImportedPackageProvenancePass);
     runner.register_session_transform_pass(ExtractVariableBindingIntentPass);
     runner
-        .register_session_transform_pass(caushell_passes::ResolveArchiveMembersPass::new(registry));
+        .register_session_transform_pass(caushell_passes::ResolveArchiveMembersPass::new(registry.clone()));
     runner.register_session_transform_pass(caushell_passes::ObserveStdoutRecordsPass);
     runner.register_session_transform_pass(caushell_passes::ValidatePathnameFieldsPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
@@ -869,6 +869,7 @@ fn build_default_runner(registry: ProfileRegistry) -> PassRunner {
     // ordinary redirections and process-substitution provenance producers.
     runner.register_session_transform_pass(ExtractValueProvenancePass);
     runner.register_session_transform_pass(ExtractPipelineStreamProvenancePass);
+    runner.register_session_analysis_pass(caushell_passes::ValidateNativeEffectsPass::new(registry));
     runner.register_session_analysis_pass(ResolvePolicyPass);
     runner.register_session_analysis_pass(caushell_passes::NonShellScriptGuardPass);
     runner.register_session_analysis_pass(CwdWorkspaceBoundaryPass);
@@ -1328,6 +1329,7 @@ mod tests {
     fn frame_plans_read_the_requirements_owned_by_the_core() {
         let mut core = ShellQueryCore::new();
         core.execution_frame_requirements = caushell_types::ExecutionFrameRequirements {
+            environment_series: Vec::new(),
             variable_names: Default::default(),
             environment_names: ["PROFILE_TEST_INPUT".to_owned()].into_iter().collect(),
             pathname: false,

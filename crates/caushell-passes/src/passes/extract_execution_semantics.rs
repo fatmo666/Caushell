@@ -175,6 +175,10 @@ fn execution_semantics_for_bound(
         .effects
         .iter()
         .any(|effect| effect.kind == EffectKind::TerminateCurrentShell);
+    semantics.returns_from_shell_scope = invocation
+        .effects
+        .iter()
+        .any(|effect| effect.kind == EffectKind::ReturnFromShellScope);
     if invocation.effects.iter().any(|effect| {
         effect_target_is_applicable(invocation, effect)
             && matches!(
@@ -239,6 +243,7 @@ fn execution_semantics_for_bound(
                 | EffectKind::SetCurrentWorkingDirectory
                 | EffectKind::BindVariableFromRuntimeInput
                 | EffectKind::TerminateCurrentShell
+                | EffectKind::ReturnFromShellScope
                 | EffectKind::ShellJobOperation
         )
     }) {
@@ -308,6 +313,48 @@ fn execution_semantics_for_bound(
 
     if let Some(payload_mode) = payload_mode_for_invocation(invocation) {
         semantics = semantics.with_payload_mode(payload_mode);
+    }
+
+    if invocation.native_configuration_resolved {
+        let active = invocation
+            .configured_execution_sources
+            .iter()
+            .filter(|source| source.may_execute)
+            .collect::<Vec<_>>();
+        semantics.executes_config_defined_task = !active.is_empty();
+        semantics.executes_hook = active.iter().any(|source| {
+            matches!(
+                source.value,
+                caushell_profile::ConfiguredExecutionValue::File {
+                    hook_stage: Some(_),
+                    ..
+                }
+            )
+        });
+        let explicit_payload = invocation.effects.iter().any(|effect| {
+            effect.kind == EffectKind::ExecutePayload
+                && effect_target_is_applicable(invocation, effect)
+        });
+        semantics.executes_payload = explicit_payload || !active.is_empty();
+        if !explicit_payload {
+            semantics.payload_mode = if active.iter().any(|source| {
+                matches!(
+                    source.value,
+                    caushell_profile::ConfiguredExecutionValue::File { .. }
+                )
+            }) {
+                Some(ExecutionPayloadMode::ScriptFile)
+            } else if active.iter().any(|source| {
+                matches!(
+                    source.value,
+                    caushell_profile::ConfiguredExecutionValue::Command { .. }
+                )
+            }) {
+                Some(ExecutionPayloadMode::CommandString)
+            } else {
+                None
+            };
+        }
     }
 
     semantics
@@ -830,6 +877,8 @@ forms:
             &ExecutionSemantics::new("bash", "stdin_script_implicit")
                 .with_payload_mode(ExecutionPayloadMode::StdinImplicit)
                 .executing_payload()
+                // Entry exports are unobserved: startup loading is possible.
+                .loading_startup_config()
         );
 
         let semantics_node_id = execution_semantics_node_id(&source_node_id);
@@ -850,6 +899,8 @@ forms:
             &ExecutionSemantics::new("bash", "script_file")
                 .with_payload_mode(ExecutionPayloadMode::ScriptFile)
                 .executing_payload()
+                // Entry exports are unobserved: startup loading is possible.
+                .loading_startup_config()
         );
     }
 
@@ -996,6 +1047,8 @@ forms:
             &ExecutionSemantics::new("bash", "script_file")
                 .with_payload_mode(ExecutionPayloadMode::ScriptFile)
                 .executing_payload()
+                // Entry exports are unobserved: startup loading is possible.
+                .loading_startup_config()
         );
     }
 
@@ -1085,17 +1138,23 @@ extensions: {}
                 .executing_payload()
                 .executing_hook()
                 .loading_tool_config()
+                .executing_config_defined_task()
         );
     }
 
     #[test]
-    fn extract_execution_semantics_skips_git_hook_when_no_verify_is_present() {
+    fn extract_execution_semantics_no_verify_preserves_unskippable_commit_hooks() {
         let ctx = run_pass("git commit --no-verify -m 'ship it'");
         let semantics = semantics_mutation_for_node(&ctx, &NodeId::new("command:sess-1:1:0"));
 
         assert_eq!(
             semantics,
-            &ExecutionSemantics::new("git", "commit_message_no_verify").loading_tool_config()
+            &ExecutionSemantics::new("git", "commit_message_no_verify")
+                .with_payload_mode(ExecutionPayloadMode::ScriptFile)
+                .executing_payload()
+                .executing_hook()
+                .loading_tool_config()
+                .executing_config_defined_task()
         );
     }
 
@@ -1111,17 +1170,23 @@ extensions: {}
                 .executing_payload()
                 .executing_hook()
                 .loading_tool_config()
+                .executing_config_defined_task()
         );
     }
 
     #[test]
-    fn extract_execution_semantics_skips_git_am_hook_when_no_verify_is_present() {
+    fn extract_execution_semantics_no_verify_preserves_unskippable_am_hooks() {
         let ctx = run_pass("git am --no-verify patch.mbox");
         let semantics = semantics_mutation_for_node(&ctx, &NodeId::new("command:sess-1:1:0"));
 
         assert_eq!(
             semantics,
-            &ExecutionSemantics::new("git", "apply_mailbox_no_verify").loading_tool_config()
+            &ExecutionSemantics::new("git", "apply_mailbox_no_verify")
+                .with_payload_mode(ExecutionPayloadMode::ScriptFile)
+                .executing_payload()
+                .executing_hook()
+                .loading_tool_config()
+                .executing_config_defined_task()
         );
     }
 

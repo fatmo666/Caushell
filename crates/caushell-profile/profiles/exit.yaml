@@ -1,6 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 identity:
+  execution_domain: shell_builtin
   canonical_name: exit
   aliases: []
 trust: {tier: tier_a, source: built_in}

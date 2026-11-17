@@ -2,6 +2,7 @@ dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 
 identity:
+  execution_domain: shell_and_external
   canonical_name: test
   aliases:
     - "["

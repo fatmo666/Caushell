@@ -2,6 +2,12 @@
 //! Results remain shell words: quoting, escaping and source provenance are not
 //! discarded, and substituted/native argv data never enters this decoder.
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum BraceExpansionError {
+    BudgetExhausted,
+    Unsupported,
+}
+
 #[derive(Debug)]
 pub(crate) struct BraceBudget {
     words: usize,
@@ -15,6 +21,60 @@ impl Default for BraceBudget {
             bytes: 65_536,
         }
     }
+}
+
+/// A finite byte bound for products of literal numeric ranges. This does not
+/// enumerate words or assert their values/order. Unsupported lexical features
+/// stay outside this proof, and the ORIGINAL byte budget is still consumed.
+pub(crate) fn retain_bounded_numeric_data(text: &str, budget: &mut BraceBudget) -> Option<usize> {
+    let mut remaining = text;
+    let mut fields = 1u128;
+    let mut width = 0usize;
+    let mut range_seen = false;
+    let literal = |s: &str| {
+        !s.contains([
+            '\0', '$', '`', '\'', '"', '\\', '~', '*', '?', '[', ']', '{', '}',
+        ])
+    };
+    while let Some(start) = remaining.find('{') {
+        let prefix = &remaining[..start];
+        if !literal(prefix) {
+            return None;
+        }
+        width = width.checked_add(prefix.len())?;
+        let end = remaining[start + 1..].find('}')? + start + 1;
+        let parts: Vec<_> = remaining[start + 1..end].split("..").collect();
+        if !(2..=3).contains(&parts.len()) {
+            return None;
+        }
+        let number = |s: &str| {
+            let digits = s.strip_prefix(['+', '-']).unwrap_or(s);
+            (!digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit()))
+                .then(|| s.parse::<i64>().ok())
+                .flatten()
+        };
+        let a = i128::from(number(parts[0])?);
+        let b = i128::from(number(parts[1])?);
+        let step = if parts.len() == 3 {
+            i128::from(number(parts[2])?).abs().max(1)
+        } else {
+            1
+        };
+        fields = fields.checked_mul((a - b).unsigned_abs() / step as u128 + 1)?;
+        width = width.checked_add(parts[..2].iter().map(|s| s.len()).max()?)?;
+        if fields.checked_mul(width as u128)? > budget.bytes as u128 {
+            return None;
+        }
+        range_seen = true;
+        remaining = &remaining[end + 1..];
+    }
+    if !range_seen || !literal(remaining) {
+        return None;
+    }
+    let bytes = fields.checked_mul(width.checked_add(remaining.len())? as u128)?;
+    let bytes = usize::try_from(bytes).ok()?;
+    budget.bytes = budget.bytes.checked_sub(bytes)?;
+    Some(bytes)
 }
 
 #[derive(Clone, Copy, PartialEq)]
@@ -33,7 +93,10 @@ struct Group {
 /// None leaves the original word on the existing materialization path. Err
 /// retains an explicit unresolved-shell-expansion fact; never return a prefix
 /// of an expansion that exceeded its budget.
-pub(crate) fn expand(text: &str, budget: &mut BraceBudget) -> Result<Option<Vec<String>>, ()> {
+pub(crate) fn expand(
+    text: &str,
+    budget: &mut BraceBudget,
+) -> Result<Option<Vec<String>>, BraceExpansionError> {
     if !text.contains('{') {
         return Ok(None);
     }
@@ -51,19 +114,25 @@ fn expand_group(
     budget: &mut BraceBudget,
     depth: usize,
     output: &mut Vec<String>,
-) -> Result<(), ()> {
+) -> Result<(), BraceExpansionError> {
     if depth >= 32 {
-        return Err(());
+        return Err(BraceExpansionError::Unsupported);
     }
-    let alternatives = alternatives(text, &group)?.ok_or(())?;
+    let alternatives = alternatives(text, &group)?.ok_or(BraceExpansionError::Unsupported)?;
     for alternative in alternatives {
         let size = group
             .start
             .checked_add(alternative.len())
             .and_then(|n| n.checked_add(text.len() - group.end))
-            .ok_or(())?;
-        budget.words = budget.words.checked_sub(1).ok_or(())?;
-        budget.bytes = budget.bytes.checked_sub(size).ok_or(())?;
+            .ok_or(BraceExpansionError::Unsupported)?;
+        budget.words = budget
+            .words
+            .checked_sub(1)
+            .ok_or(BraceExpansionError::BudgetExhausted)?;
+        budget.bytes = budget
+            .bytes
+            .checked_sub(size)
+            .ok_or(BraceExpansionError::BudgetExhausted)?;
         let word = format!(
             "{}{}{}",
             &text[..group.start],
@@ -80,9 +149,9 @@ fn expand_group(
     Ok(())
 }
 
-fn first_group(text: &str) -> Result<Option<Group>, ()> {
+fn first_group(text: &str) -> Result<Option<Group>, BraceExpansionError> {
     if text.len() > 8192 {
-        return Err(());
+        return Err(BraceExpansionError::Unsupported);
     }
     let mut quote = Quote::None;
     let mut chars = text.char_indices();
@@ -103,7 +172,7 @@ fn first_group(text: &str) -> Result<Option<Group>, ()> {
             (_, '$' | '`') => return Ok(None),
             (Quote::None, '{') => {
                 if stack.len() >= 32 {
-                    return Err(());
+                    return Err(BraceExpansionError::Unsupported);
                 }
                 stack.push((index, Vec::new()));
             }
@@ -136,10 +205,10 @@ fn first_group(text: &str) -> Result<Option<Group>, ()> {
     Ok(None)
 }
 
-fn alternatives(text: &str, group: &Group) -> Result<Option<Vec<String>>, ()> {
+fn alternatives(text: &str, group: &Group) -> Result<Option<Vec<String>>, BraceExpansionError> {
     if !group.commas.is_empty() {
         if group.commas.len() >= 256 {
-            return Err(());
+            return Err(BraceExpansionError::BudgetExhausted);
         }
         let mut start = group.start + 1;
         let mut result = Vec::with_capacity(group.commas.len() + 1);
@@ -167,17 +236,29 @@ fn alternatives(text: &str, group: &Group) -> Result<Option<Vec<String>>, ()> {
         return Ok(None);
     }
     let step = if parts.len() == 3 {
-        i128::from(parts[2].parse::<i64>().map_err(|_| ())?)
-            .abs()
-            .max(1)
+        i128::from(
+            parts[2]
+                .parse::<i64>()
+                .map_err(|_| BraceExpansionError::Unsupported)?,
+        )
+        .abs()
+        .max(1)
     } else {
         1
     };
     let numeric = number(parts[0]) && number(parts[1]);
     let (start, end) = if numeric {
         (
-            i128::from(parts[0].parse::<i64>().map_err(|_| ())?),
-            i128::from(parts[1].parse::<i64>().map_err(|_| ())?),
+            i128::from(
+                parts[0]
+                    .parse::<i64>()
+                    .map_err(|_| BraceExpansionError::Unsupported)?,
+            ),
+            i128::from(
+                parts[1]
+                    .parse::<i64>()
+                    .map_err(|_| BraceExpansionError::Unsupported)?,
+            ),
         )
     } else if parts[0].len() == 1
         && parts[1].len() == 1
@@ -189,7 +270,7 @@ fn alternatives(text: &str, group: &Group) -> Result<Option<Vec<String>>, ()> {
         // Cross-case ranges contain shell metacharacters. Retain uncertainty
         // rather than reparsing generated quoting/globbing as source syntax.
         if a.is_ascii_lowercase() != b.is_ascii_lowercase() {
-            return Err(());
+            return Err(BraceExpansionError::Unsupported);
         }
         (i128::from(a), i128::from(b))
     } else {
@@ -197,7 +278,7 @@ fn alternatives(text: &str, group: &Group) -> Result<Option<Vec<String>>, ()> {
     };
     let count = (end - start).abs() / step + 1;
     if count > 256 {
-        return Err(());
+        return Err(BraceExpansionError::BudgetExhausted);
     }
     let padded = numeric
         && parts[..2].iter().any(|s| {

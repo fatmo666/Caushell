@@ -171,7 +171,6 @@ fn pending_find_and_xargs_children_use_the_same_budget_rule() {
         "find . -exec echo '{}' ';'",
         "xargs echo",
         "xargs -r echo",
-        "echo $(echo inner)",
         "cat <(echo inner)",
     ] {
         let command = wrapped(8, leaf);
@@ -183,6 +182,42 @@ fn pending_find_and_xargs_children_use_the_same_budget_rule() {
         );
         assert!(has_limit(&response), "{command}: {response:?}");
     }
+}
+
+#[test]
+fn launcher_substitution_does_not_consume_a_fictitious_dispatch_level() {
+    // The root shell expands this argument before starting the env chain.
+    // Its producer is at depth 1; the final echo is at dispatch depth 8.
+    let response = ShellQueryCore::new().check(request(&wrapped(8, "echo $(echo inner)")));
+    assert_eq!(response.decision, Decision::Allow, "{response:?}");
+    assert!(!has_limit(&response), "{response:?}");
+    assert!(
+        response
+            .decision_trace
+            .execution_units
+            .iter()
+            .any(|unit| { unit.raw_text == "echo inner" && unit.depth == 1 }),
+        "{response:?}"
+    );
+    assert!(
+        response
+            .decision_trace
+            .execution_units
+            .iter()
+            .all(|unit| unit.depth <= 8)
+    );
+
+    // A real ninth dispatch remains incomplete, regardless of known output.
+    let overflow = ShellQueryCore::new().check(request(&wrapped(9, "echo $(echo inner)")));
+    assert_eq!(overflow.decision, Decision::NeedApproval, "{overflow:?}");
+    assert!(has_limit(&overflow), "{overflow:?}");
+    assert!(
+        overflow
+            .decision_trace
+            .execution_units
+            .iter()
+            .all(|unit| unit.depth <= 8)
+    );
 }
 
 #[test]

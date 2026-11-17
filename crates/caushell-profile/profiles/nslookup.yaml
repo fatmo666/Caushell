@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity: {canonical_name: nslookup, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: noninteractive_query
+    selector: &query
+      kind: all
+      items:
+        - {kind: any, items: [{kind: exact_positional_count, count: 1}, {kind: exact_positional_count, count: 2}]}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[^-].*$'}}
+    parameters:
+      # PositionalAt consumes remaining argv; bind the suffix first.
+      - {name: resolver, semantic: {kind: endpoint, endpoint_kind: host_port, usage: transport_target}, binding: {kind: positional_at, index: 1}, cardinality: optional_one}
+      - name: query_name
+        semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}
+        # Query text goes to a recursive resolver, not necessarily this address.
+        value_projection: {kind: unknown}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: query_name}, input_scope: {slots: [query_name, resolver], stdin: false}}
+      - {kind: network_endpoint, target: {kind: slot, name: resolver}, input_scope: {slots: [resolver], stdin: false}}
+      - {kind: transform_data, target: {kind: none}}
+  - id: unresolved_mode
+    selector: {kind: not, item: *query}
+    operation_semantics_unresolved: true
+    parameters:
+      - {name: unresolved_queries, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, value_projection: {kind: unknown}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: unresolved_queries}, input_scope: {slots: [unresolved_queries], stdin: true}}
+subcommands: null
+modifiers: []
+extensions:
+  caushell.profile/sources: [https://github.com/isc-projects/bind9/blob/v9.20.15/bin/dig/nslookup.c]
+  caushell.profile/review_scope:
+    - A fixed non-dash query and at most one resolver select noninteractive lookup. No-arg/dash/unknown argv modes can read an interpreter command stream and remain unresolved.
+    - Network lineage is retained even for unresolved modes. A loopback-looking query never proves local egress; no scalar or record output contract is asserted.
+    - Native option abbreviations and unreviewed controls remain unresolved rather than inheriting the query form.

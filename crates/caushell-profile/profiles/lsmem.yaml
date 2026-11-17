@@ -1,0 +1,124 @@
+{
+  "dsl_version": "caushell.profile/v1alpha1",
+  "kind": "command_profile",
+  "option_scope": "permuted_options",
+  "opaque_on_unresolved": true,
+  "identity": {
+    "canonical_name": "lsmem",
+    "aliases": []
+  },
+  "trust": {
+    "tier": "tier_a",
+    "source": "built_in"
+  },
+  "platform": {
+    "os_families": [
+      "posix",
+      "linux"
+    ],
+    "shell_families": [],
+    "requires_features": []
+  },
+  "forms": [
+    {
+      "id": "query",
+      "selector": {
+        "kind": "no_positional_args"
+      },
+      "stream_contract": {
+        "stdin_mode": "ignored",
+        "stdout_mode": "data",
+        "stderr_mode": "opaque",
+        "stdout_dependency": "independent"
+      },
+      "effects": [
+        {
+          "kind": "transform_data",
+          "target": {
+            "kind": "none"
+          }
+        }
+      ]
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "display",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-a",
+          "--all",
+          "-b",
+          "--bytes",
+          "-J",
+          "--json",
+          "-n",
+          "--noheadings",
+          "--output-all",
+          "-P",
+          "--pairs",
+          "-r",
+          "--raw",
+          "-h",
+          "--help",
+          "-V",
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "columns",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-o",
+          "--output"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "columns",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "split",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-S",
+          "--split"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "split_columns",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    }
+  ],
+  "subcommands": null,
+  "extensions": {
+    "caushell.profile/sources": [
+      "https://github.com/util-linux/util-linux/blob/v2.41/sys-utils/lsmem.1.adoc"
+    ],
+    "caushell.profile/review_scope": "Reads native sysfs memory status, not chmem state changes. --sysroot and unreviewed optional-argument modes remain Ask; column names are data, not paths."
+  }
+}

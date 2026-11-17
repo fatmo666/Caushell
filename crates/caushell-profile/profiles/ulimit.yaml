@@ -1,0 +1,89 @@
+{
+  "dsl_version": "caushell.profile/v1alpha1",
+  "kind": "command_profile",
+  "option_scope": "permuted_options",
+  "opaque_on_unresolved": true,
+  "identity": {
+    "canonical_name": "ulimit",
+    "aliases": [],
+    "execution_domain": "shell_builtin"
+  },
+  "trust": {
+    "tier": "tier_a",
+    "source": "built_in"
+  },
+  "platform": {
+    "os_families": [
+      "posix",
+      "linux",
+      "macos"
+    ],
+    "shell_families": [
+      "bash"
+    ],
+    "requires_features": []
+  },
+  "forms": [
+    {
+      "id": "query",
+      "selector": {
+        "kind": "no_positional_args"
+      },
+      "stream_contract": {
+        "stdin_mode": "ignored",
+        "stdout_mode": "data",
+        "stderr_mode": "opaque",
+        "stdout_dependency": "independent"
+      },
+      "effects": [
+        {
+          "kind": "transform_data",
+          "target": {
+            "kind": "none"
+          }
+        }
+      ]
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "resource_query",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-S",
+          "-H",
+          "-a",
+          "-b",
+          "-c",
+          "-d",
+          "-e",
+          "-f",
+          "-i",
+          "-k",
+          "-l",
+          "-m",
+          "-n",
+          "-p",
+          "-q",
+          "-r",
+          "-s",
+          "-t",
+          "-u",
+          "-v",
+          "-x",
+          "-P",
+          "-R",
+          "-T"
+        ]
+      }
+    }
+  ],
+  "subcommands": null,
+  "extensions": {
+    "caushell.profile/sources": [
+      "https://git.savannah.gnu.org/cgit/bash.git/tree/builtins/ulimit.def?h=bash-5.2"
+    ],
+    "caushell.profile/review_scope": "With no limit operand, report resources. Values including unlimited/soft/hard, attached operands and unknown controls remain unresolved. No scalar output claim and no external-executable alias."
+  }
+}

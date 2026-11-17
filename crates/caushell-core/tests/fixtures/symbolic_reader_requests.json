@@ -1,0 +1,268 @@
+[
+  {
+    "id": "U05111",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "paste <(head -\"$lc\" current.txt) <(tail -\"$lc\" current.txt) | column -t -o,",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "fd31e5e3-b916-48c0-8a2f-807f23444dc4-5110",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow"
+  },
+  {
+    "id": "U05354",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "nl | sort -R | cut -f2 | head -\"${1:-10}\"",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "fd31e5e3-b916-48c0-8a2f-807f23444dc4-5353",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow"
+  },
+  {
+    "id": "U05569",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "yes $1 | head -$number",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "fd31e5e3-b916-48c0-8a2f-807f23444dc4-5568",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow"
+  },
+  {
+    "id": "U05870",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "head -$N file | tail -1 | tr ',' '\\n'",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "fd31e5e3-b916-48c0-8a2f-807f23444dc4-5869",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow"
+  },
+  {
+    "id": "U06155",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "yes \"$OPTARG\" | head -$opt",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "fd31e5e3-b916-48c0-8a2f-807f23444dc4-6154",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow"
+  },
+  {
+    "id": "U06185",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "head -$((${RANDOM} % `wc -l < file` + 1)) file | tail -1",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "fd31e5e3-b916-48c0-8a2f-807f23444dc4-6184",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow"
+  },
+  {
+    "id": "U06301",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "find . -type f -printf '%T@ %p\\n' | sort -n -r | head -${numl} |  cut -f2- -d\" \" | sed -e 's,^\\./,,' | xargs ls -U -l",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "fd31e5e3-b916-48c0-8a2f-807f23444dc4-6300",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow"
+  }
+]

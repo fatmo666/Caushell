@@ -1,0 +1,146 @@
+{
+  "dsl_version": "caushell.profile/v1alpha1",
+  "kind": "command_profile",
+  "option_scope": "permuted_options",
+  "opaque_on_unresolved": true,
+  "identity": {
+    "canonical_name": "sockstat",
+    "aliases": []
+  },
+  "trust": {
+    "tier": "tier_a",
+    "source": "built_in"
+  },
+  "platform": {
+    "os_families": [
+      "posix"
+    ],
+    "shell_families": [],
+    "requires_features": []
+  },
+  "forms": [
+    {
+      "id": "query_sockets",
+      "selector": {
+        "kind": "no_positional_args"
+      },
+      "remaining_selector": {
+        "kind": "no_positional_args"
+      },
+      "parameters": [],
+      "stream_contract": {
+        "stdin_mode": "ignored",
+        "stdout_mode": "data",
+        "stderr_mode": "opaque",
+        "stdout_dependency": "independent"
+      },
+      "effects": [
+        {
+          "kind": "transform_data",
+          "target": {
+            "kind": "none"
+          }
+        }
+      ]
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "display",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-4",
+          "-6",
+          "-c",
+          "-l",
+          "-u",
+          "-L",
+          "-n",
+          "-q",
+          "-s",
+          "-S",
+          "-v",
+          "-w",
+          "-C",
+          "-I",
+          "-i",
+          "-U"
+        ]
+      }
+    },
+    {
+      "id": "jail",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-j"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "jail",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "ports",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-p"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "ports",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "protocols",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-P"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "protocols",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    }
+  ],
+  "subcommands": null,
+  "extensions": {
+    "caushell.profile/source_research": [
+      "https://github.com/freebsd/freebsd-src/blob/releng/14.2/usr.bin/sockstat/sockstat.c"
+    ],
+    "caushell.profile/review_scope": "Finite audited query modes only. No all-argv effect envelope, invented output shape, or exemption for unknown controls. Unreviewed modes remain unresolved."
+  }
+}

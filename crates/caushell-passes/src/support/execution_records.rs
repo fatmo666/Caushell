@@ -85,6 +85,14 @@ impl<'a> ExecutionResolveRecordRef<'a> {
         &self.0.bindings
     }
 
+    pub(crate) fn environment(&self) -> super::ExecutionEnvironment {
+        super::ExecutionEnvironment::for_command(
+            &self.0.bindings,
+            &self.0.parsed_scope,
+            &self.0.command_ref,
+        )
+    }
+
     pub(crate) fn command(&self) -> Option<&'a caushell_parse::CommandFact> {
         self.0
             .parsed_scope

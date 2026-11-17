@@ -412,7 +412,7 @@ fn collect_frame_variable_origins(
             .iter()
             .zip(&r.materialized_projection.arg_resolutions)
         {
-            let name = match resolution {
+            let resolved_name = match resolution {
                 ValueMaterialization::ResolvedExactScalar {
                     variable_name,
                     origin: BindingOrigin::SessionBinding,
@@ -432,74 +432,85 @@ fn collect_frame_variable_origins(
                     variable_name,
                     origin: BindingOrigin::SessionBinding,
                     ..
-                } => variable_name,
+                } => Some(variable_name),
                 ValueMaterialization::RequiresRuntimeInput {
                     variable_name: Some(name),
                     origin: Some(BindingOrigin::SessionBinding),
                     ..
-                } => name,
-                _ => continue,
+                } => Some(name),
+                _ => None,
             };
-            let Some(events) = writers.get(name) else {
-                continue;
-            };
-            let producers = possible_variable_writers(events, parsed, command.span.start_byte);
-            if producers.is_empty() {
-                continue;
+            // Compound words may have no exact value materialization, yet
+            // still consume bindings written earlier in this same shell frame.
+            // Use the same dependency query as ordinary expansion provenance.
+            let mut names = resolved_name.into_iter().cloned().collect::<Vec<_>>();
+            if let Some(original) = r.projection.args.iter().find(|a| a.span == arg.span) {
+                for name in caushell_profile::shell_parameter_dependencies(original, record.bindings()) {
+                    if !names.contains(&name) { names.push(name); }
+                }
             }
-            let Some(value) = record.bindings().get(name) else {
-                continue;
-            };
-            if producers.iter().any(|writer| !writer.conditional) {
-                consumed.insert((record.source_node_id().clone(), name.clone()));
-            }
-            let binding = SessionVariableBinding::new(
-                name,
-                value.value.to_session_variable_value(),
-                matches!(
-                    record.bindings().environment_value(name),
-                    EnvironmentValueRef::Present(_)
-                ),
-                ctx.request().sequence_no,
-            );
-            for writer in producers {
-                let producer = &writer.source;
-                let node_id =
-                    NodeId::new(format!("artifact:ordered-variable:{}:{name}", producer.0));
-                mutations.push(PendingMutation::AddProvenanceArtifact {
-                    source_node_id: producer.clone(),
-                    node_id: node_id.clone(),
-                    artifact: variable_value_artifact(&binding),
-                    relation: EdgeKind::Produces,
-                    semantics: ProvenanceEdgeSemantics::Produce {
-                        produce_kind: ProvenanceProduceKind::VariableBinding,
-                        slot_name: Some(name.clone()),
-                        normalized_command_name: None,
-                        domain_label: if writer.command.is_none()
-                            && matches!(binding.value, SessionVariableValue::ExactScalar(_))
-                        {
-                            Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
-                                dependency: caushell_types::StreamDataDependency::Independent,
-                                growth: None,
-                                domain: None,
-                            })
-                        } else {
-                            None
+            for name in &names {
+                let Some(events) = writers.get(name) else {
+                    continue;
+                };
+                let producers = possible_variable_writers(events, parsed, command.span.start_byte);
+                if producers.is_empty() {
+                    continue;
+                }
+                let Some(value) = record.bindings().get(name) else {
+                    continue;
+                };
+                if producers.iter().any(|writer| !writer.conditional) {
+                    consumed.insert((record.source_node_id().clone(), name.clone()));
+                }
+                let binding = SessionVariableBinding::new(
+                    name,
+                    value.value.to_session_variable_value(),
+                    matches!(
+                        record.bindings().environment_value(name),
+                        EnvironmentValueRef::Present(_)
+                    ),
+                    ctx.request().sequence_no,
+                );
+                for writer in producers {
+                    let producer = &writer.source;
+                    let node_id =
+                        NodeId::new(format!("artifact:ordered-variable:{}:{name}", producer.0));
+                    mutations.push(PendingMutation::AddProvenanceArtifact {
+                        source_node_id: producer.clone(),
+                        node_id: node_id.clone(),
+                        artifact: variable_value_artifact(&binding),
+                        relation: EdgeKind::Produces,
+                        semantics: ProvenanceEdgeSemantics::Produce {
+                            produce_kind: ProvenanceProduceKind::VariableBinding,
+                            slot_name: Some(name.clone()),
+                            normalized_command_name: None,
+                            domain_label: if writer.command.is_none()
+                                && matches!(binding.value, SessionVariableValue::ExactScalar(_))
+                            {
+                                Some(caushell_types::ProvenanceDomainLabel::StreamOutput {
+                                    dependency: caushell_types::StreamDataDependency::Independent,
+                                    growth: None,
+                                    domain: None,
+                                })
+                            } else {
+                                None
+                            },
                         },
-                    },
-                });
-                mutations.push(PendingMutation::AddProvenanceArtifact {
-                    source_node_id: record.source_node_id().clone(),
-                    node_id,
-                    artifact: variable_value_artifact(&binding),
-                    relation: EdgeKind::Consumes,
-                    semantics: ProvenanceEdgeSemantics::Consume {
-                        consume_kind: ProvenanceConsumeKind::VariableExpansion,
-                        slot_name: slot_name_for_arg(&r.bound, &arg.span),
-                        normalized_command_name: Some(r.normalized_command_name.clone()),
-                        domain_label: None,
-                    },
-                });
+                    });
+                    mutations.push(PendingMutation::AddProvenanceArtifact {
+                        source_node_id: record.source_node_id().clone(),
+                        node_id,
+                        artifact: variable_value_artifact(&binding),
+                        relation: EdgeKind::Consumes,
+                        semantics: ProvenanceEdgeSemantics::Consume {
+                            consume_kind: ProvenanceConsumeKind::VariableExpansion,
+                            slot_name: slot_name_for_arg(&r.bound, &arg.span),
+                            normalized_command_name: Some(r.normalized_command_name.clone()),
+                            domain_label: None,
+                        },
+                    });
+                }
             }
         }
     }

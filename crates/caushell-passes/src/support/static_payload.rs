@@ -27,6 +27,7 @@ mod observed_record_tests {
     use caushell_types::*;
     fn output() -> StdoutRecordsEvidence {
         StdoutRecordsEvidence {
+            producer_contract_sha256: None,
             node_id: "n".into(),
             producer_node_id: "p".into(),
             session_id: "s".into(),
@@ -776,6 +777,7 @@ fn scoped_stdout_evidence(
         let mut aliases = session
             .summary()
             .alias_bindings()
+            .chain(visible.alias_bindings())
             .map(|binding| (binding.name.clone(), binding.clone()))
             .collect();
         for earlier in parsed.commands.iter().take(command_index) {
@@ -805,16 +807,9 @@ fn scoped_stdout_evidence(
             }) {
                 return StaticStreamEvidence::unknown();
             }
-            let payloads = static_literal_stdout_payloads_for_command(command, bindings);
+            let payloads = static_literal_stdout_payloads_for_command(command, bindings, parsed.shell_kind);
             if payloads.is_empty() {
-                // `printf` without a format emits no bytes. `echo` without
-                // operands emits one newline (unless -n is present).
-                if command.command_name.as_deref() == Some("printf") && command.tokens.is_empty() {
-                    return StaticStreamEvidence {
-                        known_fragments: Vec::new(),
-                        complete: true,
-                    };
-                }
+                // Empty-output proof belongs to the native source decoder.
                 return StaticStreamEvidence::unknown();
             }
             StaticStreamEvidence {
@@ -1315,6 +1310,7 @@ fn static_shell_payload_and_bindings(
 pub(crate) fn static_literal_stdout_payloads_for_command(
     command: &CommandFact,
     bindings: &dyn VariableBindingReplay,
+    shell_kind: caushell_types::ShellKind,
 ) -> Vec<String> {
     // Runtime bytes are not the literal spelling of an unresolved expansion.
     if command
@@ -1325,8 +1321,8 @@ pub(crate) fn static_literal_stdout_payloads_for_command(
         return Vec::new();
     }
     match command.command_name.as_deref() {
-        Some("printf") => printf_literal_payloads(command, bindings),
-        Some("echo") => echo_literal_payload(command, bindings)
+        Some("printf") => printf_literal_payloads(command, bindings, shell_kind),
+        Some("echo") => echo_literal_payload(command, bindings, shell_kind)
             .into_iter()
             .collect(),
         _ => Vec::new(),
@@ -1388,7 +1384,9 @@ pub(crate) fn materialize_static_token_command_substitutions(
     }
     rendered.push_str(text.get(cursor..)?);
 
-    Some(materialize_static_token_text(&rendered, bindings))
+    // The substitution's bytes have already been expanded. Never reinterpret
+    // a produced "$name" as another parameter reference.
+    Some(rendered)
 }
 
 fn materialize_static_command_substitutions_for_text(
@@ -1415,7 +1413,7 @@ fn materialize_static_command_substitutions_for_text(
     )
 }
 
-fn static_command_substitution_output(
+pub(crate) fn static_command_substitution_output(
     text: &str,
     session: QuerySession<'_>,
     shell_kind: caushell_types::ShellKind,
@@ -1424,6 +1422,21 @@ fn static_command_substitution_output(
     cwd: &str,
     home: Option<&str>,
     remaining_depth: u8,
+) -> Option<String> {
+    static_command_substitution_output_with_cwd(text, session, shell_kind, sequence_no,
+        bindings, cwd, home, remaining_depth, true)
+}
+
+pub(crate) fn static_command_substitution_output_with_cwd(
+    text: &str,
+    session: QuerySession<'_>,
+    shell_kind: caushell_types::ShellKind,
+    sequence_no: CommandSequenceNo,
+    bindings: &dyn VariableBindingReplay,
+    cwd: &str,
+    home: Option<&str>,
+    remaining_depth: u8,
+    cwd_reliable: bool,
 ) -> Option<String> {
     let substitutions = caushell_parse::parse_command_substitutions(text, shell_kind).ok()?;
     let substitution = substitutions.first()?;
@@ -1434,7 +1447,7 @@ fn static_command_substitution_output(
         sequence_no,
         bindings,
         cwd,
-        true,
+        cwd_reliable,
         home,
         remaining_depth,
     )
@@ -1844,7 +1857,7 @@ fn literal_content_written_by_scoped_command(
     match command.command_name.as_deref() {
         Some("printf" | "echo") => {
             if command_writes_path(parsed, command_index, target_path, cwd, home, bindings) {
-                return static_literal_stdout_payloads_for_command(command, bindings)
+                return static_literal_stdout_payloads_for_command(command, bindings, parsed.shell_kind)
                     .into_iter()
                     .next();
             }
@@ -2316,6 +2329,7 @@ fn arg_tokens(command: &CommandFact) -> Vec<&caushell_parse::CommandToken> {
 fn printf_literal_payloads(
     command: &CommandFact,
     bindings: &dyn VariableBindingReplay,
+    shell_kind: caushell_types::ShellKind,
 ) -> Vec<String> {
     let Some(args) = command
         .tokens
@@ -2325,7 +2339,7 @@ fn printf_literal_payloads(
     else {
         return Vec::new();
     };
-    render_printf_arguments(&args)
+    native_stdout_text(command, bindings, shell_kind, &args).into_iter().collect()
 }
 
 // Output bytes are known only when the shell produces exactly one known argv
@@ -2371,234 +2385,41 @@ fn exact_output_field(
         .map(str::to_owned)
 }
 
-fn render_printf_arguments(args: &[String]) -> Vec<String> {
-    // Only the prefix before FORMAT is an option surface. Every later argv
-    // word is data, including --, -v, and option-shaped callback strings.
-    let terminated = args.first().is_some_and(|arg| arg == "--");
-    let args = if terminated { &args[1..] } else { args };
-    let Some(format) = args
-        .first()
-        .filter(|format| terminated || !format.starts_with('-'))
-    else {
-        return Vec::new();
+fn native_stdout_text(
+    command: &CommandFact,
+    bindings: &dyn VariableBindingReplay,
+    shell_kind: caushell_types::ShellKind,
+    args: &[String],
+) -> Option<String> {
+    use caushell_profile::{CommandLookupDomain, NativeOutputOrigin, NativeStdoutSource};
+    let name = command.command_name.as_deref()?;
+    let domain = bindings.command_lookup_domain();
+    if matches!(domain, CommandLookupDomain::Shell) && bindings.function_binding(name).is_some() {
+        return None;
+    }
+    let origin = NativeOutputOrigin::for_execution(shell_kind, domain);
+    let source = match name {
+        "printf" => NativeStdoutSource::Printf(origin),
+        "echo" => NativeStdoutSource::Echo(origin),
+        _ => return None,
     };
-    render_static_printf_payload(format, &args[1..])
-        .into_iter()
-        .collect()
+    let bytes = caushell_profile::decode_native_stdout(source, args)?;
+    // String retains NUL (needed by xargs -0), but cannot carry invalid UTF8.
+    // Never re-encode bytes or truncate a source at NUL.
+    String::from_utf8(bytes).ok()
 }
 
 fn echo_literal_payload(
     command: &CommandFact,
     bindings: &dyn VariableBindingReplay,
+    shell_kind: caushell_types::ShellKind,
 ) -> Option<String> {
     let args = command
         .tokens
         .iter()
-        .map(|token| exact_output_field(token, bindings))
+        .map(|t| exact_output_field(t, bindings))
         .collect::<Option<Vec<_>>>()?;
-    let mut decode_escapes = false;
-    let mut newline = true;
-    let mut first_data = 0;
-    for word in &args {
-        if word.len() > 1
-            && word.starts_with('-')
-            && word[1..].bytes().all(|b| matches!(b, b'n' | b'e' | b'E'))
-        {
-            for flag in word[1..].bytes() {
-                match flag {
-                    b'n' => newline = false,
-                    b'e' => decode_escapes = true,
-                    b'E' => decode_escapes = false,
-                    _ => unreachable!(),
-                }
-            }
-            first_data += 1;
-        } else {
-            // Unknown leading option spellings can differ between builtin
-            // and standalone echo implementations. Do not certify them.
-            if first_data == 0 && word.starts_with('-') && word != "--" && word != "-" {
-                return None;
-            }
-            break;
-        }
-    }
-    let mut output = String::new();
-    for (index, word) in args[first_data..].iter().enumerate() {
-        if index > 0 {
-            output.push(' ');
-        }
-        if decode_escapes {
-            let decoded = decode_printf_escapes_with_control(word);
-            output.push_str(&decoded.text);
-            if decoded.stopped {
-                return Some(output);
-            }
-        } else {
-            output.push_str(word);
-        }
-    }
-    if newline {
-        output.push('\n');
-    }
-    Some(output)
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StaticPrintfPiece {
-    StringArgument,
-    EscapedStringArgument,
-}
-
-fn render_static_printf_payload(format: &str, args: &[String]) -> Option<String> {
-    let format = parse_static_printf_format(format)?;
-    let conversion_count = format
-        .pieces
-        .iter()
-        .filter(|piece| matches!(piece, StaticPrintfFormatPiece::Conversion(_)))
-        .count();
-
-    if conversion_count == 0 {
-        return Some(format.render(args, 0).rendered);
-    }
-
-    let mut rendered = String::new();
-    let mut arg_index = 0usize;
-
-    loop {
-        let chunk = format.render(args, arg_index);
-        let stopped = chunk.stopped;
-        arg_index = chunk.next_arg_index;
-        rendered.push_str(&chunk.rendered);
-
-        if stopped || arg_index >= args.len() {
-            break;
-        }
-    }
-
-    Some(rendered)
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-enum StaticPrintfFormatPiece {
-    Literal(String),
-    Stop,
-    Conversion(StaticPrintfPiece),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StaticPrintfFormat {
-    pieces: Vec<StaticPrintfFormatPiece>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct StaticPrintfRenderedChunk {
-    rendered: String,
-    next_arg_index: usize,
-    stopped: bool,
-}
-
-impl StaticPrintfFormat {
-    fn render(&self, args: &[String], mut arg_index: usize) -> StaticPrintfRenderedChunk {
-        let mut rendered = String::new();
-
-        for piece in &self.pieces {
-            match piece {
-                StaticPrintfFormatPiece::Literal(text) => rendered.push_str(text),
-                StaticPrintfFormatPiece::Stop => {
-                    return StaticPrintfRenderedChunk {
-                        rendered,
-                        next_arg_index: arg_index,
-                        stopped: true,
-                    };
-                }
-                StaticPrintfFormatPiece::Conversion(StaticPrintfPiece::StringArgument) => {
-                    if let Some(arg) = args.get(arg_index) {
-                        rendered.push_str(arg);
-                    }
-                    arg_index = arg_index.saturating_add(1);
-                }
-                StaticPrintfFormatPiece::Conversion(StaticPrintfPiece::EscapedStringArgument) => {
-                    if let Some(arg) = args.get(arg_index) {
-                        let decoded = decode_printf_escapes_with_control(arg);
-                        rendered.push_str(&decoded.text);
-                        arg_index = arg_index.saturating_add(1);
-                        if decoded.stopped {
-                            return StaticPrintfRenderedChunk {
-                                rendered,
-                                next_arg_index: arg_index,
-                                stopped: true,
-                            };
-                        }
-                        continue;
-                    }
-                    arg_index = arg_index.saturating_add(1);
-                }
-            }
-        }
-
-        StaticPrintfRenderedChunk {
-            rendered,
-            next_arg_index: arg_index,
-            stopped: false,
-        }
-    }
-}
-
-fn parse_static_printf_format(format: &str) -> Option<StaticPrintfFormat> {
-    let mut pieces = Vec::new();
-    let mut literal = String::new();
-    let mut chars = format.chars();
-
-    while let Some(ch) = chars.next() {
-        if ch != '%' {
-            literal.push(ch);
-            continue;
-        }
-
-        let conversion = chars.next()?;
-        match conversion {
-            '%' => literal.push('%'),
-            's' => {
-                if flush_static_printf_literal(&mut pieces, &mut literal) {
-                    return Some(StaticPrintfFormat { pieces });
-                }
-                pieces.push(StaticPrintfFormatPiece::Conversion(
-                    StaticPrintfPiece::StringArgument,
-                ));
-            }
-            'b' => {
-                if flush_static_printf_literal(&mut pieces, &mut literal) {
-                    return Some(StaticPrintfFormat { pieces });
-                }
-                pieces.push(StaticPrintfFormatPiece::Conversion(
-                    StaticPrintfPiece::EscapedStringArgument,
-                ));
-            }
-            _ => return None,
-        }
-    }
-
-    flush_static_printf_literal(&mut pieces, &mut literal);
-    Some(StaticPrintfFormat { pieces })
-}
-
-fn flush_static_printf_literal(
-    pieces: &mut Vec<StaticPrintfFormatPiece>,
-    literal: &mut String,
-) -> bool {
-    if literal.is_empty() {
-        return false;
-    }
-
-    let decoded = decode_printf_escapes_with_control(literal);
-    if !decoded.text.is_empty() {
-        pieces.push(StaticPrintfFormatPiece::Literal(decoded.text));
-    }
-    if decoded.stopped {
-        pieces.push(StaticPrintfFormatPiece::Stop);
-    }
-    literal.clear();
-    decoded.stopped
+    native_stdout_text(command, bindings, shell_kind, &args)
 }
 
 fn materialize_token_text(text: &str, bindings: &dyn VariableBindingReplay) -> String {
@@ -2633,111 +2454,85 @@ fn shell_command_payload_arg_index(args: &[String]) -> Option<usize> {
     None
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct DecodedPrintfEscapes {
-    text: String,
-    stopped: bool,
-}
-
-fn decode_printf_escapes_with_control(text: &str) -> DecodedPrintfEscapes {
-    let mut decoded = String::with_capacity(text.len());
-    let mut chars = text.chars().peekable();
-    let mut stopped = false;
-
-    while let Some(ch) = chars.next() {
-        if ch != '\\' {
-            decoded.push(ch);
-            continue;
-        }
-        let Some(escape) = chars.next() else {
-            decoded.push('\\');
-            break;
-        };
-        match escape {
-            'a' => decoded.push('\u{0007}'),
-            'b' => decoded.push('\u{0008}'),
-            'f' => decoded.push('\u{000c}'),
-            'n' => decoded.push('\n'),
-            'r' => decoded.push('\r'),
-            't' => decoded.push('\t'),
-            'v' => decoded.push('\u{000b}'),
-            '\\' => decoded.push('\\'),
-            'c' => {
-                stopped = true;
-                break;
-            }
-            'x' => {
-                if let Some(value) = consume_hex_escape(&mut chars) {
-                    push_u8(&mut decoded, value);
-                } else {
-                    decoded.push('x');
-                }
-            }
-            '0'..='7' => {
-                let value = consume_octal_escape(escape, &mut chars);
-                push_u8(&mut decoded, value);
-            }
-            other => decoded.push(other),
-        }
-    }
-
-    DecodedPrintfEscapes {
-        text: decoded,
-        stopped,
-    }
-}
-
-fn consume_hex_escape<I>(chars: &mut std::iter::Peekable<I>) -> Option<u8>
-where
-    I: Iterator<Item = char>,
-{
-    let mut value = 0u16;
-    let mut consumed = 0usize;
-
-    while consumed < 2 {
-        let Some(next) = chars.peek().copied() else {
-            break;
-        };
-        let Some(digit) = next.to_digit(16) else {
-            break;
-        };
-        chars.next();
-        value = (value << 4) | digit as u16;
-        consumed += 1;
-    }
-
-    (consumed > 0 && value <= u8::MAX as u16).then_some(value as u8)
-}
-
-fn consume_octal_escape<I>(first: char, chars: &mut std::iter::Peekable<I>) -> u8
-where
-    I: Iterator<Item = char>,
-{
-    let mut value = first.to_digit(8).unwrap_or_default() as u16;
-    let mut consumed = 0usize;
-
-    while consumed < 2 {
-        let Some(next) = chars.peek().copied() else {
-            break;
-        };
-        let Some(digit) = next.to_digit(8) else {
-            break;
-        };
-        chars.next();
-        value = (value << 3) | digit as u16;
-        consumed += 1;
-    }
-
-    value.min(u8::MAX as u16) as u8
-}
-
-fn push_u8(decoded: &mut String, value: u8) {
-    decoded.push(char::from(value));
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn render_static_printf_payload(format: &str, args: &[String]) -> Option<String> {
+        let mut argv = vec![format.to_owned()];
+        argv.extend_from_slice(args);
+        String::from_utf8(caushell_profile::decode_native_stdout(
+            caushell_profile::NativeStdoutSource::Printf(
+                caushell_profile::NativeOutputOrigin::BashBuiltin,
+            ),
+            &argv,
+        )?)
+        .ok()
+    }
+
+    #[test]
+    fn native_stdout_origin_is_the_producer_scope_not_the_binding_default() {
+        let graph = caushell_graph::SessionGraph::new();
+        let summary = caushell_types::SessionSummary::new();
+        for (shell, domain, complete) in [
+            (
+                caushell_types::ShellKind::Bash,
+                caushell_profile::CommandLookupDomain::Shell,
+                true,
+            ),
+            (
+                caushell_types::ShellKind::Sh,
+                caushell_profile::CommandLookupDomain::Shell,
+                false,
+            ),
+            (
+                caushell_types::ShellKind::Bash,
+                caushell_profile::CommandLookupDomain::External,
+                false,
+            ),
+        ] {
+            let parsed = caushell_parse::parse_command(r"printf 'A\cB' | sh", shell).unwrap();
+            let mut bindings = SessionBindings::new();
+            bindings.set_command_lookup_domain(domain);
+            let evidence = static_stdin_evidence_for_scoped_command(
+                QuerySession::new(&graph, &summary),
+                &parsed,
+                1,
+                CommandSequenceNo(0),
+                &bindings,
+                &bindings,
+                "/",
+                true,
+                None,
+                4,
+            );
+            assert_eq!(evidence.complete, complete, "{shell:?}");
+            if complete {
+                assert_eq!(evidence.complete_text(), Some("A\\cB".into()));
+            }
+        }
+        let parsed=caushell_parse::parse_command("printf | sh",caushell_types::ShellKind::Bash).unwrap();
+        let mut bindings=SessionBindings::new();
+        bindings.set_command_lookup_domain(caushell_profile::CommandLookupDomain::Unknown);
+        let evidence=static_stdin_evidence_for_scoped_command(
+            QuerySession::new(&graph,&summary),&parsed,1,CommandSequenceNo(0),&bindings,&bindings,"/",true,None,4,
+        );
+        assert!(!evidence.complete,"unknown lookup must not borrow the empty printf case");
+    }
+
+    #[test]
+    fn native_stdout_text_bridge_preserves_utf8_and_refuses_unrepresentable_bytes() {
+        assert_eq!(
+            stdin_evidence_for(r"printf '\xc3\xa9' | sh", 1).complete_text(),
+            Some("é".into())
+        );
+        assert_eq!(stdin_evidence_for(r"printf 'A\0B' | sh",1).complete_text(),Some("A\0B".into()));
+        for command in [r"printf '\xff' | sh",r"printf '\u0041' | sh"] {
+            assert!(
+                stdin_evidence_for(command, 1).complete_text().is_none(),
+                "{command}"
+            );
+        }
+    }
 
     fn stdin_evidence_for(raw_command: &str, target_index: usize) -> StaticStreamEvidence {
         stdin_evidence_for_with_cwd_reliability(raw_command, target_index, true)
@@ -3317,12 +3112,12 @@ mod tests {
     }
 
     #[test]
-    fn static_printf_payload_stops_at_format_control_escape() {
+    fn static_printf_payload_retains_literal_format_control_escape() {
         let args = vec!["/".to_string(), "ignored".to_string()];
 
         assert_eq!(
             render_static_printf_payload("%s\\c%s", &args),
-            Some("/".to_string())
+            Some("/\\cignored".to_string())
         );
     }
 

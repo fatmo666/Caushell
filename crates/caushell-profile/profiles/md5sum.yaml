@@ -3,6 +3,7 @@ kind: command_profile
 option_scope: permuted_options
 opaque_on_unresolved: true
 read_only_control_surface: true
+native_argv_effect_envelope: content_read
 
 identity:
   canonical_name: md5sum

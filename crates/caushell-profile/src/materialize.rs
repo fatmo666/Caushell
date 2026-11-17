@@ -3,9 +3,9 @@ use crate::parameter_pattern::{ParameterPattern, PatternUnit, ShellPatternRemova
 use std::collections::BTreeMap;
 
 use caushell_types::{
-    RuntimeInputCapture, RuntimeInputSource, RuntimeProducedValueKind, SessionAliasBinding,
-    SessionFunctionBinding, SessionSummary, SessionVariableValue, ShellStateKnowledge,
-    ShellStateSnapshot, ShellValueSnapshot,
+    CommandSequenceNo, RuntimeInputCapture, RuntimeInputSource, RuntimeProducedValueKind,
+    SessionAliasBinding, SessionFunctionBinding, SessionSummary, SessionVariableValue,
+    ShellStateKnowledge, ShellStateSnapshot, ShellValueSnapshot,
 };
 
 use crate::{
@@ -52,6 +52,7 @@ pub struct SessionBindings {
     entry_variables: Option<SessionSummary>,
     entry_environment: Option<SessionSummary>,
     shell_kind: Option<caushell_types::ShellKind>,
+    command_lookup_domain: crate::CommandLookupDomain,
     shell_state_uncertainty: Option<String>,
     shell_state_join_only: bool,
     variable_facts: BTreeMap<String, ShellVariableFacts>,
@@ -79,9 +80,12 @@ pub struct SessionBindings {
     // $0 belongs to the shell frame, not to the list changed by set/shift.
     shell_program_name: Option<SessionValue>,
     positional_parameters: Vec<SessionValue>,
-    // No snapshot is not an empty argv. Materializing $@/$* requires proof
-    // that the entire positional list is known, including a known empty list.
+    // No snapshot is not an empty argv. Exact $@/$* bytes require a complete
+    // list; a typed final tail can retain only per-field abstract facts.
     positional_parameters_complete: bool,
+    // A final native argv segment has unknown length, but each field retains
+    // its own source and domain. This is not a concrete/complete $@ snapshot.
+    positional_runtime_tail: Option<(caushell_types::ImplicitInputSource, caushell_types::RuntimeArgumentDomain)>,
     // Separate child-environment view: unexported shell locals are not defaults
     // for an external program. None records a proven absence (e.g. unset).
     child_environment: BindingMap<Option<SessionValue>>,
@@ -98,6 +102,7 @@ impl PartialEq for SessionBindings {
             pathname_options,
             pathname_fields,
             shell_kind,
+            command_lookup_domain,
             shell_state_uncertainty,
             shell_state_join_only,
             variable_facts,
@@ -115,6 +120,7 @@ impl PartialEq for SessionBindings {
             shell_program_name,
             positional_parameters,
             positional_parameters_complete,
+            positional_runtime_tail,
             child_environment_complete
         ) && self
             .session_variable_names()
@@ -146,6 +152,12 @@ pub enum EnvironmentValueRef<'a> {
 }
 
 impl SessionBindings {
+    pub fn command_lookup_domain(&self) -> &crate::CommandLookupDomain {
+        &self.command_lookup_domain
+    }
+    pub fn set_command_lookup_domain(&mut self, domain: crate::CommandLookupDomain) {
+        self.command_lookup_domain = domain;
+    }
     pub fn pathname_options(&self) -> Option<&caushell_types::ShellPathnameSnapshot> {
         self.pathname_options.as_ref()
     }
@@ -187,6 +199,98 @@ impl SessionBindings {
             .unwrap_or_else(|| reason.into());
         self.mark_shell_state_uncertain(&reason);
         self.shell_state_join_only = join_only;
+    }
+
+    /// Join possible continuations in the same shell frame. Common facts survive
+    /// unless export membership requires the existing frame-uncertainty boundary;
+    /// neither path's last assignment may overwrite the other path's state.
+    pub fn join_control_path(&mut self, other: &Self, observed_at: CommandSequenceNo) {
+        if self.command_lookup_domain != other.command_lookup_domain {
+            self.command_lookup_domain = crate::CommandLookupDomain::Unknown;
+        }
+        let reason = "shell scope has multiple possible return paths";
+        let environment_differs = self.child_environment_complete
+            != other.child_environment_complete
+            || self.environment_entries().collect::<BTreeMap<_, _>>()
+                != other.environment_entries().collect::<BTreeMap<_, _>>();
+        let names = self
+            .variable_names()
+            .chain(other.variable_names())
+            .chain(self.variable_presence.keys().map(String::as_str))
+            .chain(other.variable_presence.keys().map(String::as_str))
+            .map(str::to_owned)
+            .collect::<std::collections::BTreeSet<_>>();
+        for name in names {
+            let same_value = self.get(&name).map(|v| v.value) == other.get(&name).map(|v| v.value);
+            let same_presence = self.variable_presence(&name) == other.variable_presence(&name);
+            if !same_value || !same_presence {
+                self.insert_opaque_dynamic(&name, reason);
+                self.mark_variable_presence_unknown(&name);
+            } else if self.variable_facts(&name) != other.variable_facts(&name) {
+                self.forget_variable_facts(&name);
+            }
+        }
+        self.variables_complete &= other.variables_complete;
+        self.unresolved_runtime_variable_targets
+            .extend(other.unresolved_runtime_variable_targets.iter().cloned());
+        self.argument_domains
+            .retain(|name, domain| other.argument_domains.get(name) == Some(domain));
+        self.native_variants
+            .retain(|name, value| other.native_variants.get(name) == Some(value));
+        if environment_differs {
+            // A missing export is not a proved absence. Do not let a safe
+            // environment on one path hide configuration on the other.
+            self.mark_shell_state_uncertain("return paths have unresolved export membership");
+        }
+        if self.positional_parameters_complete != other.positional_parameters_complete
+            || self.positional_parameters != other.positional_parameters
+            || self.positional_runtime_tail != other.positional_runtime_tail
+            || self.shell_program_name != other.shell_program_name
+        {
+            self.forget_positional_parameters();
+            if self.shell_program_name != other.shell_program_name {
+                self.shell_program_name = None;
+            }
+        }
+        self.positional_argument_domains.retain(|position, domain| {
+            other.positional_argument_domains.get(position) == Some(domain)
+        });
+        if self.pathname_options != other.pathname_options {
+            self.pathname_options = None;
+        }
+        if self.pathname_fields != other.pathname_fields {
+            self.pathname_fields.clear();
+        }
+        if self.default_tilde_home != other.default_tilde_home {
+            self.default_tilde_home = None;
+        }
+        if self.functions != other.functions || self.aliases != other.aliases {
+            let names = self
+                .functions
+                .keys()
+                .chain(other.functions.keys())
+                .cloned()
+                .collect::<std::collections::BTreeSet<_>>();
+            for name in names {
+                if self.functions.get(&name) != other.functions.get(&name) {
+                    self.upsert_function_binding(SessionFunctionBinding::uncertain(
+                        name,
+                        reason,
+                        observed_at,
+                    ));
+                }
+            }
+            self.mark_shell_state_uncertain(reason);
+        }
+        self.profile_shadowing_aliases
+            .extend(other.profile_shadowing_aliases.iter().cloned());
+        if let Some(reason) = self
+            .shell_state_uncertainty
+            .clone()
+            .or_else(|| other.shell_state_uncertainty.clone())
+        {
+            self.mark_shell_state_uncertain(&reason);
+        }
     }
     pub fn variable_facts(&self, name: &str) -> ShellVariableFacts {
         self.variable_facts.get(name).copied().unwrap_or_default()
@@ -675,8 +779,7 @@ impl SessionBindings {
             if let Some(values) = values {
                 bindings.replace_positional_parameters(values);
             } else {
-                bindings.positional_parameters.clear();
-                bindings.positional_parameters_complete = false;
+                bindings.forget_positional_parameters();
             }
         }
 
@@ -807,6 +910,7 @@ impl SessionBindings {
     {
         self.positional_parameters = values.into_iter().collect();
         self.positional_parameters_complete = true;
+        self.positional_runtime_tail = None;
         self.positional_argument_domains
             .retain(|position, _| *position == 0);
     }
@@ -857,9 +961,104 @@ impl SessionBindings {
         self.positional_parameters_complete
     }
 
+    /// Shared function/interpreter argv frame admission. Preserve a fixed
+    /// prefix plus one final typed native tail; other uncertain layouts keep
+    /// the unknown-frame fallback. Never guess bytes or an exact field count.
+    pub fn bind_positional_arguments(
+        &mut self,
+        args: &[ProjectedArg],
+        resolutions: &[ValueMaterialization],
+    ) {
+        let prefix_len = args
+            .iter()
+            .position(|arg| {
+                crate::argument_structure(arg).fields != crate::ArgumentFieldCount::ExactlyOne
+            })
+            .unwrap_or(args.len());
+        let tail = if prefix_len < args.len() {
+            let arg = &args[prefix_len];
+            match (arg.implicit_input_source, &arg.runtime_argument_domain) {
+                (Some(source), Some(domain))
+                    if prefix_len + 1 == args.len() && arg.node_kind == "runtime_argument_list" =>
+                {
+                    Some((source, domain.clone()))
+                }
+                _ => {
+                    self.forget_positional_parameters();
+                    return;
+                }
+            }
+        } else {
+            None
+        };
+        let values = args[..prefix_len]
+            .iter()
+            .enumerate()
+            .map(|(index, arg)| {
+                if arg.implicit_input_source.is_some() {
+                    return SessionValue::opaque_dynamic("native positional argument");
+                }
+                if let Some(ValueMaterialization::ResolvedRuntimeProduced { kind, .. }) =
+                    resolutions.get(index)
+                {
+                    return SessionValue::runtime_produced(arg.text.clone(), *kind);
+                }
+                if arg.runtime_data {
+                    return SessionValue::exact_scalar(arg.text.clone());
+                }
+                caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
+                    .map(SessionValue::exact_scalar)
+                    .unwrap_or_else(|| SessionValue::opaque_dynamic("dynamic positional argument"))
+            })
+            .collect::<Vec<_>>();
+        self.replace_positional_parameters(values);
+        for (index, arg) in args[..prefix_len].iter().enumerate() {
+            if let Some(domain) = &arg.runtime_argument_domain {
+                self.set_positional_argument_domain(index + 1, domain.clone());
+            }
+        }
+        self.positional_parameters_complete = tail.is_none();
+        self.positional_runtime_tail = tail;
+    }
+
+    pub fn has_positional_runtime_tail(&self) -> bool {
+        self.positional_runtime_tail.is_some()
+    }
+
+    /// Only a proven prefix can be removed with certainty. A larger shift
+    /// may fail and leave the old argv, so do not discard that alternative.
+    pub fn shift_positional_frame(&mut self, count: usize) {
+        if count > self.positional_parameters.len()
+            || !self.positional_parameters_complete && self.positional_runtime_tail.is_none()
+        {
+            self.forget_positional_parameters();
+            return;
+        }
+        let tail = self.positional_runtime_tail.clone();
+        let domains = self
+            .positional_argument_domains
+            .iter()
+            .filter(|(position, _)| **position > count)
+            .map(|(position, domain)| (position - count, domain.clone()))
+            .collect::<Vec<_>>();
+        let values = self
+            .positional_parameters
+            .iter()
+            .skip(count)
+            .cloned()
+            .collect::<Vec<_>>();
+        self.replace_positional_parameters(values);
+        for (position, domain) in domains {
+            self.set_positional_argument_domain(position, domain);
+        }
+        self.positional_parameters_complete = tail.is_none();
+        self.positional_runtime_tail = tail;
+    }
+
     pub fn forget_positional_parameters(&mut self) {
         self.positional_parameters.clear();
         self.positional_parameters_complete = false;
+        self.positional_runtime_tail = None;
         self.positional_argument_domains
             .retain(|position, _| *position == 0);
     }
@@ -993,6 +1192,7 @@ impl SessionBindings {
     }
 
     pub fn enter_child_shell_environment(&mut self) {
+        self.command_lookup_domain = crate::CommandLookupDomain::Shell;
         // Only a proof about exported scalar bytes can cross this boundary.
         // Shell array attributes and unexported frame locals cannot.
         let exported_scalars: std::collections::BTreeSet<_> = self
@@ -1013,6 +1213,7 @@ impl SessionBindings {
         self.aliases.clear();
         self.profile_shadowing_aliases.clear();
         self.positional_argument_domains.clear();
+        self.positional_runtime_tail = None;
         let exported: std::collections::BTreeSet<_> = self
             .argument_domains
             .keys()
@@ -1332,7 +1533,10 @@ pub fn shell_parameter_dependencies(arg: &ProjectedArg, bindings: &SessionBindin
     let references = exact_shell_parameter_reference(&arg.text)
         .map(|r| vec![r])
         .or_else(|| {
-            materialize_shell_word_with_references(
+            // Dependency identity does not require an exact scalar value.
+            // Reuse the quote/escape/reference grammar with inert placeholders;
+            // this result is never a value, field-count or safety certificate.
+            materialize_shell_word_with_resolver(
                 &arg.text,
                 bindings,
                 ShellWordMode::Scalar,
@@ -1342,20 +1546,13 @@ pub fn shell_parameter_dependencies(arg: &ProjectedArg, bindings: &SessionBindin
                     ShellWordQuote::None
                 },
                 false,
+                |_| Some(String::new()),
             )
             .map(|(_, refs)| refs)
         })
         .unwrap_or_default();
     let mut names = Vec::new();
     for reference in references {
-        if let ShellParameterReference::Variable(name) = &reference
-            && !matches!(
-                bindings.get(name).map(|b| b.value),
-                Some(SessionValue::Structured(_))
-            )
-        {
-            continue;
-        }
         let selection = match &reference {
             ShellParameterReference::ArrayElement { name, index } => {
                 Some(format!("{name}[{index}]"))
@@ -2231,17 +2428,45 @@ impl ValueMaterialization {
     }
 }
 
+/// Why exact shell argv could not be materialized. A resource budget is not
+/// itself evidence of an unknown shell effect; consumers still need slot and
+/// native-effect proofs before using an inexact argument as data.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShellExpansionGapKind {
+    ExactPathnameFieldsUnavailable,
+    BraceBudgetExhausted,
+    UnsupportedBraceSyntax,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellExpansionGap {
+    pub span: caushell_parse::SourceSpan,
+    pub kind: ShellExpansionGapKind,
+    /// Internal budget proof only, never an exact argv/output certificate.
+    pub bounded_literal_bytes: Option<usize>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedProjectedInvocation {
     pub invocation: ProjectedInvocation,
     pub arg_resolutions: Vec<ValueMaterialization>,
     pub shell_expansion_unresolved: bool,
+    pub shell_expansion_gaps: Vec<ShellExpansionGap>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MaterializedShellField {
     pub text: String,
     pub resolution: ValueMaterialization,
+}
+
+/// Analysis-produced, complete shell fields for one original source word.
+/// The caller owns producer/quoting/IFS/pathname proofs. This is not runtime
+/// input and is deliberately neither serializable nor stored in SessionBindings.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ArgumentFieldsProof {
+    pub span: caushell_parse::SourceSpan,
+    pub source_word: String,
+    pub fields: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2254,6 +2479,14 @@ pub struct MaterializedRecursivePayloadCandidate {
 pub fn materialize_projected_invocation(
     projection: &ProjectedInvocation,
     bindings: &SessionBindings,
+) -> MaterializedProjectedInvocation {
+    materialize_projected_invocation_with_argument_fields(projection, bindings, &[])
+}
+
+pub(crate) fn materialize_projected_invocation_with_argument_fields(
+    projection: &ProjectedInvocation,
+    bindings: &SessionBindings,
+    proofs: &[ArgumentFieldsProof],
 ) -> MaterializedProjectedInvocation {
     let dialect;
     let bindings = if bindings.shell_kind() != projection.shell_kind {
@@ -2270,8 +2503,42 @@ pub fn materialize_projected_invocation(
     let mut arg_resolutions = Vec::with_capacity(projection.args.len());
     let mut brace_budget = crate::brace_expansion::BraceBudget::default();
     let mut shell_expansion_unresolved = false;
+    let mut shell_expansion_gaps = Vec::new();
+
+    // An invalid/over-budget proof set never supplies a safe partial prefix.
+    let proof_budget_valid = proofs.len() <= 256
+        && proofs.iter().map(|p| p.fields.len()).sum::<usize>() <= 4096
+        && proofs.iter().flat_map(|p| &p.fields).try_fold(0usize, |n, s| {
+            (!s.contains('\0')).then(|| n.checked_add(s.len())).flatten()
+        }).is_some_and(|n| n <= 262_144);
 
     for original in &projection.args {
+        if proof_budget_valid
+            && !original.runtime_data
+            && original.implicit_input_source.is_none()
+            && original.runtime_argument_domain.is_none()
+            && original.word_context == crate::WordContext::ShellArgument
+        {
+            let mut matching = proofs.iter().filter(|p| {
+                p.span == original.span && p.source_word == original.text
+            });
+            if let Some(proof) = matching.next()
+                && matching.next().is_none()
+            {
+                for text in &proof.fields {
+                    let mut field = original.clone();
+                    field.text = text.clone();
+                    field.runtime_data = true;
+                    field.quoted = true;
+                    field.node_kind = "substitution_field".into();
+                    field.substitution_shape = None;
+                    field.lexical_field_prefix = None;
+                    args.push(field);
+                    arg_resolutions.push(ValueMaterialization::ResolvedShellWord { value: text.clone() });
+                }
+                continue;
+            }
+        }
         if !original.runtime_data
             && original.word_context == crate::WordContext::ShellArgument
             && let Some(proof) = bindings.pathname_fields.iter().find(|proof| {
@@ -2297,7 +2564,10 @@ pub fn materialize_projected_invocation(
                 }
                 continue;
             }
-            shell_expansion_unresolved |= proof.exact_fields_required;
+            if proof.exact_fields_required {
+                shell_expansion_unresolved = true;
+                shell_expansion_gaps.push(ShellExpansionGap { span: original.span.clone(), kind: ShellExpansionGapKind::ExactPathnameFieldsUnavailable, bounded_literal_bytes: None });
+            }
         }
         let expanded = if projection.shell_kind == caushell_types::ShellKind::Bash
             && original.word_context == crate::WordContext::ShellArgument
@@ -2324,9 +2594,24 @@ pub fn materialize_projected_invocation(
                         .collect::<Vec<_>>(),
                 ),
                 Ok(None) => None,
-                Err(()) => {
+                Err(error) => {
                     shell_expansion_unresolved = true;
-                    None
+                    let bounded_literal_bytes = (error == crate::brace_expansion::BraceExpansionError::BudgetExhausted)
+                        .then(|| crate::brace_expansion::retain_bounded_numeric_data(&original.text, &mut brace_budget)).flatten();
+                    shell_expansion_gaps.push(ShellExpansionGap {
+                        span: original.span.clone(),
+                        bounded_literal_bytes,
+                        kind: match error {
+                            crate::brace_expansion::BraceExpansionError::BudgetExhausted => ShellExpansionGapKind::BraceBudgetExhausted,
+                            crate::brace_expansion::BraceExpansionError::Unsupported => ShellExpansionGapKind::UnsupportedBraceSyntax,
+                        },
+                    });
+                    // Preserve the original symbolic word and its span. A
+                    // retained spelling is never a literal argv field or a
+                    // partial prefix of the expansion that ran out of budget.
+                    args.push(original.clone());
+                    arg_resolutions.push(ValueMaterialization::UnsupportedDynamicText { text: original.text.clone() });
+                    continue;
                 }
             }
         } else {
@@ -2336,6 +2621,13 @@ pub fn materialize_projected_invocation(
             .as_deref()
             .unwrap_or(std::slice::from_ref(original))
         {
+            if let Some(fields) = materialize_positional_vector(arg, bindings) {
+                for (field, resolution) in fields {
+                    args.push(field);
+                    arg_resolutions.push(resolution);
+                }
+                continue;
+            }
             if arg.word_context == crate::WordContext::ShellArgument
                 && let Some(domain) = integer_argument_domain(arg, bindings)
                     .or_else(|| materialize_argument_domain(arg, bindings))
@@ -2418,6 +2710,7 @@ pub fn materialize_projected_invocation(
         },
         arg_resolutions,
         shell_expansion_unresolved,
+        shell_expansion_gaps,
     }
 }
 
@@ -2477,6 +2770,73 @@ fn integer_argument_domain(
         }
     }
     dynamic.then_some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix })
+}
+
+fn materialize_positional_vector(
+    arg: &ProjectedArg,
+    bindings: &SessionBindings,
+) -> Option<Vec<(ProjectedArg, ValueMaterialization)>> {
+    if arg.word_context != crate::WordContext::ShellArgument
+        || arg.runtime_data
+        || arg.implicit_input_source.is_some()
+        || !arg.quoted
+        || arg.node_kind != "string"
+        || exact_shell_parameter_reference(&arg.text)
+            != Some(ShellParameterReference::AllPositionals(
+                ShellAllPositionalsKind::At,
+            ))
+        || !bindings.positional_parameters_complete && bindings.positional_runtime_tail.is_none()
+    {
+        return None;
+    }
+    let native = |source, domain: caushell_types::RuntimeArgumentDomain, batch| {
+        let mut field = arg.clone();
+        field.text.clear();
+        field.implicit_input_source = Some(source);
+        field.runtime_argument_domain = Some(domain);
+        field.runtime_data = false;
+        field.substitution_shape = None;
+        field.lexical_field_prefix = None;
+        field.node_kind = if batch {
+            "runtime_argument_list"
+        } else {
+            "runtime_scalar"
+        }
+        .into();
+        (
+            field,
+            ValueMaterialization::requires_implicit_input(
+                ImplicitInputSource::from_caushell_types_implicit_input_source(source),
+            ),
+        )
+    };
+    let mut result = Vec::new();
+    for (index, value) in bindings.positional_parameters.iter().enumerate() {
+        if let Some(domain) = bindings.positional_argument_domain(index + 1) {
+            result.push(native(
+                caushell_types::ImplicitInputSource::ShellIteration,
+                domain.clone(),
+                false,
+            ));
+            continue;
+        }
+        let scalar = materialize_session_value_field(
+            (index + 1).to_string(),
+            value,
+            BindingOrigin::SessionBinding,
+            true,
+        )?;
+        let mut field = arg.clone();
+        field.text = scalar.text;
+        field.runtime_data = true;
+        field.substitution_shape = None;
+        field.lexical_field_prefix = None;
+        result.push((field, scalar.resolution));
+    }
+    if let Some((source, domain)) = &bindings.positional_runtime_tail {
+        result.push(native(*source, domain.clone(), true));
+    }
+    Some(result)
 }
 
 pub fn materialize_argument_domain(

@@ -271,6 +271,7 @@ mod tests {
                     interactive_escape_requires_tty: false,
                     mutates_current_shell: false,
                     terminates_current_shell: false,
+                    returns_from_shell_scope: false,
                     executes_remote_command: false,
                     executes_hook: false,
                     executes_imported_package_logic: false,

@@ -17,6 +17,9 @@ mod dispatch;
 mod dispatch_string;
 mod environment_inputs;
 mod environment_snapshot;
+mod effect_annotations;
+mod filesystem_impact;
+pub use filesystem_impact::FilesystemNamespaceImpact;
 pub use environment_snapshot::environment_observations;
 mod option_environment;
 pub use archive::{ArchiveInvocation, gnu_tar_extraction};
@@ -33,6 +36,9 @@ mod observation_requirements;
 mod pathname;
 pub use observation_requirements::execution_frame_requirements;
 pub use pathname::{PathnameComponent, PathnamePattern};
+mod native_effect_envelope;
+pub use native_effect_envelope::{native_effect_contract_allows_effect, native_effect_contract_allows_parameter, native_effect_contract_is_closed, retain_symbolic_argv_stream_contract};
+pub use caushell_types::NativeArgvEffectEnvelope;
 mod native_operand;
 mod normalize;
 mod option_scope;
@@ -47,10 +53,18 @@ mod rename_payload;
 mod resolve;
 mod runtime_matcher;
 mod runtime_variables;
+mod native_variable_writes;
+mod native_stdout;
+pub use native_stdout::{NativeOutputOrigin, NativeStdoutSource, decode_native_stdout};
+pub use types::NativeVariableWrites;
 mod shell_read;
+mod field_splitting;
+pub use field_splitting::{ShellFieldFragment, materialize_bash_field_fragments, observed_ifs_value};
 pub use shell_read::{ShellReadResult, decode_shell_read};
 pub use types::ResourceNamespaceTransfer;
 pub use types::RuntimeInputBinding;
+mod native_find_expression;
+pub use native_find_expression::NativeFindEvaluation;
 mod native_records;
 mod sed_payload;
 mod stdout_records;
@@ -96,10 +110,11 @@ pub use loader::{
 };
 pub use lookup::{ProfileLookupResult, lookup_command_profile, normalize_command_name};
 pub use materialize::{
-    BindingOrigin, BindingValueRef, EnvironmentValueRef, MaterializedProjectedInvocation,
+    ArgumentFieldsProof, BindingOrigin, BindingValueRef, EnvironmentValueRef, MaterializedProjectedInvocation,
     MaterializedRecursivePayloadCandidate, MaterializedShellField, SessionBindings, SessionValue,
     ShellAllPositionalsKind, ShellArrayKind, ShellParameterExpansionOperator, ShellParameterName,
     ShellParameterReference, ShellVariableFacts, ValueMaterialization, VariablePresence,
+    ShellExpansionGap, ShellExpansionGapKind,
     exact_scalar_shell_parameter_reference_value, exact_scalar_shell_parameter_value,
     exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_prefix_environment,
@@ -160,9 +175,10 @@ pub use resolve::{
     ExecutableWord, ResolveInvocationArtifactResult, ResolveInvocationResult, ResolvedInvocation,
     ResolvedInvocationArtifact, materialize_structured_command, resolve_invocation,
     resolve_invocation_artifact, resolve_invocation_artifact_with_bindings,
-    resolve_invocation_artifact_with_stdout_proofs, resolve_invocation_artifact_with_summary,
-    resolve_invocation_in_namespace, resolve_invocation_in_namespace_with_stdout_proofs,
-    resolve_invocation_with_bindings, resolve_invocation_with_summary,
+    resolve_invocation_artifact_with_argument_proofs, resolve_invocation_artifact_with_stdout_proofs, resolve_invocation_artifact_with_summary,
+    resolve_invocation_in_lookup_domain_with_stdout_proofs, resolve_invocation_in_namespace,
+    resolve_invocation_in_namespace_with_stdout_proofs, resolve_invocation_with_bindings,
+    resolve_invocation_with_summary,
 };
 pub use runtime_variables::{RuntimeVariableWrites, runtime_variable_writes};
 pub use types::ArgumentControlVocabulary;
@@ -215,3 +231,15 @@ pub use value_projection::{
     project_semantic_value, project_value, refresh_parameter_semantic_values,
 };
 pub use value_shape::parse_owner_group_spec;
+
+// Execution-object lookup is independent of shell syntax.
+pub use types::{CommandLookupDomain, DispatchLookupDomain, ProfileExecutionDomain};
+
+mod git_configuration;
+pub use git_configuration::GIT_CONFIGURATION_ENVIRONMENT;
+pub use git_configuration::{
+    GitConfigEvent, GitConfigValue, GitConfiguration, git_boolean, parse_git_config_parameters,
+    parse_git_configuration,
+};
+
+pub use types::{ConfiguredExecutionSource, ConfiguredExecutionValue, ConfiguredInputSource};

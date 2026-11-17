@@ -43,6 +43,25 @@ Before parsing a recursive inline payload, its outer-shell operands must become 
 
 ## Command Modeling
 
+### Command lookup domains
+
+Shell dialect controls lexical decoding and expansion; it does not determine
+which execution object receives argv. Each dispatch carries a typed lookup
+domain through candidate projection, environment construction and resolution.
+Native argv launchers default to `external`. The `command` builtin declares
+`lookup_domain: shell` and suppresses caller function lookup. A builtin-only
+contract may declare `lookup_domain: builtin`. Actual interpreter program bodies
+start a new shell domain. Existing `module_runtime` declarations normalize into
+the same typed domain and cannot be combined with `lookup_domain`.
+
+Profiles declare `identity.execution_domain`: `external` (the default),
+`shell_builtin`, or `shell_and_external`. Builtin identity requires an exact canonical name or declared alias after shell lexical decoding; executable pathname/family normalization cannot manufacture it. An external program named `command`,
+`exit` or `cd` cannot borrow the owning-shell profile. Builtin-only dispatch
+cannot borrow a native-only profile. Module contracts never fall back to a
+same-named executable. Unregistered or uncertain execution objects retain the
+existing approval fallback; this metadata introduces no policy exemption.
+
+
 Standalone Bash process substitutions use the `/dev/fd` backend model: each
 supplies one nonliteral `/dev/fd/<digits>` argument. The descriptor number and
 stream contents remain unknown; the body is analyzed separately. FIFO-backed
@@ -895,6 +914,8 @@ Current-shell effects affect subsequent commands and the final state of allowed 
 ### Shell termination and state-only fences
 
 The `exit` Profile declares `terminate_current_shell`, distinct from process control. Ordinary termination is allowed; it does not itself introduce an approval rule. The Graph and the public execution-semantics query expose `terminates_current_shell`, defaulting to false when older saved records omit it. The fact is attached to its existing execution unit: a function belongs to its calling shell, whereas a subshell, pipeline branch, background frame or separately launched shell is isolated.
+
+`return` instead declares `return_from_shell_scope`, exposed as the additive, default-false `returns_from_shell_scope` fact. It is a possible function/sourced-file transfer, never a shell-exit or process-control proof. The native argument contract includes omitted or dynamic status, `--`, help and status/arity errors; argument bytes are not recursively interpreted as shell code. Parameter expansions and their child effects remain independently analyzed. Replay joins state at possible return points with normal continuation, retaining only common variable/environment facts and all possible exit working directories. It does not infer a status value or prune audit commands. A later `exit` cannot prove caller termination through an earlier possible return. Explicit traps, unknown execution and pathname-qualified builtin lookalikes retain their existing approval boundaries.
 
 Registry-indexed effect replay creates source-ordered state fences for statically resolved, unconditional termination. Later assignments, unsets, positional updates and alias/function definitions inside that frame are not accepted as effective shell state. Function termination propagates to the caller frame; isolated termination does not. Commands remain in the audit Graph and risk checks continue conservatively; this is not dead-code pruning. A terminated root frame provides no proven returning cwd. Explicitly conditional termination does not assert that every path exits, and unsupported argument shapes retain existing unresolved-operation approval.
 
@@ -3235,3 +3256,77 @@ DirectoryCreate can preserve a BoundedPathSet through the same complete
 link-free closure used by regular-file families. NamespaceProof retains its
 actual effect tag, original Missing/File/Directory observations and producer
 identity; it does not materialize hypothetical outputs or persist permissions.
+
+
+### Lossless escaped-word boundaries
+
+Every grammar entry, including disposable scalar, array and arithmetic queries,
+uses the same word-boundary adapter. The pinned grammar can discard leading
+backslash-quoted whitespace as extras. Only escaped bytes absent from terminal
+source spans qualify for a same-width parsing stand-in. All command names,
+argv, substitutions and source spans are extracted from the original bytes.
+Backslash parity, quoting and actual line continuations stay distinct; bounded
+projection exhaustion remains a parse gap requiring the existing approval.
+
+Here-doc data is protected from word projection. Original header, newline and
+end-marker ownership establish deferred input ranges, with separate child-shell
+scopes and input queues. Missing body bytes are restored only after literal
+delimiter proof; expandable bodies retain producer facts and quoted/escaped
+producer markers remain data. Unproved syntax stays Partial. No Profile,
+policy default or executable-name exception is introduced.
+
+
+### Git execution context evidence
+
+Git's native configuration contract declares named exported-environment dependencies to the owning execution-frame collector. Empty unknown state is not observed absence; the guard never borrows its own environment. Count-indexed exports use a bounded `environment_series` requirement; Rust collectors capture only the selected KEY/VALUE names. Collectors that do not implement a dependent capture retain unknown pair values and require approval. Native `--config-env` references outside an observed frame likewise remain unknown.
+
+The executor may supply a `GitRuntimeLayout` through its private `FilesystemView`, matched to the current frame's `git_2_39_5` native identity and a held snapshot. It supplies the actual native system configuration location; it is not guessed from OS/PATH and is not a tool-request permission. The trusted filesystem host accepts an optional private Git-layout map after its existing Pip-layout argument. Other versions and unheld/mismatched layouts remain unproved.
+
+Repository discovery distinguishes marker-bearing worktrees, possible bare repositories, observed absence through the namespace root, and unknown/budget-limited discovery. A missing `.git` alone is insufficient. Searching beyond native ceilings/mount boundaries is a conservative superset; it cannot certify a different repository as the native execution actually used. Negative discovery requires all candidate namespaces to remain unchanged.
+
+Git diff's native option ownership and mode determine which configuration source may execute. No-index comparison excludes fsmonitor, while `diff.external`/`GIT_EXTERNAL_DIFF` still enter the canonical configured-program dispatch. Environment precedence, native option order, and `--` data boundaries are retained. Uncertain revision/path modes retain the union of index and possible file reads. File/stdin operands retain read effects and input-dependent output through the ordinary sensitive-flow interface. Recursive directory/unknown operands, attribute-selected external/textconv drivers, and configured conversion filters with unproved applicability remain approval cases. Disabling external diff/textconv does not attest that conversion filters are inactive. This is not a claim to model every Git helper or configuration feature.
+
+Native producer proofs carry a contract identity. Refinement may reuse enumerated bytes only after the contract, cwd, environment, final consumer effects and every directory/namespace observation are freshly revalidated. Reuse avoids redundant full traversals; it does not increase the shared observation budget or waive mutation checks. Configuration uncertainty is retained as a list, separately from parser/read errors.
+
+Native-record preparation holds a private candidate and defers its full closure to acceptance. Acceptance freshly revalidates every directory/namespace observation before publishing the refined graph; the final observation pass repeats this check before the decision. This removes a duplicate pre-acceptance traversal without increasing the shared 64-observation budget.
+
+### Filesystem namespace impact of a closed consumer
+
+`EffectKind::filesystem_namespace_impact` owns the kind-level classification shared by mutation-target extraction and native-input snapshot validation. `Effect::filesystem_namespace_impact` also checks attached state, execution/resource, namespace and extension metadata. A neutral `target_path` selects an object; it does not itself declare a filesystem mutation or a read of its contents. Opaque annotations remain unproved, dispatched children require their existing complete proof, and actual path mutations still pass through target/alias/namespace resolution and observation revalidation. This interface grants no permissions and does not clear unknown argv or shell facts. Symbolic data-reader certification consumes the same namespace classifier but separately requires read/data effect kinds; a neutral metadata target is not automatically a data reader.
+
+Descriptive effect annotations have one interpretation shared with data provenance. A string `transform.kind` on `TransformData` describes a transform and does not add a filesystem operation or certify output bytes. Unknown string labels preserve generic transform provenance. Other extension keys, malformed values and annotations on other effect kinds remain unclassified; actual state, namespace and mutation effects remain independently checked.
+
+### Native find expression evaluation
+
+Native stdout recovery compiles a bounded expression tree instead of separating a flat predicate list from an unconditional output list. Negation, implicit/explicit conjunction, disjunction, grouping, output and prune actions retain their evaluation order and short-circuit behavior. Global depth limits apply independently of branch reachability; mindepth suppresses both tests and actions at shallower entries. Explicit output anywhere suppresses implicit print globally, while prune alone does not. One evaluation returns the bytes actually emitted and whether traversal must stop at that entry. Framing and locale requirements are derived from the same tree. Directory and namespace observations, their freshness checks and all original budgets still constrain acceptance.
+
+Unsupported predicates, link-following modes, executable actions, malformed expressions and locale-sensitive patterns remain gaps. Comma expressions also remain unsupported: pinned GNU find 4.9 controls exhibited a native filtering discrepancy, so this change does not certify a generic comma interpretation. This does not waive any existing symbolic proof or permission check.
+
+### Qualified native effect envelopes
+
+An explicit `native_argv_effect_envelope` declares either `content_read` or `metadata_query` for a reviewed total native control surface. The legacy read flag normalizes to `content_read`. Normalization and runtime closure use the same effect/parameter classifier and reject configuration, dispatch, argument files, hidden operations and unreviewed metadata. Metadata accepts object references, never file-content reads; a target reference cannot acquire the content-reader certificate.
+
+Native argv validity, concrete input decoding and permission effects are separate obligations. A required-operand prefix may be incomplete while all possible native argument interpretations still have the reviewed metadata footprint. Such a certificate retains unknown argv and conservative input-dependent stdout/stderr, clears scalar/record/growth claims and preserves argument-byte provenance. It certifies neither an empty input nor concrete filenames, ordering or output bytes. Producer effects, later interpreters, mutations and indirect content reads still require their own proofs. `ls` and `stat` opt in; `du` does not, because its filename and exclusion list modes read file contents.
+
+
+### Native input effect completeness
+
+A failed native-byte observation is not by itself an unresolved operation. After
+all transforms, the staged analysis query can prove a flat native child's selected
+effects complete using strict argv ownership and the same PathTarget facts consumed
+by the policy guards. Every declared mutation must have resolved observed targets
+or an explicit empty semantic projection. Missing slots, unknown values, nested
+execution, unresolved namespace operations and exhausted work budgets keep the
+original approval floor. No program-name exception or new grant is introduced.
+
+The proof references source/effect/slot identities and retires only that consumer's
+byte-gap proposal. NativeInputDecode and StdoutRecords remain incomplete; no bytes,
+empty input, output or execution success are invented. Other consumers' gaps and
+all independent workspace, deletion, execution and provenance guards remain.
+
+
+### Producer-independent argv effect contracts
+
+The reviewed native argv effect contract also applies when uncertain fields come from Shell expansion. The shared resolver requires an explicit, closed total contract and a strictly bound constant prefix. A symbolic suffix keeps original words, spans, materialization origins and access effects; known controls after an uncertain word stay conservative. No filenames, field counts or successful execution are invented. Parse/evaluation uncertainty, configuration, command lookup, mutation and unrelated guards are not discharged.
+
+The native-tool adapter and Shell-word adapter share effect/parameter closure and conservative stream construction. Content reads, metadata and plain argument bytes remain distinct. Both streams conservatively depend on inputs; record, scalar and growth guarantees are absent. Failed pathname observations remain gaps, and resource/expansion budgets still require approval. This adds no profile, default, permission or safety-policy exception.

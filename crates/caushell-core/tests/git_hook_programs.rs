@@ -1,3 +1,5 @@
+#[path = "support/git_fixture.rs"]
+mod git_fixture;
 use caushell_core::ShellQueryCore;
 use caushell_types::*;
 
@@ -6,7 +8,12 @@ fn request(command: &str, sequence: u64) -> CheckRequest {
         session_id: SessionId::new("git-hook-programs"),
         sequence_no: CommandSequenceNo::new(sequence),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/bench/workspace"),
+        shell_state_before: ShellStateSnapshot::new("/bench/workspace")
+            // Hook-program fixtures have no ambient global/system overrides.
+            // Unknown selectors are covered independently in execution_environment.
+            .with_variable_knowledge(ShellStateKnowledge::Complete)
+            .with_exact_scalar_variable("HOME", "/home/benchmark-user", true)
+            .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true),
         shell_kind: ShellKind::Bash,
         home: Some("/home/benchmark-user".into()),
         workspace_root: Some("/bench/workspace".into()),
@@ -18,7 +25,7 @@ fn request(command: &str, sequence: u64) -> CheckRequest {
     }
 }
 fn check(command: &str) -> CheckResponse {
-    ShellQueryCore::new().check(request(command, 1))
+    git_fixture::core().check(request(command, 1))
 }
 fn expect(command: &str, expected: Decision) -> CheckResponse {
     let r = check(command);
@@ -27,7 +34,7 @@ fn expect(command: &str, expected: Decision) -> CheckResponse {
 }
 fn installed(stage: &str, body: &str, call: &str) -> String {
     format!(
-        "git init .; printf '%s\\n' '{}' >.git/hooks/{stage}; chmod +x .git/hooks/{stage}; {call}",
+        "printf '%s\\n' '{}' >.git/hooks/{stage}; chmod +x .git/hooks/{stage}; {call}",
         body.replace('\'', "'\\''")
     )
 }
@@ -136,7 +143,8 @@ fn only_the_latest_observed_hook_content_is_used() {
     );
     expect(
         &format!("{prefix} cat /opt/input >.git/hooks/pre-commit; git commit -m x"),
-        Decision::Allow,
+        // Unknown written bytes can contain executable shell source.
+        Decision::NeedApproval,
     );
 }
 
@@ -223,7 +231,7 @@ fn opaque_shebangs_are_not_misread_as_shell() {
 
 #[test]
 fn prior_action_hook_content_is_available_without_host_reads() {
-    let mut core = ShellQueryCore::new();
+    let mut core = git_fixture::core();
     let setup = installed("pre-commit", "rm -rf /", "printf READY");
     assert_eq!(core.check(request(&setup, 1)).decision, Decision::Allow);
     assert_eq!(
@@ -233,7 +241,7 @@ fn prior_action_hook_content_is_available_without_host_reads() {
 }
 
 #[test]
-fn unobserved_local_hooks_do_not_make_every_commit_an_approval() {
+fn proven_missing_local_hooks_do_not_invent_programs() {
     for command in [
         "git commit --allow-empty -m x",
         "git -c core.hooksPath=/tmp/hooks commit -m x",
@@ -244,6 +252,16 @@ fn unobserved_local_hooks_do_not_make_every_commit_an_approval() {
     ] {
         expect(command, Decision::Allow);
     }
+}
+
+#[test]
+fn unavailable_configuration_and_hook_bytes_are_not_observed_absence() {
+    let r = ShellQueryCore::new().check(request("git commit --allow-empty -m x", 1));
+    assert_eq!(r.decision, Decision::NeedApproval);
+    // git init can copy configured templates. Its metadata writes cannot use a
+    // stale supplied empty config as proof for the following invocation.
+    let r = git_fixture::core().check(request("git init .; git commit --allow-empty -m x", 1));
+    assert_eq!(r.decision, Decision::NeedApproval);
 }
 
 #[test]
@@ -274,7 +292,7 @@ fn explicit_disabled_hooks_and_reenable_are_respected() {
         ),
         Decision::Deny,
     );
-    let mut core = ShellQueryCore::new();
+    let mut core = git_fixture::core();
     assert_eq!(
         core.check(request(
             &installed("pre-commit", "rm -rf /", "chmod 000 .git/hooks/pre-commit"),
@@ -292,7 +310,7 @@ fn explicit_disabled_hooks_and_reenable_are_respected() {
 #[test]
 fn observed_configuration_and_repository_roots_drive_hook_paths() {
     expect(
-        "git init .; mkdir -p .githooks; printf '[core]\\n hooksPath = .githooks\\n' >.git/config; echo 'rm -rf /' >.githooks/pre-commit; chmod +x .githooks/pre-commit; git commit -m x",
+        "mkdir -p .githooks; printf '[core]\\n hooksPath = .githooks\\n' >.git/config; echo 'rm -rf /' >.githooks/pre-commit; chmod +x .githooks/pre-commit; git commit -m x",
         Decision::Deny,
     );
     let command = installed(
@@ -308,7 +326,7 @@ fn observed_configuration_and_repository_roots_drive_hook_paths() {
         .find(|u| u.raw_text == "touch local")
         .unwrap();
     let _ = touch;
-    let mut core = ShellQueryCore::new();
+    let mut core = git_fixture::core();
     core.check(request(&command, 1));
     let graph = core
         .session_graph(&SessionId::new("git-hook-programs"))

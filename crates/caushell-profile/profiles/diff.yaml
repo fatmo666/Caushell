@@ -58,7 +58,7 @@ forms:
 modifiers:
   - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
   - {id: format, matcher: {kind: any_flag, flags: ['-e', '-n', '-q', --brief, '-s', --report-identical-files, '-y', --side-by-side]}}
-  - {id: comparison_controls, matcher: {kind: any_flag, flags: ['-a', --text, '-b', --ignore-space-change, '-B', --ignore-blank-lines, '-w', --ignore-all-space, '-i', --ignore-case, '-Z', --ignore-trailing-space, '-E', --ignore-tab-expansion, --strip-trailing-cr, '-t', --expand-tabs, '-T', --initial-tab, '-p', --show-c-function, --minimal, --speed-large-files, --suppress-common-lines, --left-column]}}
+  - {id: comparison_controls, matcher: {kind: any_flag, flags: ['-a', --text, '-b', --ignore-space-change, '-B', --ignore-blank-lines, '-w', --ignore-all-space, '-i', --ignore-case, '-Z', --ignore-trailing-space, '-E', --ignore-tab-expansion, --strip-trailing-cr, '-t', --expand-tabs, '-T', --initial-tab, '-p', --show-c-function, '-d', --minimal, --speed-large-files, --suppress-common-lines, --left-column]}}
   - {id: recursive, matcher: {kind: any_flag, flags: ['-r', --recursive, '-N', --new-file, --unidirectional-new-file, --no-dereference]}}
   - id: context_optional
     matcher: {kind: any_flag, flags: ['-u', --unified, '-c', --context]}
@@ -69,6 +69,25 @@ modifiers:
   - id: label
     matcher: {kind: any_flag, flags: ['-L', --label, '-x', --exclude, '-I', --ignore-matching-lines, '-F', --show-function-line, '-W', --width, --tabsize, '-S', --starting-file, '-D', --ifdef]}
     parameters: [{name: label_or_pattern, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
+  # These native templates render bytes to stdout. Their operands are data,
+  # including empty strings and option-like spellings, never paths or code.
+  - id: output_templates
+    matcher: {kind: any_flag, flags: [--line-format, --old-line-format, --new-line-format, --unchanged-line-format, --old-group-format, --new-group-format, --changed-group-format, --unchanged-group-format]}
+    parameters:
+      - {name: output_templates, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: exclude_patterns
+    matcher: {kind: any_flag, flags: ['-X', --exclude-from]}
+    parameters:
+      - name: exclude_operand
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        structured_projection:
+          branches: [{matcher: {kind: literal, value: '-'}, target: {name: exclude_stdin, semantic: {kind: plain_value}}}]
+          fallback: {name: exclude_files, semantic: {kind: path, role: read, purpose: generic_operand}}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: exclude_files}}
+      - {kind: consume_stdin, target: {kind: slot, name: exclude_stdin}}
   - id: file_anchor
     matcher: {kind: any_flag, flags: [--from-file, --to-file]}
     parameters:
@@ -86,5 +105,9 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://www.gnu.org/software/diffutils/manual/html_node/diff-Options.html
+    - https://www.gnu.org/software/diffutils/manual/html_node/Line-Formats.html
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+  caushell.profile/known_limitations:
+    - Pagination (-l/--paginate) runs pr and remains unsupported until its external execution source is declared; it is not a harmless output-format flag.

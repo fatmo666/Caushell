@@ -472,6 +472,7 @@ pub enum EvidenceKind {
     NativeInputDecode(crate::NativeInputDecodeEvidence),
     NativeInputEffect(crate::NativeInputEffectEvidence),
     PathnameFields(crate::PathnameFieldsEvidence),
+    ShellArgumentFields(ShellArgumentFieldsEvidence),
     ToolOptionEnvironment(crate::ToolOptionEnvironmentEvidence),
     PythonPayload(crate::PythonPayloadEvidence),
     PythonStdoutField(crate::PythonStdoutFieldEvidence),
@@ -497,6 +498,20 @@ pub enum EvidenceKind {
     TaintedExecutionBudgetExceeded(TaintedExecutionBudgetExceededEvidence),
 }
 
+/// A complete static field proof for one source word, not a complete-call or
+/// runtime-observation certificate. Original producer effects remain separate.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellArgumentFieldsEvidence {
+    pub node_id: String,
+    pub source_start_byte: usize,
+    pub source_end_byte: usize,
+    pub source_word: String,
+    pub fields: Vec<String>,
+    /// Diagnostic source view only. It is not a second execution unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub materialized_command: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ArchiveMembersEvidence {
     pub node_id: String,
@@ -520,6 +535,8 @@ pub struct ArchiveMemberEvidence {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ToolConfigParseEvidence {
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub unresolved_inputs: Vec<String>,
     pub node_id: String,
     pub command: String,
     pub complete: bool,
@@ -573,6 +590,7 @@ mod config_input_tests {
             rule_id: RuleId::SelectionError,
             summary: "configuration options resolved".into(),
             kind: EvidenceKind::ToolConfigParse(ToolConfigParseEvidence {
+                unresolved_inputs: Vec::new(),
                 node_id: "invocation".into(),
                 command: "fixture".into(),
                 complete: true,

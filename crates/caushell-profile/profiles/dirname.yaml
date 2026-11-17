@@ -1,5 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+read_only_control_surface: true
+native_argv_effect_envelope: []
 
 identity:
   canonical_name: dirname

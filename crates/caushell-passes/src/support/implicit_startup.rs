@@ -1,9 +1,7 @@
 use std::collections::BTreeSet;
 
 use caushell_graph::NodeId;
-use caushell_profile::{
-    ResolveInvocationArtifactResult, exact_scalar_shell_parameter_reference_value,
-};
+use caushell_profile::{EnvironmentValueRef, ResolveInvocationArtifactResult, SessionValue};
 use caushell_runner::{ExecutionUnitResolveRecord, RunnerContext};
 use caushell_types::{PathResolution, ProvenanceArtifact, ProvenanceVariableValueState};
 
@@ -19,14 +17,7 @@ pub(crate) struct ImplicitStartupConfigCandidate {
     pub normalized_command_name: String,
     pub environment_name: String,
     pub environment_state: ProvenanceVariableValueState,
-    pub environment_source: ImplicitStartupEnvironmentSource,
     pub resolution: PathResolution,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum ImplicitStartupEnvironmentSource {
-    InheritedEnvironment,
-    CommandPrefixAssignment,
 }
 
 pub(crate) fn collect_implicit_startup_config_candidates(
@@ -38,7 +29,6 @@ pub(crate) fn collect_implicit_startup_config_candidates(
     collect_candidates_from_records(
         ctx.execution_unit_resolve_records(),
         request.shell_state_before.cwd(),
-        &request.shell_state_before,
         &mut candidates,
     );
 
@@ -67,22 +57,6 @@ pub(crate) fn implicit_startup_path_fact_index(
 
 pub(crate) fn implicit_startup_slot_name() -> &'static str {
     STARTUP_CONFIG_SLOT_NAME
-}
-
-pub(crate) fn inherited_env_artifact_node_id(name: &str, version: u64) -> NodeId {
-    NodeId::new(format!("artifact:inherited-env-value:{name}:{version}"))
-}
-
-pub(crate) fn inherited_env_value_artifact(
-    name: &str,
-    state: ProvenanceVariableValueState,
-    version: u64,
-) -> ProvenanceArtifact {
-    ProvenanceArtifact::InheritedEnvValue {
-        name: name.to_string(),
-        state,
-        version,
-    }
 }
 
 pub(crate) fn command_env_artifact_node_id(source_node_id: &NodeId, name: &str) -> NodeId {
@@ -121,7 +95,6 @@ pub(crate) fn implicit_startup_environment_name(
 fn collect_candidates_from_records(
     records: &[ExecutionUnitResolveRecord],
     cwd: &str,
-    shell_state: &caushell_types::ShellStateSnapshot,
     out: &mut Vec<ImplicitStartupConfigCandidate>,
 ) {
     for record in records {
@@ -136,65 +109,24 @@ fn collect_candidates_from_records(
             continue;
         };
 
-        if let Some((environment_value, environment_state)) = record
-            .parsed_scope
-            .commands
-            .get(record.command_ref.command_index)
-            .and_then(|command| {
-                command_prefix_environment_value(command, environment_name, &record.bindings)
-            })
-        {
-            if known_empty(&environment_state) {
-                continue;
+        let environment = super::ExecutionEnvironment::for_command(
+            &record.bindings,
+            &record.parsed_scope,
+            &record.command_ref,
+        );
+        let environment_state = match environment.value(environment_name) {
+            EnvironmentValueRef::Absent => continue,
+            EnvironmentValueRef::Present(value) => ProvenanceVariableValueState::from(value),
+            EnvironmentValueRef::Unknown => ProvenanceVariableValueState::OpaqueDynamic {
+                repr: format!("execution environment {environment_name} is unobserved"),
+            },
+        };
+        let environment_value = match environment.value(environment_name) {
+            EnvironmentValueRef::Present(SessionValue::ExactScalar(value))
+            | EnvironmentValueRef::Present(SessionValue::RuntimeProduced { value, .. }) => {
+                value.as_str()
             }
-
-            out.push(ImplicitStartupConfigCandidate {
-                source_node_id: record.source_node_id.clone(),
-                command_index: record.command_ref.command_index,
-                normalized_command_name: resolved.normalized_command_name.clone(),
-                environment_name: environment_name.to_string(),
-                resolution: resolve_candidate_path(&environment_value, &environment_state, cwd),
-                environment_state,
-                environment_source: ImplicitStartupEnvironmentSource::CommandPrefixAssignment,
-            });
-            continue;
-        }
-
-        let Some((environment_value, environment_state)) = shell_state
-            .exported_variable(environment_name)
-            .and_then(|binding| match &binding.value {
-                caushell_types::ShellValueSnapshot::ExactScalar { value } => Some((
-                    value.clone(),
-                    ProvenanceVariableValueState::ExactScalar {
-                        value: value.clone(),
-                    },
-                )),
-                caushell_types::ShellValueSnapshot::RuntimeProduced { value, value_kind } => {
-                    Some((
-                        value.clone(),
-                        ProvenanceVariableValueState::RuntimeProduced {
-                            value: value.clone(),
-                            value_kind: *value_kind,
-                        },
-                    ))
-                }
-                caushell_types::ShellValueSnapshot::OpaqueDynamic { repr } => Some((
-                    repr.clone(),
-                    ProvenanceVariableValueState::OpaqueDynamic { repr: repr.clone() },
-                )),
-                caushell_types::ShellValueSnapshot::RuntimeInput { source, capture } => Some((
-                    String::new(),
-                    ProvenanceVariableValueState::RuntimeInput {
-                        source: *source,
-                        capture: capture.clone(),
-                    },
-                )),
-                caushell_types::ShellValueSnapshot::Structured { .. } => {
-                    Some((String::new(), binding.value.clone()))
-                }
-            })
-        else {
-            continue;
+            _ => "",
         };
 
         if known_empty(&environment_state) {
@@ -206,9 +138,8 @@ fn collect_candidates_from_records(
             command_index: record.command_ref.command_index,
             normalized_command_name: resolved.normalized_command_name.clone(),
             environment_name: environment_name.to_string(),
-            resolution: resolve_candidate_path(&environment_value, &environment_state, cwd),
+            resolution: resolve_candidate_path(environment_value, &environment_state, cwd),
             environment_state,
-            environment_source: ImplicitStartupEnvironmentSource::InheritedEnvironment,
         });
     }
 }
@@ -231,86 +162,6 @@ fn resolve_candidate_path(
             text: "startup environment value is unresolved".into(),
         },
     }
-}
-
-fn command_prefix_environment_value(
-    command: &caushell_parse::CommandFact,
-    environment_name: &str,
-    bindings: &caushell_profile::SessionBindings,
-) -> Option<(String, ProvenanceVariableValueState)> {
-    command
-        .prefix_assignments
-        .iter()
-        .rev()
-        .find(|assignment| {
-            assignment.name == environment_name
-                && assignment.operator == caushell_parse::AssignmentOperator::Assign
-        })
-        .map(|assignment| environment_assignment_value(&assignment.value, bindings))
-}
-
-fn environment_assignment_value(
-    value: &caushell_parse::AssignmentValueFact,
-    bindings: &caushell_profile::SessionBindings,
-) -> (String, ProvenanceVariableValueState) {
-    if let Some(value) = literal_assignment_value(value) {
-        return (
-            value.clone(),
-            ProvenanceVariableValueState::ExactScalar { value },
-        );
-    }
-
-    if let Some(value) = exact_scalar_shell_parameter_reference_value(&value.text, bindings) {
-        return (
-            value.clone(),
-            ProvenanceVariableValueState::ExactScalar { value },
-        );
-    }
-
-    (
-        value.text.clone(),
-        ProvenanceVariableValueState::OpaqueDynamic {
-            repr: value.text.clone(),
-        },
-    )
-}
-
-fn literal_assignment_value(value: &caushell_parse::AssignmentValueFact) -> Option<String> {
-    match value.node_kind.as_str() {
-        "empty" => Some(String::new()),
-        "raw_string" | "ansi_c_string" | "number" => Some(value.text.clone()),
-        "string" if is_plain_quoted_literal(&value.text) => Some(value.text.clone()),
-        "word" if is_plain_unquoted_literal(&value.text) => Some(value.text.clone()),
-        _ => None,
-    }
-}
-
-fn is_plain_quoted_literal(text: &str) -> bool {
-    !text.contains('\\') && !contains_unescaped_dynamic_syntax(text)
-}
-
-fn is_plain_unquoted_literal(text: &str) -> bool {
-    !text.contains('\\') && !text.contains('~') && !contains_unescaped_dynamic_syntax(text)
-}
-
-fn contains_unescaped_dynamic_syntax(text: &str) -> bool {
-    let bytes = text.as_bytes();
-    let mut index = 0;
-
-    while index < bytes.len() {
-        if bytes[index] == b'\\' {
-            index += 2;
-            continue;
-        }
-
-        if bytes[index] == b'$' || bytes[index] == b'`' {
-            return true;
-        }
-
-        index += 1;
-    }
-
-    false
 }
 
 fn resolve_implicit_startup_path(text: &str, cwd: &str) -> PathResolution {

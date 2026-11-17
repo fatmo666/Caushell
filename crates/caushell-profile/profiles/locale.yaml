@@ -1,0 +1,90 @@
+{
+  "dsl_version": "caushell.profile/v1alpha1",
+  "kind": "command_profile",
+  "option_scope": "permuted_options",
+  "opaque_on_unresolved": true,
+  "identity": {
+    "canonical_name": "locale",
+    "aliases": []
+  },
+  "trust": {
+    "tier": "tier_a",
+    "source": "built_in"
+  },
+  "platform": {
+    "os_families": [
+      "posix",
+      "linux",
+      "macos"
+    ],
+    "shell_families": [],
+    "requires_features": []
+  },
+  "forms": [
+    {
+      "id": "query_system_information",
+      "selector": {
+        "kind": "all",
+        "items": []
+      },
+      "stream_contract": {
+        "stdin_mode": "ignored",
+        "stdout_mode": "data",
+        "stderr_mode": "opaque",
+        "stdout_dependency": "independent"
+      },
+      "effects": [
+        {
+          "kind": "transform_data",
+          "target": {
+            "kind": "none"
+          }
+        }
+      ],
+      "parameters": [
+        {
+          "name": "query_keys",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "remaining_positionals"
+          },
+          "cardinality": "optional_many"
+        }
+      ]
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "display",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-a",
+          "--all-locales",
+          "-m",
+          "--charmaps",
+          "-c",
+          "--category-name",
+          "-k",
+          "--keyword-name",
+          "-v",
+          "--verbose",
+          "-?",
+          "--help",
+          "--usage",
+          "-V",
+          "--version"
+        ]
+      }
+    }
+  ],
+  "subcommands": null,
+  "extensions": {
+    "caushell.profile/source_research": [
+      "https://man7.org/linux/man-pages/man1/locale.1.html"
+    ],
+    "caushell.profile/review_scope": "Explicit query modes only; unsupported modes remain unresolved. No all-argv effect envelope or stdout key/number proof."
+  }
+}

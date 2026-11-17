@@ -33,9 +33,7 @@ pub(crate) fn project(
         for (index, replacement) in edits {
             bytes[index] = replacement;
         }
-        tree = parser
-            .parse(bytes.as_slice(), None)
-            .ok_or(ParseError::ParseCancelled)?;
+        tree = crate::word_boundary::parse(parser, bytes.as_slice())?;
     }
     // Remaining grammar errors OR unprojected boundaries remain Partial in
     // normal artifact creation, retaining known effects and Deny evidence.
@@ -163,7 +161,7 @@ fn arithmetic_projection(
     parser
         .set_language(&tree_sitter_bash::LANGUAGE.into())
         .ok()?;
-    let tree = parser.parse(&source, None)?;
+    let tree = crate::word_boundary::parse(&mut parser, &source).ok()?;
     let root = tree.root_node();
     if root.has_error()
         || root.named_child_count() != 1

@@ -170,6 +170,16 @@ pub struct ExecutionUnitInheritedScope {
     /// Native job FD 0 has no declared routing proof. This frame property
     /// survives functions and nested interpreters independently of argv spans.
     pub native_stdin_route_unproven: bool,
+    /// Descriptor routing established by a native launcher, separate from the
+    /// data it placed in argv. Absence is uncertainty, never inherited EOF.
+    pub native_stdin_route: Option<NativeStdinRoute>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NativeStdinRoute {
+    /// The launcher connects FD 0 to the null device. This is a routing fact,
+    /// not decoded argv/stdout, successful execution, or a payload certificate.
+    Null { dispatcher_node_id: NodeId },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

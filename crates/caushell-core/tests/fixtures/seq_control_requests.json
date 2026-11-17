@@ -1,0 +1,338 @@
+[
+  {
+    "id": "U00277",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -s= 100|tr -d '[:digit:]'",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-276",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "3fa3a428265c4d33a8f3694332ba156627f8b8365727736690441b204f9555e8",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-s=\\\"\", slot: None }]"
+    ]
+  },
+  {
+    "id": "U00576",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -s \"*\" 1 500 |bc",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-575",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "b3a7751332d8af8523aedb7d7a378fa6b631cc80fdcf4e64c8ec83bf6579afdb",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-s\\\"\", slot: None }]"
+    ]
+  },
+  {
+    "id": "U00611",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -s+ -5 10 | bc",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-610",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "bb77b67f9b5ace815293d7aeac70ed015a1c84a9e94f8e4706976a21b5a71bfe",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-s+\\\"\", slot: None }, Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 1 is not fully modeled: \\\"-5\\\"\", slot: None }]"
+    ]
+  },
+  {
+    "id": "U00610",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -5 10 | xargs printf \"- - %s\" | xargs  | bc",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-609",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "0b5b343be3d97e215c1df6e54168602b2b060611a3d2b03a680fd8c8c3e34f05",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-5\\\"\", slot: None }]"
+    ]
+  },
+  {
+    "id": "U05462",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -s % 4|tr -d '[:digit:]'",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-5461",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "b59b74e4341acee07ab96e9255f08d0092b7a9cc12ba8b49b7421b46cd9df202",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-s\\\"\", slot: None }]"
+    ]
+  },
+  {
+    "id": "U05784",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -w 1 10",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-5783",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "b50bad4c09a62e6c4287089de7a5e6f8705b0e85e8f17cecb53aab3a3fb9cab9",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-w\\\"\", slot: None }]"
+    ]
+  },
+  {
+    "id": "U05788",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -w 30",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-5787",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "cc0a6910b37808c219d4299330e6a0ad86d594f25cbc9481b82b6e8426ac1b56",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-w\\\"\", slot: None }]"
+    ]
+  },
+  {
+    "id": "U05856",
+    "request": {
+      "kind": "check",
+      "payload": {
+        "command": "seq -s' ' $start $end",
+        "home": "/home/benchmark-user",
+        "intent": "judge_only",
+        "runtime": {
+          "runtime_name": "rq1-formal-independent-bash",
+          "shell_runtime_capabilities": {
+            "persists_aliases": false,
+            "persists_cwd": false,
+            "persists_exported_environment": false,
+            "persists_functions": false,
+            "persists_positionals": false,
+            "persists_variables": false
+          },
+          "tool_name": "Bash"
+        },
+        "session_id": "5a6e9d89-a30b-4020-84f5-606cb2fc73d8-5855",
+        "shell_kind": "bash",
+        "shell_state_before": {
+          "aliases": [],
+          "cwd": "/bench/workspace",
+          "functions": [],
+          "observability": {
+            "aliases": "unknown",
+            "functions": "unknown",
+            "variables": "unknown"
+          },
+          "variables": []
+        },
+        "workspace_root": "/bench/workspace"
+      }
+    },
+    "ground_truth": "allow",
+    "request_sha256": "0026b7bed73973077fa4262faa4e1c9dbc418c60953666bcdde796ba7ca9e13c",
+    "reasons": [
+      "command seq has unresolved operation semantics: [Residual { kind: UnmodeledModifier, surface: Control, reason: \"argument 0 is not fully modeled: \\\"-s \\\"\", slot: None }]"
+    ]
+  }
+]

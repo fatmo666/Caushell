@@ -12,9 +12,7 @@ pub(crate) struct BacktickTree {
 }
 
 pub(crate) fn project(parser: &mut Parser, source: &str) -> Result<BacktickTree, ParseError> {
-    let mut tree = parser
-        .parse(source, None)
-        .ok_or(ParseError::ParseCancelled)?;
+    let mut tree = crate::word_boundary::parse(parser, source.as_bytes())?;
     let mut projected = None;
     let mut facts = Vec::new();
     if !source.contains('`') {
@@ -59,9 +57,7 @@ pub(crate) fn project(parser: &mut Parser, source: &str) -> Result<BacktickTree,
             bytes[start] = b'\'';
             bytes[end - 1] = b'\'';
         }
-        tree = parser
-            .parse(bytes.as_slice(), None)
-            .ok_or(ParseError::ParseCancelled)?;
+        tree = crate::word_boundary::parse(parser, bytes.as_slice())?;
     }
     unreachable!("bounded loop returns on completion or exhaustion")
 }

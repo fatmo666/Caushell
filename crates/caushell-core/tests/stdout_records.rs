@@ -346,14 +346,44 @@ fn filename_bytes_are_argv_data_and_may_be_native_control_options() {
     let response = expect_native(
         "find input -type f -printf '%f\\n' | xargs -n1 chmod 644",
         files,
-        Decision::NeedApproval,
+        Decision::Allow,
     );
+    // Native --reference changes ownership: 644 is now the target filename,
+    // not a mode. Existing policy permits metadata changes inside the workspace.
+    assert!(response.decision_trace.path_targets.iter().any(|p|
+        p.operation==PathTargetOperation::Metadata && matches!(&p.lexical,PathResolution::Concrete { path } if path=="/workspace/644")));
     assert!(
         response
             .decision_trace
             .evidence
             .iter()
-            .any(|e| matches!(&e.kind, EvidenceKind::NativeInputDecode(d) if !d.complete))
+            .any(|e| matches!(&e.kind,EvidenceKind::NativeInputDecode(d) if d.complete))
+    );
+    let mut files = Files::new();
+    files.dirs.insert(
+        "/workspace/input".into(),
+        (
+            1,
+            vec![entry("--reference=outside", DirectoryEntryKind::File, 10)],
+        ),
+    );
+    files.dirs.insert(
+        "/outside".into(),
+        (20, vec![entry("victim", DirectoryEntryKind::File, 21)]),
+    );
+    let response = expect_native(
+        "find input -type f -printf '%f\\n' | xargs -n1 chmod /outside/victim",
+        files,
+        Decision::NeedApproval,
+    );
+    assert!(response.decision_trace.path_targets.iter().any(|p|
+        p.operation==PathTargetOperation::Metadata && matches!(&p.lexical,PathResolution::Concrete { path } if path=="/outside/victim")));
+    assert!(
+        response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind,EvidenceKind::NativeInputDecode(d) if d.complete))
     );
     let mut files = Files::new();
     files.dirs.insert(
@@ -622,4 +652,258 @@ fn isolated_native_find_confirms_output_bytes_without_assuming_order() {
             "{source}"
         );
     }
+}
+
+#[test]
+fn neutral_consumer_targets_preserve_fresh_native_input_proofs() {
+    for consumer in ["ls -l", "stat -c %s"] {
+        let r = check(
+            &format!("find ./input -type f -print0 | xargs -0 {consumer}"),
+            Files::new(),
+        );
+        assert_eq!(r.decision, Decision::Allow, "{consumer}: {:?}", r.reasons);
+        assert!(
+            r.decision_trace
+                .evidence
+                .iter()
+                .any(|e| matches!(&e.kind,EvidenceKind::NativeInputDecode(d) if d.complete))
+        );
+        assert!(
+            proofs(&r)
+                .iter()
+                .any(|p| p.complete && !p.records.is_empty())
+        );
+    }
+}
+
+fn metadata_without_concrete_input(response: &CheckResponse) {
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(response.decision_trace.evidence.iter().any(|e|matches!(&e.kind,EvidenceKind::NativeInputEffect(p) if p.effect_envelope==Some(NativeArgvEffectEnvelope::MetadataQuery))));
+    assert!(
+        !response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind,EvidenceKind::NativeInputDecode(p) if p.complete))
+    );
+    assert!(proofs(response).iter().all(|p| !p.complete));
+}
+
+#[test]
+fn metadata_effect_closure_does_not_certify_changed_missing_or_mutating_input_bytes() {
+    // A universal metadata query needs no invented record set. Its separate
+    // effect proof does not waive unrelated mutation or execution policy.
+    metadata_without_concrete_input(&check(
+        "mkdir ./input/new; find ./input -type f -print0 | xargs -0 ls",
+        Files::new(),
+    ));
+    let mut files = Files::new();
+    files.changed = true;
+    metadata_without_concrete_input(&check("find ./input -type f -print0 | xargs -0 ls", files));
+    let mut files = Files::new();
+    files.failure = Some(DirectoryReadStatus::TooLarge);
+    metadata_without_concrete_input(&check("find ./input -type f -print0 | xargs -0 ls", files));
+    for command in [
+        "find ./input -type f -print0 | xargs -0 unknown_fixture",
+        "mkdir /outside/new; find ./input -type f -print0 | xargs -0 ls",
+    ] {
+        assert_eq!(
+            check(command, Files::new()).decision,
+            Decision::NeedApproval,
+            "{command}"
+        );
+    }
+    assert_eq!(
+        check(
+            "find ./input -type f -print0 | xargs -0 sh -c 'rm -rf /'",
+            Files::new()
+        )
+        .decision,
+        Decision::Deny
+    );
+}
+
+#[test]
+fn find_boolean_actions_and_prune_preserve_exact_observed_records() {
+    for (expression, expected, directories) in [
+        (
+            r"\( -name a.csv -o -name b.csv \) -type f -print0",
+            vec!["./input/a.csv", "./input/sub/b.csv"],
+            2,
+        ),
+        (
+            "-name sub -prune -o -type f -print0",
+            vec![
+                "./input/a.csv",
+                "./input/line\nbreak.csv",
+                "./input/.hidden",
+            ],
+            1,
+        ),
+        (
+            "-false -a -prune -o -type f -print0",
+            vec![
+                "./input/a.csv",
+                "./input/line\nbreak.csv",
+                "./input/.hidden",
+                "./input/sub/b.csv",
+            ],
+            2,
+        ),
+        (
+            "-type f -not -name '*.csv' -print0",
+            vec!["./input/.hidden"],
+            2,
+        ),
+        ("-name sub -prune", vec!["./input/sub"], 1),
+    ] {
+        let response = check(&format!("find ./input {expression} | cat"), Files::new());
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{expression}: {:?}",
+            response.reasons
+        );
+        let proof = proofs(&response)[0];
+        assert!(proof.complete, "{proof:#?}");
+        let mut got = proof
+            .records
+            .iter()
+            .map(|r| r.path_spelling.as_str())
+            .collect::<Vec<_>>();
+        let mut expected = expected;
+        got.sort();
+        expected.sort();
+        assert_eq!(got, expected, "{expression}");
+        assert_eq!(
+            proof.directory_observations.len(),
+            directories,
+            "{expression}"
+        );
+    }
+}
+
+#[test]
+fn conditional_output_and_negation_do_not_undo_already_executed_actions() {
+    for (expression, records) in [
+        ("-print0 -name missing", 7),
+        ("-true -o -print0", 0),
+        ("! -prune", 0),
+        ("-prune", 1),
+        ("-name a.csv -print0 -o -name sub -print0", 2),
+    ] {
+        let response = check(&format!("find ./input {expression} | cat"), Files::new());
+        let proof = proofs(&response)[0];
+        assert!(proof.complete, "{expression}: {proof:#?}");
+        assert_eq!(proof.records.len(), records, "{expression}");
+    }
+    let response = check(
+        "find ./input -name a.csv -print0 -o -name b.csv -print0 | xargs -0 stat -c %s",
+        Files::new(),
+    );
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    let proof = proofs(&response)[0];
+    assert!(proof.complete);
+    assert_eq!(proof.encoding, Some(StreamRecordEncoding::Nul));
+    assert!(
+        response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind,EvidenceKind::NativeInputDecode(d) if d.complete))
+    );
+}
+
+#[test]
+fn effect_proofs_never_replace_missing_find_observations_or_execution_proofs() {
+    for expression in ["-mtime -1 -print0", "-L", "-false -a -mtime -1 -o -print0"] {
+        let response = check(
+            &format!("find ./input {expression} | xargs -0 ls"),
+            Files::new(),
+        );
+        metadata_without_concrete_input(&response);
+        let response = check(
+            &format!("find ./input {expression} | xargs -0 chmod 444"),
+            Files::new(),
+        );
+        assert_eq!(response.decision, Decision::NeedApproval, "{expression}");
+    }
+    for changed in [false, true] {
+        let mut files = Files::new();
+        files.changed = changed;
+        if !changed {
+            files.failure = Some(DirectoryReadStatus::Unavailable);
+        }
+        metadata_without_concrete_input(&check(
+            "find ./input ! -name '*.tmp' -print0 | xargs -0 stat -c %s",
+            files,
+        ));
+    }
+    assert_eq!(
+        check(
+            "find ./input ! -name '*.tmp' -print0 | xargs -0 sh -c 'rm -rf /'",
+            Files::new()
+        )
+        .decision,
+        Decision::Deny
+    );
+}
+
+#[test]
+fn empty_name_selection_and_newline_ancestor_injection_remain_distinct() {
+    let command =
+        r"find ./input \( -name 1.txt -o -name 2.txt -o -name 3.txt \) -print | xargs chmod 444";
+    let response = check(command, Files::new());
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(
+        proofs(&response)
+            .iter()
+            .any(|p| p.complete && p.records.is_empty())
+    );
+    let mut files = Files::new();
+    files.dirs.get_mut("/workspace/input").unwrap().1.extend([
+        entry("safe", DirectoryEntryKind::File, 29),
+        entry("safe\n", DirectoryEntryKind::Directory, 30),
+    ]);
+    files.dirs.insert(
+        "/workspace/input/safe\n".into(),
+        (
+            30,
+            vec![entry("outside", DirectoryEntryKind::Directory, 31)],
+        ),
+    );
+    files.dirs.insert(
+        "/workspace/input/safe\n/outside".into(),
+        (
+            31,
+            vec![entry("victim\nleaf", DirectoryEntryKind::Directory, 32)],
+        ),
+    );
+    files.dirs.insert(
+        "/workspace/input/safe\n/outside/victim\nleaf".into(),
+        (32, vec![entry("1.txt", DirectoryEntryKind::File, 33)]),
+    );
+    files.dirs.insert(
+        "/workspace/leaf".into(),
+        (40, vec![entry("1.txt", DirectoryEntryKind::File, 41)]),
+    );
+    files.dirs.insert(
+        "/outside".into(),
+        (90, vec![entry("victim", DirectoryEntryKind::File, 91)]),
+    );
+    let response = check(command, files);
+    assert_eq!(
+        response.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        response.reasons
+    );
+    assert!(
+        response
+            .decision_trace
+            .path_targets
+            .iter()
+            .any(|p| p.operation == PathTargetOperation::Metadata
+                && matches!(&p.lexical,PathResolution::Concrete{path} if path=="/outside/victim"))
+    );
 }

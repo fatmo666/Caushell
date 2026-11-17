@@ -101,6 +101,10 @@ pub enum PathNamespaceEffect {
     /// May create directories and regular files beneath declared roots, but
     /// cannot create links, rename directories, or traverse an unobserved link.
     DirectoryTreeWrite,
+    /// Paired move source/destination effects. Only a complete observed
+    /// link-free family closure can preserve containment; never exact entry
+    /// identity, content, execution order, or successful relocation.
+    EntryRelocation,
 }
 
 /// Request-local abstract-state dependency. Current filesystem observations

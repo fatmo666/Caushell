@@ -8,6 +8,7 @@ pub enum ParseError {
     LanguageInit(String),
     ParseCancelled,
     BacktickBoundaryLimit,
+    WordBoundaryLimit,
 }
 
 impl fmt::Display for ParseError {
@@ -23,6 +24,12 @@ impl fmt::Display for ParseError {
                 write!(f, "failed to initialize parser language: {message}")
             }
             Self::ParseCancelled => write!(f, "tree-sitter returned no parse tree"),
+            Self::WordBoundaryLimit => {
+                write!(
+                    f,
+                    "shell word boundary projection exceeded its bounded parse budget"
+                )
+            }
             Self::BacktickBoundaryLimit => {
                 write!(
                     f,

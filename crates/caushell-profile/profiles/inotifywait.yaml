@@ -1,0 +1,240 @@
+{
+  "dsl_version": "caushell.profile/v1alpha1",
+  "kind": "command_profile",
+  "option_scope": "permuted_options",
+  "opaque_on_unresolved": true,
+  "identity": {
+    "canonical_name": "inotifywait",
+    "aliases": []
+  },
+  "trust": {
+    "tier": "tier_a",
+    "source": "built_in"
+  },
+  "platform": {
+    "os_families": [
+      "linux"
+    ],
+    "shell_families": [],
+    "requires_features": []
+  },
+  "forms": [
+    {
+      "id": "watch_metadata",
+      "selector": {
+        "kind": "has_positional_at",
+        "index": 0
+      },
+      "remaining_selector": {
+        "kind": "no_positional_args"
+      },
+      "parameters": [
+        {
+          "name": "watched_paths",
+          "semantic": {
+            "kind": "path",
+            "role": "target",
+            "purpose": "generic_operand"
+          },
+          "binding": {
+            "kind": "remaining_positionals"
+          },
+          "cardinality": "required_many"
+        }
+      ],
+      "stream_contract": {
+        "stdin_mode": "ignored",
+        "stdout_mode": "data",
+        "stderr_mode": "opaque",
+        "stdout_dependency": "inputs"
+      },
+      "effects": [
+        {
+          "kind": "target_path",
+          "target": {
+            "kind": "slot",
+            "name": "watched_paths"
+          }
+        },
+        {
+          "kind": "transform_data",
+          "target": {
+            "kind": "none"
+          }
+        }
+      ]
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "watch_mode",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-r",
+          "--recursive",
+          "-q",
+          "--quiet",
+          "-c",
+          "--csv",
+          "-P",
+          "--no-dereference"
+        ]
+      }
+    },
+    {
+      "id": "events",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-e",
+          "--event"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "events",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "timeout",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-t",
+          "--timeout"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "timeout",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "format",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "--format"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "format",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "time_format",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "--timefmt"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "time_format",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "exclude",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "--exclude",
+          "--excludei"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "exclude",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "output_file",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-o",
+          "--outfile"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "output_file",
+          "semantic": {
+            "kind": "path",
+            "role": "write",
+            "purpose": "generic_operand"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ],
+      "effects": [
+        {
+          "kind": "write_path",
+          "target": {
+            "kind": "slot",
+            "name": "output_file"
+          }
+        }
+      ]
+    }
+  ],
+  "subcommands": null,
+  "extensions": {
+    "caushell.profile/source_research": [
+      "https://github.com/inotify-tools/inotify-tools/blob/4.23.9.0/src/inotifywait.cpp"
+    ],
+    "caushell.profile/review_scope": "Finite audited query modes only. No all-argv effect envelope, invented output shape, or exemption for unknown controls. Unreviewed modes remain unresolved. Continuous monitor mode (-m/--monitor), daemon, syslog and file-list input remain unresolved until all native log growth/input paths are modeled."
+  }
+}

@@ -232,6 +232,7 @@ fn runtime_variable_overlay_impl(
             .map(|binding| (binding.name.clone(), binding.clone()))
             .collect(),
         can_prove_termination: true,
+        return_paths: None,
         capture_limits,
         session,
         observations: Vec::new(),
@@ -249,6 +250,8 @@ pub(super) struct RuntimeVariableContext<'a> {
     depth: u8,
     aliases: BTreeMap<String, SessionAliasBinding>,
     can_prove_termination: bool,
+    /// Possible exits from this function/source replay, never shell exit fences.
+    return_paths: Option<SessionBindings>,
     capture_limits: Option<caushell_types::AnalysisBudgetPolicy>,
     session: Option<caushell_query::QuerySession<'a>>,
     observations: Vec<(ResolveInvocationArtifactResult, SessionBindings)>,
@@ -351,6 +354,7 @@ impl RuntimeVariableContext<'_> {
             depth: self.depth + 1,
             aliases: self.aliases.clone(),
             can_prove_termination: true,
+            return_paths: None,
             capture_limits: self.capture_limits.clone(),
             session: self.session,
             observations: Vec::new(),
@@ -502,8 +506,12 @@ impl RuntimeVariableContext<'_> {
                             || self.registry.may_terminate_shell(name)
                             || self.registry.lookup(name).profile.is_some_and(|profile| {
                                 profile.forms.iter().flat_map(|f| &f.effects).any(|e| {
-                                e.kind == caushell_profile::EffectKind::SourceScriptIntoCurrentShell
-                            })
+                                    matches!(
+                                        e.kind,
+                                        caushell_profile::EffectKind::SourceScriptIntoCurrentShell
+                                            | caushell_profile::EffectKind::ReturnFromShellScope
+                                    )
+                                })
                             })
                             || self.aliases.contains_key(name)
                             || bindings.function_binding(name).is_some()
@@ -527,7 +535,7 @@ impl RuntimeVariableContext<'_> {
             );
         }
         let capture_limits = self.capture_limits.clone();
-        apply_variable_overlay(
+        let mut result = apply_variable_overlay(
             bindings,
             parsed,
             end,
@@ -535,7 +543,33 @@ impl RuntimeVariableContext<'_> {
             Some(self.registry),
             Some(self),
             capture_limits,
-        )
+        );
+        if let Some(returned) = self.return_paths.take() {
+            let before = result.bindings.clone();
+            result.bindings.join_control_path(&returned, observed_at);
+            if before.positional_parameters_are_complete()
+                != result.bindings.positional_parameters_are_complete()
+                || before.positional_parameters() != result.bindings.positional_parameters()
+            {
+                result.positional_state = Some(super::PositionalParameterMutation::Forget);
+            }
+            if let Some(capture) = result.state_capture.as_mut() {
+                for name in result
+                    .bindings
+                    .variable_names()
+                    .map(str::to_owned)
+                    .collect::<Vec<_>>()
+                {
+                    capture.variable(
+                        &before,
+                        &result.bindings,
+                        &name,
+                        end.min(parsed.raw_command.len()),
+                    );
+                }
+            }
+        }
+        result
     }
 
     pub(super) fn apply_command(
@@ -714,6 +748,7 @@ impl RuntimeVariableContext<'_> {
                 depth: self.depth + 1,
                 aliases: self.aliases.clone(),
                 can_prove_termination: true,
+                return_paths: None,
                 capture_limits: self.capture_limits.clone(),
                 session: self.session,
                 observations: Vec::new(),
@@ -892,6 +927,28 @@ impl RuntimeVariableContext<'_> {
             return (self.can_prove_termination && terminates && !command.conditional_execution)
                 .then(|| termination_fence(command, parsed))
                 .flatten();
+        }
+        if let ResolveInvocationArtifactResult::Resolved(resolved) = &result
+            && resolved
+                .bound
+                .effects
+                .iter()
+                .any(|effect| effect.kind == caushell_profile::EffectKind::ReturnFromShellScope)
+        {
+            // Even a conditional or invalid return cannot prove that a later
+            // exit runs. Keep its continuing path and all audit invocations.
+            self.can_prove_termination = false;
+            // A top-level return can fail fatally on argv errors. Its later
+            // assignments are not guaranteed to run either. Join this replay
+            // frame's prefix without turning it into a caller-exit proof.
+            if visible {
+                if let Some(paths) = self.return_paths.as_mut() {
+                    paths.join_control_path(bindings, self.request.sequence_no);
+                } else {
+                    self.return_paths = Some(bindings.clone());
+                }
+            }
+            return None;
         }
         let Some(name) = name else {
             self.can_prove_termination = false;

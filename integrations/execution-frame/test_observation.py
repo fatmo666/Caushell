@@ -251,6 +251,10 @@ class GuardEndToEnd(unittest.TestCase):
         self.assertFalse((self.work/'local.data').exists())
 
     def test_compound_facts_reach_the_guard_without_running_pending_actions(self):
+        # Compound argv facts do not certify Git's configuration installation.
+        # Use a real explicit source for the positive case and keep the missing
+        # layout negative case; pending git/diff actions are never executed.
+        git_system=self.root/'git-system.conf';git_system.write_text('')
         for command,setup,expected in [
             ('printf data > "${dest[3]}"','declare -a dest=([3]=inside.data)','allow'),
             ('printf data > "${dest[3]}"','declare -a dest=([3]=/opt/outside.data)','need_approval'),
@@ -261,9 +265,11 @@ class GuardEndToEnd(unittest.TestCase):
             ('mkdir -- "${dest[@]}"','declare -a dest=([2]=first-dir [7]=/opt/outside-dir)','need_approval'),
             ('curl -q --noproxy \'*\' "${flags[@]}" -I https://fixture.invalid/',
              'declare -a flags=(--cacert input.data)','allow'),
-            ('git --no-optional-locks -C . "${verb[@]}" -- input.data','declare -a verb=(diff)','allow'),
+            ('git --no-optional-locks -C . "${verb[@]}" -- input.data','declare -a verb=(diff)','need_approval'),
+            ('git --no-optional-locks -C . "${verb[@]}" -- input.data',
+             'declare -a verb=(diff); export GIT_CONFIG_SYSTEM='+shlex.quote(str(git_system)),'allow'),
         ]:
-            request=self.request(command,command+setup)
+            request=self.request(command,hashlib.sha256((command+setup).encode()).hexdigest())
             frame,owner=self.observed(request,setup)
             try:
                 request['shell_state_before']['execution_frame']=frame

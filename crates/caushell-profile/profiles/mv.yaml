@@ -33,7 +33,7 @@ forms:
     parameters: &directory_sources
       - {name: source_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: required_many}
     effects: &directory_effects
-      - &source_move {kind: move_path, target: {kind: slot, name: source_paths}, host_risk: {semantic_class: move_source_path}}
+      - &source_move {kind: move_path, namespace_effect: entry_relocation, target: {kind: slot, name: source_paths}, host_risk: {semantic_class: move_source_path}}
     stream_contract: *streams
   - id: default_move
     selector: {kind: all, items: [*running, *no_backups, {kind: not, item: {kind: has_modifier, modifier: target_directory}}, {kind: has_positional_at, index: 1}]}
@@ -43,7 +43,7 @@ forms:
       - {name: destination_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: last_positional}, cardinality: required_one}
     effects: &move_effects
       - *source_move
-      - {kind: write_path, target: {kind: slot, name: destination_path}}
+      - {kind: write_path, namespace_effect: entry_relocation, target: {kind: slot, name: destination_path}}
     stream_contract: *streams
 
   # Automatic backup names can introduce additional namespace changes. Keep
@@ -76,7 +76,7 @@ modifiers:
         structured_projection:
           branches:
             - {matcher: {kind: regex_capture, pattern: '^.+$', group: 0}, unless_modifier: information, target: {name: destination_directory, semantic: {kind: path, role: write, purpose: generic_operand}}}
-    effects: [{kind: write_path, target: {kind: slot, name: destination_directory}}]
+    effects: [{kind: write_path, namespace_effect: entry_relocation, target: {kind: slot, name: destination_directory}}]
   - id: backup
     matcher: {kind: any_flag, flags: [--backup]}
     parameters: [{name: backup_control, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: optional_inline_or_short_attached}, cardinality: optional_one}]

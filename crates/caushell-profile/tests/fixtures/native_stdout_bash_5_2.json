@@ -1,0 +1,302 @@
+{
+  "capture_image": "sha256:93ce27a88655056a51dbdd8f5f2d7ddc071c7b0070fb288a37b5a285fc83971e",
+  "capture_versions": {
+    "bash": "GNU bash, version 5.2.15(1)-release (aarch64-unknown-linux-gnu)",
+    "external_printf": "printf (GNU coreutils) 9.1",
+    "sh_binary_sha256": "15fc4c72f49c86639a383121eec6fbdbcd32ec9d03db915cb3096928295e1a17"
+  },
+  "capture_result_sha256": "3eb4ac6258c4cbc32135f60881255065703277ec8b1e5b33c7176f3f835612b3",
+  "locale": "C",
+  "cases": [
+    {
+      "id": "format-c",
+      "source": "printf",
+      "args": [
+        "A\\cB"
+      ],
+      "stdout_hex": "415c6342",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "data-c",
+      "source": "printf",
+      "args": [
+        "%b",
+        "A\\cB"
+      ],
+      "stdout_hex": "41",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "unknown-format",
+      "source": "printf",
+      "args": [
+        "A\\qB"
+      ],
+      "stdout_hex": "415c7142",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "unknown-data",
+      "source": "printf",
+      "args": [
+        "%b",
+        "A\\qB"
+      ],
+      "stdout_hex": "415c7142",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "format-percent",
+      "source": "printf",
+      "args": [
+        "\\%s",
+        "value"
+      ],
+      "stdout_hex": "5c76616c7565",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "format-octal",
+      "source": "printf",
+      "args": [
+        "\\0141"
+      ],
+      "stdout_hex": "0c31",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "data-octal",
+      "source": "printf",
+      "args": [
+        "%b",
+        "\\0141"
+      ],
+      "stdout_hex": "61",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "bare-data-octal",
+      "source": "printf",
+      "args": [
+        "%b",
+        "\\141"
+      ],
+      "stdout_hex": "61",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "wrapped-format",
+      "source": "printf",
+      "args": [
+        "\\501"
+      ],
+      "stdout_hex": "41",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "wrapped-data",
+      "source": "printf",
+      "args": [
+        "%b",
+        "\\0501"
+      ],
+      "stdout_hex": "41",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "hex",
+      "source": "printf",
+      "args": [
+        "\\x41q"
+      ],
+      "stdout_hex": "4171",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "utf8-bytes",
+      "source": "printf",
+      "args": [
+        "\\xc3\\xa9"
+      ],
+      "stdout_hex": "c3a9",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "invalid-utf8",
+      "source": "printf",
+      "args": [
+        "%b",
+        "\\xff"
+      ],
+      "stdout_hex": "ff",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "unicode",
+      "source": "printf",
+      "args": [
+        "\\u0041"
+      ],
+      "stdout_hex": "41",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": false
+    },
+    {
+      "id": "missing-hex",
+      "source": "printf",
+      "args": [
+        "\\xZ"
+      ],
+      "stdout_hex": "5c785a",
+      "exit_code": 0,
+      "stderr_hex": "666978747572653a206c696e6520313a207072696e74663a206d697373696e672068657820646967697420666f72205c780a",
+      "decoder_proves_exact": false
+    },
+    {
+      "id": "escape",
+      "source": "printf",
+      "args": [
+        "\\eX"
+      ],
+      "stdout_hex": "1b58",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "escaped-backslash",
+      "source": "printf",
+      "args": [
+        "\\\\c%s",
+        "tail"
+      ],
+      "stdout_hex": "5c637461696c",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "nul",
+      "source": "printf",
+      "args": [
+        "\\0X"
+      ],
+      "stdout_hex": "0058",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "data-percent",
+      "source": "printf",
+      "args": [
+        "%s",
+        "\\c%n;data"
+      ],
+      "stdout_hex": "5c63256e3b64617461",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "format-repeat",
+      "source": "printf",
+      "args": [
+        "%s\n",
+        "one",
+        "two"
+      ],
+      "stdout_hex": "6f6e650a74776f0a",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "echo-stop",
+      "source": "echo",
+      "args": [
+        "-e",
+        "A\\cB"
+      ],
+      "stdout_hex": "41",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "echo-raw",
+      "source": "echo",
+      "args": [
+        "A\\cB"
+      ],
+      "stdout_hex": "415c63420a",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": false
+    },
+    {
+      "id": "echo-octal",
+      "source": "echo",
+      "args": [
+        "-e",
+        "\\0141"
+      ],
+      "stdout_hex": "610a",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "echo-bare-octal",
+      "source": "echo",
+      "args": [
+        "-e",
+        "\\141"
+      ],
+      "stdout_hex": "5c3134310a",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    },
+    {
+      "id": "echo-unknown",
+      "source": "echo",
+      "args": [
+        "-e",
+        "\\q"
+      ],
+      "stdout_hex": "5c710a",
+      "exit_code": 0,
+      "stderr_hex": "",
+      "decoder_proves_exact": true
+    }
+  ]
+}

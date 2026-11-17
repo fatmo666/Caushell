@@ -33,6 +33,66 @@ pub enum ArgumentOwnership {
 
 pub type ExtensionMap = BTreeMap<String, JsonValue>;
 
+/// Executable identity is independent of the language that supplied argv.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub enum CommandLookupDomain {
+    #[default]
+    Shell,
+    Builtin,
+    External,
+    Module(String),
+    Unknown,
+}
+
+impl CommandLookupDomain {
+    pub fn module_runtime(&self) -> Option<&str> {
+        match self {
+            Self::Module(runtime) => Some(runtime),
+            _ => None,
+        }
+    }
+}
+
+/// Native dispatch is the safe default. Shell evaluation must be declared.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DispatchLookupDomain {
+    Shell,
+    Builtin,
+    #[default]
+    External,
+}
+
+impl From<DispatchLookupDomain> for CommandLookupDomain {
+    fn from(domain: DispatchLookupDomain) -> Self {
+        match domain {
+            DispatchLookupDomain::Shell => Self::Shell,
+            DispatchLookupDomain::Builtin => Self::Builtin,
+            DispatchLookupDomain::External => Self::External,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ProfileExecutionDomain {
+    #[default]
+    External,
+    ShellBuiltin,
+    ShellAndExternal,
+}
+
+impl ProfileExecutionDomain {
+    pub fn supports(self, domain: &CommandLookupDomain) -> bool {
+        match domain {
+            CommandLookupDomain::Shell | CommandLookupDomain::Module(_) => true,
+            CommandLookupDomain::Builtin => self != Self::External,
+            CommandLookupDomain::External => self != Self::ShellBuiltin,
+            CommandLookupDomain::Unknown => false,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OptionEnvironment {
@@ -120,6 +180,7 @@ impl FlagName {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandIdentity {
     pub canonical_name: CommandName,
+    pub execution_domain: ProfileExecutionDomain,
     pub aliases: Vec<CommandName>,
     pub module_only: bool,
     pub module_entrypoints: Vec<ModuleEntrypoint>,
@@ -135,6 +196,7 @@ impl CommandIdentity {
     pub fn new(canonical_name: impl Into<String>) -> Self {
         Self {
             canonical_name: CommandName::new(canonical_name),
+            execution_domain: ProfileExecutionDomain::External,
             aliases: Vec::new(),
             module_only: false,
             module_entrypoints: Vec::new(),
@@ -1238,6 +1300,8 @@ pub enum EffectKind {
     BindVariableFromRuntimeInput,
     /// Terminates the enclosing shell frame, not an arbitrary process.
     TerminateCurrentShell,
+    /// May return from a function or sourced file, never terminates its caller shell.
+    ReturnFromShellScope,
     /// Alters the enclosing shell's job management, without sending a signal.
     ShellJobOperation,
     PrivilegeModifier,
@@ -1288,8 +1352,8 @@ pub enum DispatchStringSyntax {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchTarget {
-    /// Typed registry namespace; never executable-name fallback.
-    pub module_runtime: Option<String>,
+    /// One authoritative lookup domain; module lookup never falls back to PATH.
+    pub lookup_domain: CommandLookupDomain,
     pub command: DispatchCommandSource,
     /// Fixed argv data, e.g. the interpreter's `-m`; never shell source.
     pub argv_prefix: Vec<String>,
@@ -1579,6 +1643,12 @@ pub enum ResourceNamespaceTransfer {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
+pub enum NativeVariableWrites {
+    Printf,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub enum RuntimeInputBinding {
     ShellRead,
 }
@@ -1592,7 +1662,9 @@ pub struct EndpointInputScope {
     pub stdin: bool,
 }
 
-/// Tool-owned filename records, not arbitrary stdin data or shell words.
+/// Tool-owned filename records, not shell words. The effect target identifies
+/// the byte source: stdin_data, or a slot naming a file whose contents select
+/// additional read targets. Reading that list file needs its own read effect.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PathListContract {
@@ -2059,10 +2131,47 @@ impl BoundImplicitInput {
     }
 }
 
+/// A resolver-owned native configuration execution source. Path facts and
+/// recursive dispatch consume this same record; neither reopens configuration.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredExecutionSource {
+    pub id: String,
+    pub config_source: String,
+    pub value: ConfiguredExecutionValue,
+    pub cwd: Option<String>,
+    /// False only with proof of absence or disabled executable mode. Keep the
+    /// selected source for path/provenance consumers without dispatching it.
+    pub may_execute: bool,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ConfiguredInputSource {
+    pub id: String,
+    pub path: caushell_types::PathResolution,
+}
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfiguredExecutionValue {
+    File {
+        path: caushell_types::PathResolution,
+        /// Native argument spelling is distinct from the resolved file path.
+        native_argv0: Option<String>,
+        hook_stage: Option<String>,
+        body: Option<String>,
+    },
+    Command {
+        text: String,
+    },
+    Unknown {
+        detail: String,
+    },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct BoundInvocation {
+    pub configured_execution_sources: Vec<ConfiguredExecutionSource>,
+    pub configured_inputs: Vec<ConfiguredInputSource>,
+    pub native_configuration_resolved: bool,
     /// Resolver-owned overapproximation of native argv modes, never a decoded list.
-    pub native_read_envelope: bool,
+    pub native_argv_effect_envelope: Option<caushell_types::NativeArgvEffectEnvelope>,
     pub archive_extraction: Option<ArchiveExtraction>,
     pub command_name: CommandName,
     pub subcommand_path: Vec<String>,
@@ -2127,7 +2236,10 @@ impl BoundInvocation {
     }
     pub fn new(command_name: CommandName, form_id: FormId) -> Self {
         Self {
-            native_read_envelope: false,
+            configured_execution_sources: Vec::new(),
+            configured_inputs: Vec::new(),
+            native_configuration_resolved: false,
+            native_argv_effect_envelope: None,
             archive_extraction: None,
             command_name,
             subcommand_path: Vec::new(),
@@ -2208,6 +2320,8 @@ pub struct CommandProfile {
     pub implicit_config_files: Vec<ImplicitConfigFile>,
     pub configuration_files: Option<ConfigurationFileContract>,
     pub native_configuration: Option<NativeConfigurationSyntax>,
+    /// Opt-in native variable destinations, resolved in their actual lookup domain.
+    pub native_variable_writes: Option<NativeVariableWrites>,
     pub argument_regions: Vec<ArgumentRegion>,
     /// Opt-in finite outer control vocabulary. Unknown dash words are invalid
     /// in the tool, not new actions. Valid but unmodeled controls stay opaque.
@@ -2222,7 +2336,7 @@ pub struct CommandProfile {
     pub read_only_control_surface: bool,
     /// Reviewed total native argv contract: no mode introduces indirect argument
     /// files, configuration or execution. Symbolic tails retain unknown reads.
-    pub native_argv_read_envelope: bool,
+    pub native_argv_effect_envelope: Option<caushell_types::NativeArgvEffectEnvelope>,
     pub forms: Vec<Form>,
     pub modifiers: Vec<Modifier>,
     pub option_scope: OptionScopePolicy,
@@ -2292,12 +2406,13 @@ impl CommandProfile {
             implicit_config_files: Vec::new(),
             configuration_files: None,
             native_configuration: None,
+            native_variable_writes: None,
             argument_regions: Vec::new(),
             argument_control_vocabulary: None,
             selection_failure_effects: Vec::new(),
             opaque_on_unresolved: false,
             read_only_control_surface: false,
-            native_argv_read_envelope: false,
+            native_argv_effect_envelope: None,
             forms: Vec::new(),
             modifiers: Vec::new(),
             option_scope: OptionScopePolicy::default(),
@@ -2389,6 +2504,7 @@ pub enum ConfigurationSyntax {
 #[serde(rename_all = "snake_case")]
 pub enum NativeConfigurationSyntax {
     Pip25_3Linux,
+    Git,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Default, serde::Deserialize)]

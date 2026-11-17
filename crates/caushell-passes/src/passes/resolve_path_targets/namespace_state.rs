@@ -102,6 +102,24 @@ pub(super) fn scope_preservation(
     writer_state: &Baseline,
     consumer_state: &Baseline,
 ) -> Option<PathNamespaceProof> {
+    if writer.namespace_effect == Some(PathNamespaceEffect::EntryRelocation) {
+        let root = writer.relocation_scope.as_ref()?;
+        // This is a containment invariant for a family, not a promise that a
+        // concrete spelling still denotes its previously observed object.
+        let SemanticResolution::Resolved {
+            value: PathResolution::BoundedPathSet { roots, may_escape: false },
+        } = &consumer_state.0 else { return None };
+        if roots.is_empty() || !roots.iter().all(|p| caushell_query::path_is_within_root(p, root)) {
+            return None;
+        }
+        return Some(PathNamespaceProof {
+            producer_node_id: writer.fact.source_node_id.clone(),
+            producer_effect_key: writer.fact.effect_key.clone(),
+            path: root.clone(),
+            effect: PathNamespaceEffect::EntryRelocation,
+            additional_paths: Vec::new(),
+        });
+    }
     if writer.namespace_effect == Some(PathNamespaceEffect::EntryRemoval) {
         let SemanticResolution::Resolved {
             value: PathResolution::Concrete { path },

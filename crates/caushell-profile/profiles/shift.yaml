@@ -1,6 +1,6 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
-identity: {canonical_name: shift, aliases: []}
+identity: {canonical_name: shift, aliases: [], execution_domain: shell_builtin}
 trust: {tier: tier_a, source: built_in}
 platform:
   os_families: [posix, linux, macos]

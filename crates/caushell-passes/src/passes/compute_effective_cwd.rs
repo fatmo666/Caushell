@@ -650,6 +650,7 @@ fn compute_record_sequence_exit_state(
     function_records_by_parent: &BTreeMap<NodeId, Vec<&ExecutionUnitResolveRecord>>,
 ) -> CwdState {
     let mut flow = CwdFlow::new(current);
+    let mut returned = CwdState::empty();
 
     for record in records {
         let Some(command) = record
@@ -661,6 +662,9 @@ fn compute_record_sequence_exit_state(
         };
 
         let states = flow.prepare_command(command);
+        if has_scope_return(record) {
+            returned.merge(&returned_cwd(&states));
+        }
         let outcome = record_command_outcome_for_scoped_states(
             record,
             command,
@@ -678,7 +682,24 @@ fn compute_record_sequence_exit_state(
         );
     }
 
-    cwd_state_for_scoped_states(&flow.finish_closed())
+    returned.merged(&cwd_state_for_scoped_states(&flow.finish_closed()))
+}
+
+fn has_scope_return(record: &ExecutionUnitResolveRecord) -> bool {
+    matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
+        if resolved.bound.effects.iter().any(|effect| effect.kind == EffectKind::ReturnFromShellScope))
+}
+
+fn returned_cwd(states: &[ScopedCwdState]) -> CwdState {
+    let mut result = CwdState::empty();
+    for state in states {
+        let mut state = state.clone();
+        // Isolated frames restore their enclosing cwd; conditionals retain
+        // both possibilities. A return never terminates a containing shell.
+        close_all_scopes(&mut state.cwd, &mut state.active_scopes);
+        result.merge(&state.cwd);
+    }
+    result
 }
 
 fn request_command_outcome_for_scoped_states(
@@ -1213,6 +1234,7 @@ fn cwd_at_scope_position(
             .or_default() |= if condition.success { 1 } else { 2 };
     }
     let mut flow = CwdFlow::new(initial);
+    let mut returned = CwdState::empty();
     let home = ctx.request().home.as_deref();
     for (event_index, (command_index, command)) in events.iter().enumerate() {
         if command.span.start_byte > source_start_byte {
@@ -1220,9 +1242,12 @@ fn cwd_at_scope_position(
         }
         let states = flow.prepare_command(command);
         if command.span.start_byte == source_start_byte {
-            return cwd_state_for_scoped_states(&states);
+            return returned.merged(&cwd_state_for_scoped_states(&states));
         }
         let resolved = command_index.and_then(|index| scoped_records.get(&index).copied());
+        if resolved.is_some_and(has_scope_return) {
+            returned.merge(&returned_cwd(&states));
+        }
         // An unconditional declared termination stops later source positions
         // only in its own shell frame, not in a containing shell/job.
         if let Some(record) = resolved
@@ -1237,7 +1262,7 @@ fn cwd_at_scope_position(
                 if !r.bound.operation_semantics_unresolved && r.bound.effects.iter()
                     .any(|e|e.kind == EffectKind::TerminateCurrentShell))
         {
-            return CwdState::empty();
+            return returned;
         }
         let mut outcome = if let Some(resolved) = resolved {
             if is_request_scope {

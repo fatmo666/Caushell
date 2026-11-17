@@ -4,6 +4,7 @@ option_scope: leading_options
 opaque_on_unresolved: true
 
 identity:
+  execution_domain: shell_builtin
   canonical_name: exec
   aliases: []
 

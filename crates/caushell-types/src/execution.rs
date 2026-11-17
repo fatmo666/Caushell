@@ -157,6 +157,9 @@ pub struct ExecutionSemantics {
     /// Static enclosing-frame termination intent; not proof of runtime exit.
     #[serde(default, skip_serializing_if = "is_false")]
     pub terminates_current_shell: bool,
+    /// Possible function/source return; not proof of reachability or status.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub returns_from_shell_scope: bool,
     pub executes_remote_command: bool,
     pub executes_hook: bool,
     pub loads_startup_config: bool,
@@ -192,6 +195,7 @@ impl ExecutionSemantics {
             in_process_code_load_kinds: Vec::new(),
             mutates_current_shell: false,
             terminates_current_shell: false,
+            returns_from_shell_scope: false,
             executes_remote_command: false,
             executes_hook: false,
             loads_startup_config: false,
@@ -377,6 +381,25 @@ mod tests {
             semantics
         );
     }
+    #[test]
+    fn scope_return_is_additive_and_separate_from_shell_termination() {
+        let mut semantics = super::ExecutionSemantics::new("return", "possible_scope_return");
+        let old = serde_json::to_value(&semantics).unwrap();
+        assert!(old.get("returns_from_shell_scope").is_none());
+        assert_eq!(
+            serde_json::from_value::<super::ExecutionSemantics>(old).unwrap(),
+            semantics
+        );
+        semantics.returns_from_shell_scope = true;
+        let wire = serde_json::to_value(&semantics).unwrap();
+        assert_eq!(wire["returns_from_shell_scope"], true);
+        assert!(wire.get("terminates_current_shell").is_none());
+        assert_eq!(
+            serde_json::from_value::<super::ExecutionSemantics>(wire).unwrap(),
+            semantics
+        );
+    }
+
     #[test]
     fn unresolved_operations_roundtrip_without_changing_legacy_json() {
         use super::*;

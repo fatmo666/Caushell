@@ -1,4 +1,6 @@
-use caushell_profile::{BoundInvocation, BoundPathList, PathListSeparator};
+use caushell_profile::{
+    BoundInvocation, BoundPathList, EffectTarget, ImplicitInputSource, PathListSeparator,
+};
 use caushell_types::RuntimeArgumentDomain;
 
 use super::StaticStreamEvidence;
@@ -23,6 +25,11 @@ pub(crate) fn bind_path_list_targets(
         let Some(contract) = &effect.path_list else {
             continue;
         };
+        // A file-backed list is not the command's stdin. Never borrow an
+        // unrelated pipe or heredoc as a proof of its filenames.
+        if effect.target != EffectTarget::ImplicitInput(ImplicitInputSource::StdinData) {
+            continue;
+        }
         let nul = contract.separator == PathListSeparator::Nul
             || contract.nul_modifier.as_ref().is_some_and(|name| {
                 invocation
@@ -83,6 +90,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn filename_list_slot_cannot_borrow_stdin_records_or_domain() {
+        use caushell_profile::*;
+        let mut invocation = consumer(true);
+        invocation.effects[0].kind = EffectKind::ReadPath;
+        invocation.effects[0].target = EffectTarget::Slot(SlotName::new("list_source"));
+        bind_path_list_targets(
+            &mut invocation,
+            StaticStreamEvidence {
+                known_fragments: vec!["./safe\0".into()],
+                complete: true,
+            },
+            Some(RuntimeArgumentDomain::Unbounded),
+        );
+        assert!(invocation.bound_path_lists.is_empty());
+    }
     fn consumer(nul: bool) -> BoundInvocation {
         use caushell_profile::*;
         let mut invocation = BoundInvocation::new(

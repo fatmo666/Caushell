@@ -2,6 +2,7 @@ dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 
 identity:
+  execution_domain: shell_and_external
   canonical_name: printf
   aliases: []
 
@@ -16,6 +17,8 @@ platform:
     - macos
   shell_families: []
   requires_features: []
+
+native_variable_writes: printf
 
 forms:
   - id: emit_numeric_arguments
@@ -56,6 +59,10 @@ modifiers: []
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://www.gnu.org/software/bash/manual/bash.html#Bash-Builtins
+    - https://github.com/coreutils/coreutils/blob/master/src/printf.c
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
   caushell.profile/known_limitations:
+    - Native variable effects are scoped to owning-shell lookup. Unknown formats or non-scalar targets retain uncertainty; no Bash-version-dependent array target evaluation is assumed.
+    - Formatted variable contents remain opaque; possible command failure does not certify a successful assignment.
     - Shell redirection is intentionally modeled outside this argv profile; printf output must not be treated as safe when redirected to a path.

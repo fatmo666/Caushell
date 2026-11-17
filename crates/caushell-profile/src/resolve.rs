@@ -7,7 +7,7 @@ use crate::{
     BindError, BoundArgumentMaterialization, BoundInvocation, BoundValue, CommandProfile,
     InvocationRuntimeContext, InvocationSelection, MaterializedProjectedInvocation,
     ProfileRegistry, ProjectedInvocation, SessionBindings, ValueMaterialization, bind_invocation,
-    materialize_command_name, materialize_projected_invocation, project_invocation,
+    materialize_command_name, project_invocation,
     select_invocation,
 };
 
@@ -71,7 +71,7 @@ impl ResolvedInvocationArtifact {
         // inputs. It certifies neither exact argv nor an independent/silent
         // stream, and must not lose input provenance merely because argv is
         // symbolic. Shape-specific scalar/record/growth proofs stay absent.
-        if self.bound.native_read_envelope {
+        if self.bound.native_argv_effect_envelope.is_some() {
             let contract = self.bound.stream_contract?;
             return (!self.bound.operation_semantics_unresolved
                 && self.bound.residuals.is_empty()
@@ -292,7 +292,8 @@ pub fn resolve_invocation_with_bindings<'a>(
     resolve_invocation_in_namespace(registry, command, context, bindings, None)
 }
 
-/// Resolve a declared module entry without executable aliases/family matching.
+/// Compatibility adapter for callers that declare a Python-style module namespace.
+/// New dispatch code carries the complete lookup domain explicitly.
 pub fn resolve_invocation_in_namespace<'a>(
     registry: &'a ProfileRegistry,
     command: &CommandFact,
@@ -300,7 +301,7 @@ pub fn resolve_invocation_in_namespace<'a>(
     bindings: &SessionBindings,
     module_runtime: Option<&str>,
 ) -> ResolveInvocationResult<'a> {
-    resolve_invocation_in_namespace_with_proofs(
+    resolve_invocation_in_namespace_with_stdout_proofs(
         registry,
         command,
         context,
@@ -319,8 +320,15 @@ pub fn resolve_invocation_artifact_with_stdout_proofs(
     bindings: &SessionBindings,
     proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
 ) -> ResolveInvocationArtifactResult {
-    resolve_invocation_in_namespace_with_proofs(registry, command, context, bindings, None, proofs)
-        .into_artifact()
+    resolve_invocation_in_lookup_domain_with_stdout_proofs(
+        registry,
+        command,
+        context,
+        bindings,
+        bindings.command_lookup_domain(),
+        proofs,
+    )
+    .into_artifact()
 }
 
 pub fn resolve_invocation_in_namespace_with_stdout_proofs<'a>(
@@ -331,23 +339,55 @@ pub fn resolve_invocation_in_namespace_with_stdout_proofs<'a>(
     module_runtime: Option<&str>,
     proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
 ) -> ResolveInvocationResult<'a> {
-    resolve_invocation_in_namespace_with_proofs(
+    let domain =
+        module_runtime.map(|runtime| crate::CommandLookupDomain::Module(runtime.to_owned()));
+    resolve_invocation_in_lookup_domain_with_stdout_proofs(
         registry,
         command,
         context,
         bindings,
-        module_runtime,
+        domain
+            .as_ref()
+            .unwrap_or_else(|| bindings.command_lookup_domain()),
         proofs,
     )
 }
 
-fn resolve_invocation_in_namespace_with_proofs<'a>(
+/// Resolve an execution object independently of the shell dialect used to
+/// materialize its argv. All dispatchers use this same typed boundary.
+pub fn resolve_invocation_in_lookup_domain_with_stdout_proofs<'a>(
     registry: &'a ProfileRegistry,
     command: &CommandFact,
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
-    module_runtime: Option<&str>,
+    domain: &crate::CommandLookupDomain,
     proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+) -> ResolveInvocationResult<'a> {
+    resolve_invocation_with_proofs(registry, command, context, bindings, domain, proofs, &[])
+}
+
+/// Complete source-word proofs refine the original invocation before native
+/// option selection. All independent configuration/effect gaps are rebound.
+pub fn resolve_invocation_artifact_with_argument_proofs(
+    registry: &ProfileRegistry,
+    command: &CommandFact,
+    context: InvocationRuntimeContext,
+    bindings: &SessionBindings,
+    shapes: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+    fields: &[crate::ArgumentFieldsProof],
+) -> ResolveInvocationArtifactResult {
+    resolve_invocation_with_proofs(registry, command, context, bindings,
+        bindings.command_lookup_domain(), shapes, fields).into_artifact()
+}
+
+fn resolve_invocation_with_proofs<'a>(
+    registry: &'a ProfileRegistry,
+    command: &CommandFact,
+    context: InvocationRuntimeContext,
+    bindings: &SessionBindings,
+    domain: &crate::CommandLookupDomain,
+    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+    fields: &[crate::ArgumentFieldsProof],
 ) -> ResolveInvocationResult<'a> {
     let dialect;
     let bindings = if bindings.shell_kind() != context.shell_kind {
@@ -361,8 +401,10 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         bindings
     };
     let recovered_command = materialize_structured_command(command, bindings)
+        .map(|command| (command, true))
         .or_else(|| recover_ifs_field_split_command(command, bindings));
-    let command = recovered_command.as_ref().unwrap_or(command);
+    let candidate_argv_only = recovered_command.as_ref().is_some_and(|(_, exact)| !exact);
+    let command = recovered_command.as_ref().map(|(command, _)| command).unwrap_or(command);
     let executable_word = || {
         command.command_name.as_ref().map(|text| ExecutableWord {
             text: text.clone(),
@@ -383,8 +425,10 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         };
     };
 
-    if module_runtime.is_none()
-        && !command_name.contains('/')
+    if matches!(
+        domain,
+        crate::CommandLookupDomain::Shell | crate::CommandLookupDomain::Builtin
+    ) && !command_name.contains('/')
         && let Some(reason) = bindings.shell_state_uncertainty()
     {
         return ResolveInvocationResult::SelectionError {
@@ -398,7 +442,7 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         };
     }
 
-    if module_runtime.is_none()
+    if matches!(domain, crate::CommandLookupDomain::Shell)
         && let Some(reason) = bindings
             .function_binding(command_name)
             .and_then(|b| b.uncertainty.as_ref())
@@ -414,16 +458,14 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         };
     }
 
-    let lookup = module_runtime.map_or_else(
-        || {
-            if command_word_was_materialized {
-                registry.lookup_executable(command_name)
-            } else {
-                registry.lookup(command_name)
-            }
-        },
-        |runtime| registry.lookup_module(runtime, command_name),
-    );
+    let lookup_domain =
+        if command_name.contains('/') && matches!(domain, crate::CommandLookupDomain::Shell) {
+            crate::CommandLookupDomain::External
+        } else {
+            domain.clone()
+        };
+    let lookup =
+        registry.lookup_in_domain(command_name, command_word_was_materialized, &lookup_domain);
     let normalized_command_name = lookup.normalized_command_name;
     let Some(profile) = lookup.profile else {
         return ResolveInvocationResult::NoProfile {
@@ -447,7 +489,7 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
                 .map(|(_, shape)| *shape);
         }
     }
-    let mut materialized_projection = materialize_projected_invocation(&projection, bindings);
+    let mut materialized_projection = crate::materialize::materialize_projected_invocation_with_argument_fields(&projection, bindings, fields);
     if let Err(reason) =
         crate::option_environment::prepend(profile, command, bindings, &mut materialized_projection)
     {
@@ -465,21 +507,34 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
         .invocation
         .apply_option_prefixes(profile.option_prefixes);
 
-    match select_invocation(profile, &materialized_projection.invocation) {
+    let original_selection = select_invocation(profile, &materialized_projection.invocation);
+    // A symbolic control word can fail lexical option selection before the
+    // native effect closure is reached. Recover only a certified exact prefix,
+    // then retain the entire symbolic tail as possible inputs in the shared
+    // closure below. Executable lookup and shell-child analysis are unchanged.
+    let symbolic_prefix = original_selection.is_err()
+        .then(|| crate::native_effect_envelope::symbolic_shell_argv_prefix(profile, &materialized_projection))
+        .flatten();
+    let binding_projection = symbolic_prefix.as_ref().unwrap_or(&materialized_projection.invocation);
+    let selection = match symbolic_prefix.as_ref() {
+        Some(prefix) => select_invocation(profile, prefix),
+        None => original_selection,
+    };
+    match selection {
         Ok(selection) => {
-            let bound = bind_invocation(profile, &materialized_projection.invocation, &selection);
+            let bound = bind_invocation(profile, binding_projection, &selection);
             let bound =
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
             let bound = crate::environment_inputs::attach(profile, bound, command, bindings);
             let mut bound = attach_argument_file_effects(profile, &materialized_projection, bound);
-            bound.operation_semantics_unresolved |=
-                materialized_projection.shell_expansion_unresolved;
+            crate::native_variable_writes::attach(profile, &materialized_projection, &lookup_domain, context.shell_kind, &mut bound);
             // Variable-writing CLI ownership must not use a hypothetical
             // one-word expansion. Unknown width can swallow controls or add
             // unmodeled destinations, even when this selected form is a query.
             // The registry already indexes this declared semantic capability;
             // ordinary commands take no additional argv-structure scan.
-            if registry.may_write_runtime_variable(profile.primary_name())
+            if profile.native_variable_writes.is_none()
+                && registry.may_write_runtime_variable(profile.primary_name())
                 && materialized_projection.invocation.args.iter().any(|arg| {
                     crate::argument_structure(arg).fields != crate::ArgumentFieldCount::ExactlyOne
                 })
@@ -493,14 +548,13 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
                 matches!(
                     e.kind,
                     crate::EffectKind::TerminateCurrentShell
+                        | crate::EffectKind::ReturnFromShellScope
                         | crate::EffectKind::ShellJobOperation
                         | crate::EffectKind::BindVariableFromRuntimeInput
                 )
-            }) && command
-                .command_name
-                .as_deref()
-                .is_some_and(|name| name.contains('/'))
-            {
+            }) && command.command_name.as_deref().is_some_and(|name| {
+                name.contains('/') || lookup_domain == crate::CommandLookupDomain::External
+            }) {
                 // A pathname invokes an external executable, not an owning-shell builtin.
                 bound.operation_semantics_unresolved = true;
             }
@@ -543,6 +597,35 @@ fn resolve_invocation_in_namespace_with_proofs<'a>(
                     &mut bound,
                     "explicit configuration contents are pending",
                 );
+            }
+            // Keep exact-argv gaps in the projection. Only a fully proved
+            // data operand suffix may close the operation-level uncertainty;
+            // variable writes, configuration and every other gap remain.
+            if materialized_projection.shell_expansion_unresolved {
+                if crate::native_effect_envelope::budget_gaps_are_data_operands(profile, &selection, &materialized_projection, &bound) {
+                    crate::native_effect_envelope::retain_symbolic_argv_stream_contract(&mut bound, caushell_types::NativeArgvEffectEnvelope::DataOnly);
+                } else {
+                    bound.operation_semantics_unresolved = true;
+                }
+            }
+            crate::native_effect_envelope::close_symbolic_shell_argv(profile, &materialized_projection, &mut bound);
+            if candidate_argv_only {
+                // Retain possible hazardous effects from legacy IFS recovery,
+                // but never promote an unobserved shell state into exact argv,
+                // stream independence, scalar shape, or output-path evidence.
+                bound.operation_semantics_unresolved = true;
+                bound.residuals.push(crate::Residual::new(
+                    crate::ResidualKind::UnboundControlSurface,
+                    crate::ResidualSurface::Control,
+                    "IFS fields are not exact; recovered argv retains conservative effect candidates only",
+                ));
+                bound.native_argv_effect_envelope = None;
+                bound.stream_contract = None;
+                bound.stdout_growth = None;
+                bound.stdout_growth_complete = false;
+                bound.stdout_records = None;
+                bound.stdout_scalar = None;
+                bound.stdout_scalar_complete = false;
             }
             ResolveInvocationResult::Resolved(ResolvedInvocation {
                 normalized_command_name,
@@ -937,7 +1020,7 @@ fn is_dynamic_command_token_kind(node_kind: &str) -> bool {
 fn recover_ifs_field_split_command(
     command: &CommandFact,
     bindings: &SessionBindings,
-) -> Option<CommandFact> {
+) -> Option<(CommandFact, bool)> {
     if command.command_name_runtime_data {
         return None;
     }
@@ -964,7 +1047,20 @@ fn recover_ifs_field_split_command(
             )
         };
 
-    let fields = split_word_on_static_ifs_references(source_word, bindings)?;
+    let exact_fields = (bindings.shell_kind() == caushell_types::ShellKind::Bash)
+        .then(|| split_word_on_static_ifs_references(source_word, bindings)).flatten();
+    let (fields, exact) = if let Some(fields) = exact_fields {
+        (fields, true)
+    } else {
+        if crate::observed_ifs_value(bindings).is_some_and(|ifs| ifs.is_empty()) {
+            return None;
+        }
+        // Preserve hazardous effects when IFS or its dialect rules are not
+        // exact. This conservative interpretation is explicitly partial below;
+        // it is never installed as an observation or used for positive proofs.
+        let candidate_bindings = bindings.clone().with_exact_scalar("IFS", " \t\n");
+        (split_word_on_static_ifs_references(source_word, &candidate_bindings)?, false)
+    };
     let (command_name, field_args) = fields.split_first()?;
     if command_name.is_empty() {
         return None;
@@ -989,7 +1085,7 @@ fn recover_ifs_field_split_command(
         recovered.tokens.push(token);
     }
 
-    Some(recovered)
+    Some((recovered, exact))
 }
 
 pub fn materialize_structured_command(
@@ -1054,8 +1150,8 @@ fn recovered_field_token(
         text,
         implicit_input_source: None,
         runtime_argument_domain: None,
-        runtime_data: false,
-        quoted: false,
+        runtime_data: true,
+        quoted: true,
         node_kind: "ifs_field_split".to_string(),
         span: span.clone(),
         command_substitutions: Vec::new(),
@@ -1077,87 +1173,38 @@ fn split_word_on_static_ifs_references(
     text: &str,
     bindings: &SessionBindings,
 ) -> Option<Vec<String>> {
-    let ifs = static_ifs_value(bindings)?;
-    if ifs.is_empty() {
-        return None;
-    }
-
-    let mut expanded = String::new();
-    let mut used_ifs_reference = false;
+    use crate::ShellFieldFragment::{Literal, UnquotedExpansion};
+    let ifs = crate::observed_ifs_value(bindings)?;
+    let mut fragments = Vec::new();
+    let mut literal = String::new();
+    let mut used = false;
     let mut chars = text.char_indices().peekable();
-
     while let Some((_, ch)) = chars.next() {
-        if ch == '`' {
-            return None;
-        }
-
         if ch != '$' {
-            expanded.push(ch);
+            // This narrow recovery owns only literal words and IFS references;
+            // other lexical expansion phases keep their existing uncertainty.
+            if matches!(ch, '\'' | '"' | '`' | '\\' | '*' | '?' | '[' | '{' | '}') {
+                return None;
+            }
+            literal.push(ch);
             continue;
         }
-
-        let Some((next_index, next)) = chars.peek().copied() else {
-            return None;
-        };
-
-        if next == '{' {
-            let rest = text.get(next_index..)?;
-            if rest.starts_with("{IFS}") {
-                for _ in 0..5 {
-                    chars.next();
-                }
-                expanded.push_str(&ifs);
-                used_ifs_reference = true;
-                continue;
-            }
-            return None;
+        let (index, next) = chars.peek().copied()?;
+        let count = if next == '{' && text.get(index..)?.starts_with("{IFS}") {
+            5
+        } else if next == 'I' && text.get(index..)?.starts_with("IFS")
+            && !text.get(index + 3..)?.chars().next().is_some_and(is_shell_name_char) {
+            3
+        } else { return None; };
+        for _ in 0..count { chars.next()?; }
+        if !literal.is_empty() {
+            fragments.push(Literal(std::mem::take(&mut literal)));
         }
-
-        if next == 'I' {
-            let rest = text.get(next_index..)?;
-            if rest.starts_with("IFS") {
-                let after_ifs = next_index + 3;
-                if text
-                    .get(after_ifs..)
-                    .and_then(|suffix| suffix.chars().next())
-                    .is_some_and(is_shell_name_char)
-                {
-                    return None;
-                }
-                for _ in 0..3 {
-                    chars.next();
-                }
-                expanded.push_str(&ifs);
-                used_ifs_reference = true;
-                continue;
-            }
-        }
-
-        return None;
+        fragments.push(UnquotedExpansion(ifs.clone()));
+        used = true;
     }
-
-    used_ifs_reference.then(|| split_on_ifs_chars(&expanded, &ifs))
-}
-
-fn static_ifs_value(bindings: &SessionBindings) -> Option<String> {
-    let Some(binding) = bindings.get("IFS") else {
-        return Some(" \t\n".to_string());
-    };
-
-    match binding.value {
-        crate::SessionValue::ExactScalar(value) => Some(value.clone()),
-        crate::SessionValue::RuntimeProduced { value, .. } => Some(value.clone()),
-        crate::SessionValue::OpaqueDynamic { .. }
-        | crate::SessionValue::RuntimeInput { .. }
-        | crate::SessionValue::Structured(_) => None,
-    }
-}
-
-fn split_on_ifs_chars(text: &str, ifs: &str) -> Vec<String> {
-    text.split(|ch| ifs.contains(ch))
-        .filter(|field| !field.is_empty())
-        .map(str::to_string)
-        .collect()
+    if !literal.is_empty() { fragments.push(Literal(literal)); }
+    used.then(|| crate::materialize_bash_field_fragments(&fragments, bindings)).flatten()
 }
 
 fn is_shell_name_char(ch: char) -> bool {
@@ -8598,6 +8645,9 @@ mod tests {
                     vec!["victim/important.txt"]
                 );
                 assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::DeletePath]);
+                assert!(resolved.bound.operation_semantics_unresolved);
+                assert!(resolved.bound.stream_contract.is_none());
+                assert!(resolved.bound.residuals.iter().any(|r| r.kind == ResidualKind::UnboundControlSurface));
             }
             other => panic!("unexpected resolve result: {other:?}"),
         }
@@ -11226,7 +11276,11 @@ mod tests {
                 assert_eq!(resolved.bound.subcommand_path, vec!["reset".to_string()]);
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::RepositoryOperation]
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath
+                    ]
                 );
                 assert!(matches!(
                     &resolved.bound.effects[0].target,
@@ -11262,6 +11316,7 @@ mod tests {
                     vec![
                         EffectKind::WritePath,
                         EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath,
                         EffectKind::TargetPath,
                         EffectKind::SetExecutionWorkingDirectory,
                     ]
@@ -11401,7 +11456,8 @@ mod tests {
                         EffectKind::ReadPath,
                         EffectKind::LoadConfig,
                         EffectKind::WritePath,
-                        EffectKind::ExecuteHook
+                        EffectKind::ExecuteHook,
+                        EffectKind::ReadPath
                     ]
                 );
             }
@@ -11435,7 +11491,8 @@ mod tests {
                     vec![
                         EffectKind::ReadPath,
                         EffectKind::LoadConfig,
-                        EffectKind::WritePath
+                        EffectKind::WritePath,
+                        EffectKind::ReadPath
                     ]
                 );
             }
@@ -11466,7 +11523,11 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::RepositoryOperation]
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -11494,7 +11555,11 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::RepositoryOperation]
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -11518,7 +11583,11 @@ mod tests {
                 assert_eq!(argument_texts(&resolved.bound, "treeish"), vec!["HEAD"]);
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::RepositoryOperation]
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -11545,7 +11614,11 @@ mod tests {
                 assert_eq!(argument_texts(&resolved.bound, "subtree"), vec!["."]);
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::RepositoryOperation]
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath
+                    ]
                 );
                 assert!(matches!(
                     &resolved.bound.effects[0].target,
@@ -11586,7 +11659,11 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::RepositoryOperation]
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -11620,7 +11697,11 @@ mod tests {
                 );
                 assert_eq!(
                     effect_kinds(&resolved.bound),
-                    vec![EffectKind::WritePath, EffectKind::RepositoryOperation]
+                    vec![
+                        EffectKind::WritePath,
+                        EffectKind::RepositoryOperation,
+                        EffectKind::ReadPath
+                    ]
                 );
             }
             other => panic!("unexpected resolve result: {other:?}"),
@@ -11644,7 +11725,10 @@ mod tests {
                     "checkout_branch_worktree"
                 );
                 assert_eq!(resolved.bound.subcommand_path, vec!["checkout".to_string()]);
-                assert_eq!(effect_kinds(&resolved.bound), vec![EffectKind::WritePath]);
+                assert_eq!(
+                    effect_kinds(&resolved.bound),
+                    vec![EffectKind::WritePath, EffectKind::ReadPath]
+                );
                 assert!(matches!(
                     &resolved.bound.effects[0].target,
                     crate::EffectTarget::MutationScope(

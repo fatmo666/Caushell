@@ -455,7 +455,12 @@ fn path_list_resolutions(
                 .collect(),
         );
     }
-    invocation.effects.get(effect_index)?.path_list.as_ref()?;
+    let effect = invocation.effects.get(effect_index)?;
+    effect.path_list.as_ref()?;
+    let source = match &effect.target {
+        EffectTarget::Slot(slot) => format!("filename list from {}", slot.as_str()),
+        _ => "stdin filename list".to_owned(),
+    };
     Some(match invocation.bound_path_lists.get(&effect_index) {
         Some(caushell_profile::BoundPathList::Paths(paths)) => paths
             .iter()
@@ -469,12 +474,12 @@ fn path_list_resolutions(
             })
             .collect(),
         Some(caushell_profile::BoundPathList::Domain(domain)) => vec![(
-            runtime_input_path_resolution(&"stdin filename list", Some(domain), cwd),
+            runtime_input_path_resolution(&source, Some(domain), cwd),
             runtime_input_path_depends_on_cwd(Some(domain)),
         )],
         None => vec![(
             PathResolution::UnsupportedDynamicText {
-                text: "stdin filename list is unresolved".into(),
+                text: format!("{source} is unresolved"),
             },
             true,
         )],
@@ -512,16 +517,7 @@ pub(crate) fn collect_invocation_mutation_targets(
 
     let mut targets = Vec::new();
     for (effect_index, effect) in bound.effects.iter().enumerate() {
-        if !matches!(
-            effect.kind,
-            EffectKind::WritePath
-                | EffectKind::DeletePath
-                | EffectKind::MovePath
-                | EffectKind::ChangeMode
-                | EffectKind::ChangeOwner
-                | EffectKind::ChangeGroup
-                | EffectKind::MetadataMutation
-        ) {
+        if effect.kind.filesystem_namespace_impact() != caushell_profile::FilesystemNamespaceImpact::PathMutation {
             continue;
         }
 
@@ -2479,6 +2475,7 @@ fn metadata_mutation_kinds(
         | EffectKind::ConsumeAuxiliaryEnvironment
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::TerminateCurrentShell
+        | EffectKind::ReturnFromShellScope
         | EffectKind::ShellJobOperation
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
@@ -2723,6 +2720,7 @@ fn path_role_for_effect(kind: EffectKind) -> Option<PathRole> {
         | EffectKind::ConsumeAuxiliaryEnvironment
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::TerminateCurrentShell
+        | EffectKind::ReturnFromShellScope
         | EffectKind::ShellJobOperation
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint
@@ -2765,6 +2763,7 @@ fn mutation_scope_operation_for_effect(kind: EffectKind) -> Option<ResolvedMutat
         | EffectKind::ConsumeAuxiliaryEnvironment
         | EffectKind::BindVariableFromRuntimeInput
         | EffectKind::TerminateCurrentShell
+        | EffectKind::ReturnFromShellScope
         | EffectKind::ShellJobOperation
         | EffectKind::PrivilegeModifier
         | EffectKind::NetworkEndpoint

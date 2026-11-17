@@ -35,6 +35,11 @@ impl Eq for FilesystemViewHandle {}
 pub trait FilesystemView: Send + Sync {
     /// Optional operator-attested native layout on the private host boundary.
     /// No process probe is permitted; ordinary request transports supply none.
+    /// A private owning-executor native inventory entry, not a command probe.
+    /// The caller must separately match the current frame's native variant.
+    fn git_runtime(&self, _command: &str) -> Option<caushell_types::GitRuntimeLayout> {
+        None
+    }
     fn pip_runtime(&self, _command: &str) -> Option<caushell_types::PipRuntimeLayout> {
         None
     }

@@ -23,6 +23,10 @@ pub(super) struct ObservedInputs {
     pub effect_proofs: Vec<caushell_types::NativeInputEffectEvidence>,
 }
 
+/// A later effect audit may discharge only this consumer's byte-gap proposal.
+/// Equal diagnostic text from a different consumer must retain its own floor.
+pub(super) fn gap_source(node: &str) -> String { format!("resolve_native_inputs:{node}") }
+
 pub(super) fn prepare(
     session: SessionView<'_>,
     ctx: &RunnerContext,
@@ -56,7 +60,7 @@ pub(super) fn prepare(
             break;
         }
     }
-    super::observe_stdout_records::observe_outputs(&mut provisional, &deferred, &BTreeSet::new());
+    super::observe_stdout_records::observe_outputs(&mut provisional, &deferred, &BTreeSet::new(), super::observe_stdout_records::ObservationPhase::Candidate);
     let records = graph_backed_execution_resolve_records(&provisional);
     for &consumer in records
         .iter()
@@ -221,7 +225,7 @@ fn candidate_refinement_keeps_the_consumer_frame() {
 pub(super) fn accept(
     session: SessionView<'_>,
     ctx: &mut RunnerContext,
-    input: &ObservedInputs,
+    input: &mut ObservedInputs,
 ) -> bool {
     if input.decoded.is_empty()
         || input.decoded.len() != input.inputs.len()
@@ -231,14 +235,35 @@ pub(super) fn accept(
     }
     ComputeEffectiveCwdPass.run(session, ctx);
     ExtractPipelineFlowPass.run(session, ctx);
+    for expected in input.inputs.values().map(|i| &i.records) {
+        ctx.add_evidence(Evidence {
+            rule_id: RuleId::SelectionError,
+            summary: "candidate native input pending full effect and namespace revalidation".into(),
+            kind: EvidenceKind::StdoutRecords(expected.clone()),
+        });
+    }
     ObserveStdoutRecordsPass.run(session, ctx);
-    input.decoded.iter().all(|(node, _)| {
-        input.inputs.get(node).is_some_and(|input| {
-            ctx.evidence
-                .iter()
-                .any(|e| matches!(&e.kind, EvidenceKind::StdoutRecords(p) if p == &input.records))
-        })
-    })
+    let mut accepted = true;
+    for (node, decoded) in &mut input.decoded {
+        let expected = input.inputs.get(node).map(|i| &i.records);
+        let current = expected.and_then(|expected| {
+            ctx.evidence.iter().find_map(|e| match &e.kind {
+                EvidenceKind::StdoutRecords(p) if p.node_id == expected.node_id => Some(p),
+                _ => None,
+            })
+        });
+        if expected.is_none() || current != expected {
+            accepted = false;
+            decoded.complete = false;
+            decoded.gap = Some(format!(
+                "producer input revalidation failed: {}",
+                current
+                    .and_then(|p| p.gap.as_deref())
+                    .unwrap_or("observation identity or content changed")
+            ));
+        }
+    }
+    accepted
 }
 
 pub(super) fn reject(
@@ -274,7 +299,7 @@ pub(super) fn reject(
             "producer effects or observations changed during input refinement".into()
         });
         ctx.propose_decision(
-            "resolve_native_inputs",
+            gap_source(&decoded.node_id),
             RuleId::SelectionError,
             Decision::NeedApproval,
             decoded.gap.as_deref().unwrap(),
@@ -293,7 +318,7 @@ pub(super) fn emit_proof(
 ) {
     ctx.add_evidence(Evidence {
         rule_id: RuleId::SelectionError,
-        summary: "symbolic native input has closed read/data-only child effects; concrete records remain unproved".into(),
+        summary: "symbolic native input has closed typed child effects; concrete records remain unproved".into(),
         kind: EvidenceKind::NativeInputEffect(proof),
     });
 }

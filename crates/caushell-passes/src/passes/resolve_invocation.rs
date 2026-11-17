@@ -1,3 +1,5 @@
+mod git;
+mod argument_fields;
 use std::{collections::BTreeMap, path::Path};
 
 use caushell_profile::{
@@ -37,7 +39,7 @@ use crate::support::{
     known_literal_path_content_before_execution_unit as static_known_literal_path_content_before_execution_unit,
     known_literal_path_content_before_scoped_command as static_known_literal_path_content_before_scoped_command,
     known_literal_path_content_before_sequence as static_known_literal_path_content_before_sequence,
-    materialize_static_token_command_substitutions, materialize_static_token_text,
+    materialize_static_token_text,
     pipeline_has_upstream, process_substitution_evidence, redirection_parent_command_index,
     redirection_targets_stdin_payload, request_variable_bindings,
     runtime_source_bindings_before_span, runtime_variable_overlay,
@@ -77,7 +79,7 @@ impl SessionTransformPass for ResolveInvocationPass {
         }
         let mut candidate = base;
         self.run_once(session, &mut candidate, &mut observed);
-        if super::observed_native_inputs::accept(session, &mut candidate, &observed) {
+        if super::observed_native_inputs::accept(session, &mut candidate, &mut observed) {
             for proof in observed.effect_proofs {
                 super::observed_native_inputs::emit_proof(&mut candidate, proof);
             }
@@ -133,7 +135,7 @@ impl ResolveInvocationPass {
             &binding_request,
             &function_derived_commands,
         );
-        let (dispatch_derived_commands, unresolved_dispatches) =
+        let dispatch_derived_commands =
             collect_top_level_dispatch_derived_commands(
                 &self.registry,
                 staged_view.summary(),
@@ -194,11 +196,22 @@ impl ResolveInvocationPass {
             observed,
             &mut pathname_context,
         );
+        let refined_argument_nodes = pathname_context.evidence.iter().filter_map(|e| {
+            if let caushell_types::EvidenceKind::ShellArgumentFields(p) = &e.kind {
+                Some(p.node_id.clone())
+            } else { None }
+        }).collect();
+        argument_fields::refresh_legacy_inline_payloads(
+            &mut nested_payload_records, &derived_payloads, &execution_unit_resolve_records,
+            &refined_argument_nodes, ctx.policy().semantic_expansion.max_nested_parse_depth,
+        );
         for evidence in pathname_context.evidence.into_iter().filter(|e| {
             matches!(
                 e.kind,
                 caushell_types::EvidenceKind::PathnameFields(_)
                     | caushell_types::EvidenceKind::ToolOptionEnvironment(_)
+                    | caushell_types::EvidenceKind::ToolConfigParse(_)
+                    | caushell_types::EvidenceKind::ShellArgumentFields(_)
             )
         }) {
             ctx.add_evidence(evidence);
@@ -267,36 +280,19 @@ impl ResolveInvocationPass {
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
         }
-        let mut unresolved_records =
-            project_unresolved_dispatch_records(ctx.request(), &unresolved_dispatches);
-        for record in &execution_unit_resolve_records {
-            if record.origin_kind == ExecutionUnitOriginKind::TopLevel {
-                continue;
-            }
-            let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
-                continue;
-            };
-            if should_skip_generic_dispatch_projection(resolved) {
-                continue;
-            }
-            for candidate in registered_dispatch_projection(&self.registry, resolved).unresolved {
-                unresolved_records.push(UnresolvedDispatchRecord::new(
-                    record.source_node_id.clone(),
-                    record.command_ref.clone(),
-                    candidate.dispatch_index,
-                    candidate.command_slot.as_str().to_string(),
-                ));
-            }
-        }
+        let unresolved_records = project_unresolved_dispatch_records(
+            &self.registry, &execution_unit_resolve_records,
+        );
         ctx.set_unresolved_dispatch_records(unresolved_records);
         ctx.set_execution_unit_resolve_records(execution_unit_resolve_records);
         let read_envelopes=ctx.execution_unit_resolve_records().iter().filter_map(|record| {
-            matches!(&record.result,ResolveInvocationArtifactResult::Resolved(r) if r.bound.native_read_envelope)
+            matches!(&record.result,ResolveInvocationArtifactResult::Resolved(r) if r.bound.native_argv_effect_envelope.is_some())
                 .then(|| caushell_types::NativeInputEffectEvidence {
-                    control_envelope:true,node_id:record.parent_execution_node_id.0.clone(),
+                    bound_effects:None,
+                    control_envelope:true,effect_envelope:match &record.result {ResolveInvocationArtifactResult::Resolved(r)=>r.bound.native_argv_effect_envelope,_=>None},node_id:record.parent_execution_node_id.0.clone(),
                     producer_node_id:record.parent_execution_node_id.0.clone(),
                     child_node_ids:vec![record.source_node_id.0.clone()],
-                    observation_gap:"native argv remains symbolic; all admitted modes retain read/data effects and input dependencies".into(),
+                    observation_gap:"native argv remains symbolic; all admitted modes retain their declared effect class and input dependencies".into(),
                 })
         }).collect::<Vec<_>>();
         for proof in read_envelopes {
@@ -741,23 +737,8 @@ fn config_defined_task_frontier_entries(
         ManifestTaskDialect, TaskSelection, composer_tasks, quote_task_argument, yarn_task_name,
         yarn_task_selection, yarn_tasks,
     };
-    if let Some(kind) = crate::support::git_hooks::hook_kind(bound) {
-        return git_hook_frontier_entries(
-            registry,
-            session,
-            request,
-            parsed,
-            command_index,
-            bound,
-            bindings,
-            scope_base_bindings,
-            scope_entry_cwd,
-            source_scopes,
-            parent_ref,
-            root_command_index,
-            depth,
-            kind,
-        );
+    if bound.native_configuration_resolved && bound.command_name.as_str() == "git" {
+        return Vec::new();
     }
     let Some((dialect, target_path)) = ManifestTaskDialect::for_invocation(bound) else {
         return Vec::new();
@@ -1104,265 +1085,6 @@ fn source_visible_file_content(
     content
 }
 
-fn git_hook_frontier_entries(
-    registry: &ProfileRegistry,
-    session: SessionView<'_>,
-    request: &CheckRequest,
-    parsed: &caushell_parse::ParsedCommandArtifact,
-    command_index: usize,
-    bound: &caushell_profile::BoundInvocation,
-    bindings: &SessionBindings,
-    scope_base_bindings: &SessionBindings,
-    scope_entry_cwd: &caushell_runner::EffectiveCwd,
-    source_scopes: &[PayloadSourceScope],
-    parent_ref: NestedPayloadParentRef,
-    root_command_index: usize,
-    depth: u8,
-    kind: crate::support::git_hooks::GitHookKind,
-) -> Vec<FrontierEntry> {
-    use crate::support::{StaticFileContent, git_hooks};
-    let observations = source_scope_observations(
-        registry,
-        request,
-        parsed,
-        command_index,
-        scope_base_bindings,
-    );
-    let (shell_cwds, execution_cwds) = super::compute_effective_cwd::source_scope_execution_cwds(
-        parsed,
-        request,
-        scope_entry_cwd,
-        &observations,
-    );
-    let base = shell_cwds.get(command_index);
-    let work_dirs = decoded_task_arguments(bound, "working_directory");
-    let absolute_override = work_dirs
-        .as_ref()
-        .and_then(|v| (v.len() == 1 && v[0].starts_with('/')).then(|| v[0].clone()));
-    let mut roots = if let Some(path) = &absolute_override {
-        vec![crate::path::normalize_shell_path(path)]
-    } else {
-        base.into_iter()
-            .flat_map(|cwd| cwd.known_cwds())
-            .map(|cwd| git_hooks::git_effective_cwd(cwd, bound))
-            .collect::<Vec<_>>()
-    };
-    let mut scope_observations = Vec::new();
-    for scope in source_scopes {
-        let obs = source_scope_observations(
-            registry,
-            request,
-            &scope.parsed,
-            scope.before_command_index,
-            &scope.bindings,
-        );
-        let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
-            &scope.parsed,
-            request,
-            &scope.entry_cwd,
-            &obs,
-        )
-        .1;
-        scope_observations.push((obs, cwds));
-    }
-    for cwd in &mut roots {
-        let mut candidates = Vec::new();
-        if let Some(root) = git_hooks::observed_repository_root(cwd, &observations, &execution_cwds)
-        {
-            candidates.push(root);
-        }
-        for (obs, cwds) in &scope_observations {
-            if let Some(root) = git_hooks::observed_repository_root(cwd, obs, cwds) {
-                candidates.push(root);
-            }
-        }
-        if let Some(root) = candidates.into_iter().max_by_key(String::len) {
-            *cwd = root;
-        }
-    }
-    roots.sort();
-    roots.dedup();
-    let cwd_known = work_dirs.is_some()
-        && roots.len() == 1
-        && (absolute_override.is_some()
-            || base.is_some_and(|cwd| !cwd.has_unknown() && cwd.bounded_roots().is_empty()));
-    let cwd = roots
-        .into_iter()
-        .next()
-        .unwrap_or_else(|| request.shell_state_before.cwd().to_owned());
-    let config = crate::path::join_shell_path(&cwd, ".git/config");
-    let mut child_bindings = crate::support::command_environment_bindings(
-        bindings,
-        parsed,
-        &ParsedCommandRef::new(command_index, parsed.commands[command_index].span.clone()),
-    );
-    child_bindings.enter_child_shell_environment();
-    let child_scopes = extended_payload_source_scopes(
-        source_scopes,
-        parsed,
-        command_index,
-        scope_base_bindings,
-        scope_entry_cwd,
-    );
-    let mut entries = Vec::new();
-    let hooks =
-        git_hooks::resolve_git_hook_paths_with(request, &config, &cwd, bound, kind, |path| {
-            match source_visible_file_content(
-                registry,
-                session,
-                request,
-                parsed,
-                command_index,
-                path,
-                &observations,
-                &execution_cwds,
-                source_scopes,
-            ) {
-                StaticFileContent::Known(content) => Some(content),
-                _ => None,
-            }
-        });
-    for hook in hooks {
-        let path = hook
-            .resolution
-            .concrete_path()
-            .unwrap_or("<unresolved-git-hook>")
-            .to_owned();
-        let content = if cwd_known && hook.resolution.concrete_path().is_some() {
-            source_visible_file_content(
-                registry,
-                session,
-                request,
-                parsed,
-                command_index,
-                &path,
-                &observations,
-                &execution_cwds,
-                source_scopes,
-            )
-        } else {
-            StaticFileContent::Unknown
-        };
-        if cwd_known
-            && hook.resolution.concrete_path().is_some()
-            && !matches!(content, StaticFileContent::Known(_))
-        {
-            continue;
-        }
-        if matches!(content, StaticFileContent::Known(_)) {
-            let mut nonexecutable = false;
-            let history = caushell_query::ExecutionUnitHistoryQuery::new()
-                .before_sequence(request.sequence_no)
-                .execute(caushell_query::QuerySession::from_session(&session));
-            for unit in history
-                .execution_units()
-                .iter()
-                .rev()
-                .take(256)
-                .collect::<Vec<_>>()
-                .into_iter()
-                .rev()
-            {
-                let Ok(previous) =
-                    caushell_parse::parse_command(unit.raw_text(), unit.shell_kind())
-                else {
-                    nonexecutable = false;
-                    continue;
-                };
-                let base = unit
-                    .top_level()
-                    .map(|u| u.cwd_before())
-                    .unwrap_or(request.shell_state_before.cwd());
-                let entry = caushell_runner::EffectiveCwd::known(base);
-                let obs = source_scope_observations(
-                    registry,
-                    request,
-                    &previous,
-                    previous.commands.len().saturating_sub(1),
-                    &SessionBindings::new(),
-                );
-                let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
-                    &previous, request, &entry, &obs,
-                )
-                .1;
-                nonexecutable = git_hooks::hook_explicitly_nonexecutable(
-                    &path,
-                    &previous,
-                    previous.commands.len(),
-                    &obs,
-                    &cwds,
-                    request.home.as_deref(),
-                    nonexecutable,
-                );
-            }
-            for scope in source_scopes {
-                let obs = source_scope_observations(
-                    registry,
-                    request,
-                    &scope.parsed,
-                    scope.before_command_index,
-                    &scope.bindings,
-                );
-                let cwds = super::compute_effective_cwd::source_scope_execution_cwds(
-                    &scope.parsed,
-                    request,
-                    &scope.entry_cwd,
-                    &obs,
-                )
-                .1;
-                nonexecutable = git_hooks::hook_explicitly_nonexecutable(
-                    &path,
-                    &scope.parsed,
-                    scope.before_command_index,
-                    &obs,
-                    &cwds,
-                    request.home.as_deref(),
-                    nonexecutable,
-                );
-            }
-            if git_hooks::hook_explicitly_nonexecutable(
-                &path,
-                parsed,
-                command_index,
-                &observations,
-                &execution_cwds,
-                request.home.as_deref(),
-                nonexecutable,
-            ) {
-                continue;
-            }
-        }
-        let (language, input, source) = match content {
-            StaticFileContent::Known(body) => (git_hooks::hook_language(&body), RecursivePayloadInput::LiteralText {text: body}, PayloadSource::InlineString),
-            _ => (PayloadLanguage::Sh, RecursivePayloadInput::ArgumentFragments {fragments: vec![caushell_profile::RecursivePayloadArgumentFragment {text:path.clone(), quoted:true, node_kind:"raw_string".into(), span:parsed.commands[command_index].span.clone(), materialization:caushell_profile::RecursivePayloadFragmentMaterialization::DecodedLiteral}]}, PayloadSource::DynamicReference),
-        };
-        entries.push(FrontierEntry {
-            parent_ref: parent_ref.clone(),
-            root_command_index,
-            depth,
-            candidate: RecursivePayloadCandidate {
-                language,
-                source,
-                origin: RecursivePayloadOrigin::ConfigDefinedTask {
-                    config_path: path,
-                    task_name: git_hooks::hook_task_name(hook.stage),
-                },
-                input,
-            },
-            bindings: child_bindings.clone(),
-            positional_args: matches!(
-                hook.stage,
-                "pre-commit" | "post-commit" | "pre-applypatch" | "post-applypatch"
-            )
-            .then(Vec::new),
-            scope_entry_cwd: caushell_runner::EffectiveCwd::known(&cwd),
-            source_scopes: child_scopes.clone(),
-        });
-    }
-    entries.reverse();
-    entries
-}
-
 fn source_scope_observations(
     registry: &ProfileRegistry,
     request: &CheckRequest,
@@ -1504,7 +1226,7 @@ fn alias_bindings(
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct TopLevelDispatchDerivedCommand {
-    module_runtime: Option<String>,
+    lookup_domain: caushell_profile::CommandLookupDomain,
     source_command_index: usize,
     dispatch_index: usize,
     command_slot: String,
@@ -1516,15 +1238,6 @@ struct TopLevelDispatchDerivedCommand {
         caushell_parse::SourceSpan,
         caushell_profile::StdoutScalarShape,
     )>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-struct TopLevelUnresolvedDispatch {
-    source_command_index: usize,
-    dispatch_index: usize,
-    command_slot: String,
-    source_node_id: caushell_graph::NodeId,
-    span: caushell_parse::SourceSpan,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1975,12 +1688,8 @@ fn collect_top_level_dispatch_derived_commands(
     request: &CheckRequest,
     parsed: &caushell_parse::ParsedCommandArtifact,
     records: &[ResolvedCommandSeed],
-) -> (
-    Vec<TopLevelDispatchDerivedCommand>,
-    Vec<TopLevelUnresolvedDispatch>,
-) {
+) -> Vec<TopLevelDispatchDerivedCommand> {
     let mut commands = Vec::new();
-    let mut unresolved = Vec::new();
 
     for record in records {
         let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
@@ -2016,7 +1725,7 @@ fn collect_top_level_dispatch_derived_commands(
                 dispatch_child_session_bindings(&parent_bindings, &candidate, &command);
             commands.push(TopLevelDispatchDerivedCommand {
                 stdout_proofs: forwarded_substitution_shapes(resolved, &command),
-                module_runtime: candidate.module_runtime.clone(),
+                lookup_domain: candidate.lookup_domain.clone(),
                 stdin_available: candidate.stdin_from_parent
                     || candidate.stdin_from_tool
                     || resolved.projection.stdin_payload_available,
@@ -2029,18 +1738,9 @@ fn collect_top_level_dispatch_derived_commands(
             });
         }
 
-        for candidate in projection.unresolved {
-            unresolved.push(TopLevelUnresolvedDispatch {
-                source_command_index: record.command_ref.command_index,
-                dispatch_index: candidate.dispatch_index,
-                command_slot: candidate.command_slot.as_str().to_string(),
-                source_node_id: record.source_node_id.clone(),
-                span: record.command_ref.span.clone(),
-            });
-        }
     }
 
-    (commands, unresolved)
+    commands
 }
 
 fn should_skip_generic_dispatch_projection(
@@ -2146,7 +1846,7 @@ fn dispatch_candidates_for_resolved(
             .iter()
             .filter(|c| c.command.implicit_input_source.is_some())
             .map(|c| caushell_profile::UnresolvedDispatchCommand {
-                module_runtime: None,
+                lookup_domain: caushell_profile::CommandLookupDomain::External,
                 dispatch_index: c.dispatch_index,
                 command_slot: c.command.slot.clone(),
             })
@@ -2173,19 +1873,22 @@ fn registered_dispatch_projection(
     let mut projection = collect_dispatch_command_projection(&resolved.bound);
     let unresolved = &mut projection.unresolved;
     projection.resolved.retain(|candidate| {
-        let known = candidate.module_runtime.as_deref().is_none_or(|runtime| {
-            registry
-                .lookup_module(runtime, &candidate.command.text)
-                .profile
-                .is_some()
-        });
+        let known = candidate
+            .lookup_domain
+            .module_runtime()
+            .is_none_or(|runtime| {
+                registry
+                    .lookup_module(runtime, &candidate.command.text)
+                    .profile
+                    .is_some()
+            });
         if !known
             && !unresolved
                 .iter()
                 .any(|gap| gap.dispatch_index == candidate.dispatch_index)
         {
             unresolved.push(caushell_profile::UnresolvedDispatchCommand {
-                module_runtime: candidate.module_runtime.clone(),
+                lookup_domain: candidate.lookup_domain.clone(),
                 dispatch_index: candidate.dispatch_index,
                 command_slot: candidate.command.slot.clone(),
             });
@@ -2489,7 +2192,7 @@ fn find_dispatch_candidates(
             .collect();
 
         candidates.push(DispatchCommandCandidate {
-            module_runtime: None,
+            lookup_domain: caushell_profile::CommandLookupDomain::External,
             stdin_from_parent: false,
             stdin_from_tool: false,
             stdout_to_parent: false,
@@ -2659,10 +2362,12 @@ fn dispatch_child_session_bindings(
         bindings.set_child_environment_domain(name, domain.clone());
     }
     let bindings = dispatch_child_bindings(&bindings, &candidate.environment);
-    let Some(positional_args) = shell_dispatch_positional_arguments(command) else {
-        return bindings;
+    let mut bindings = match shell_dispatch_positional_arguments(command) {
+        Some(args) => shell_payload_session_bindings(&bindings, &args),
+        None => bindings,
     };
-    shell_payload_session_bindings(&bindings, &positional_args)
+    bindings.set_command_lookup_domain(candidate.lookup_domain.clone());
+    bindings
 }
 
 fn shell_dispatch_positional_arguments(
@@ -2758,7 +2463,7 @@ fn collect_top_level_dispatch_command_resolve_records(
                     command.dispatch_index,
                 ),
                 ParsedCommandRef::new(command.dispatch_index, command.command.span.clone()),
-                caushell_profile::resolve_invocation_in_namespace_with_stdout_proofs(
+                caushell_profile::resolve_invocation_in_lookup_domain_with_stdout_proofs(
                     registry,
                     &command.command,
                     InvocationRuntimeContext {
@@ -2767,7 +2472,7 @@ fn collect_top_level_dispatch_command_resolve_records(
                         interactive_session: false,
                     },
                     &command.bindings,
-                    command.module_runtime.as_deref(),
+                    &command.lookup_domain,
                     &command.stdout_proofs,
                 )
                 .into_artifact(),
@@ -3190,6 +2895,7 @@ fn inherit_program_source_contexts(
 
 fn expanded_config_program_children(
     registry: &ProfileRegistry,
+    ctx: &mut RunnerContext,
     session: SessionView<'_>,
     request: &CheckRequest,
     entry: &ExpandedFrontierEntry,
@@ -3210,7 +2916,9 @@ fn expanded_config_program_children(
             node_id: entry.source_node_id.clone(),
         }
     };
-    let candidates = config_defined_task_frontier_entries(
+    let mut candidates =
+        git::frontier_entries(registry, session, request, entry, resolved, context, ctx);
+    candidates.extend(config_defined_task_frontier_entries(
         registry,
         session,
         request,
@@ -3224,7 +2932,7 @@ fn expanded_config_program_children(
         parent_ref,
         entry.root_command_index,
         entry.depth.saturating_add(1),
-    );
+    ));
     let mut children = Vec::new();
     for payload in candidates.into_iter().rev() {
         let materialized = materialize_frontier_entry(&payload);
@@ -3913,6 +3621,10 @@ fn collect_execution_unit_resolve_records(
             &substitution_aliases,
             max_nested_parse_depth,
         );
+        let substitution_fields = refresh_substitution_argument_fields(
+            registry, session, request, &mut entry, &program_context,
+            max_nested_parse_depth, pathname_context,
+        );
         let visit_key = (
             entry.source_node_id.clone(),
             entry.origin_index,
@@ -3983,6 +3695,8 @@ fn collect_execution_unit_resolve_records(
         let inherits_stdin = execution_unit_inherits_stdin(&entry);
         if !inherits_stdin {
             entry.inherited_scope.native_stdin_route_unproven = false;
+            // A local redirection or pipeline replaced the inherited FD 0.
+            entry.inherited_scope.native_stdin_route = None;
         }
         if (entry.inherited_scope.native_stdin_route_unproven
             || entry.inherited_scope.native_template_input.is_some()
@@ -3992,8 +3706,9 @@ fn collect_execution_unit_resolve_records(
                 .iter()
                 .any(|input| input.consumer_node_id == entry.source_node_id))
             && inherits_stdin
+            && entry.inherited_scope.native_stdin_route.is_none()
             && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result
-            && !resolved.bound.native_read_envelope
+            && resolved.bound.native_argv_effect_envelope.is_none()
             && (resolved.bound.stream_contract.is_some_and(|contract| {
                 matches!(
                     contract.stdin_mode,
@@ -4291,6 +4006,22 @@ fn collect_execution_unit_resolve_records(
             &entry,
             max_nested_parse_depth,
         );
+        git::refresh(
+            registry,
+            session,
+            request,
+            &mut entry,
+            &program_context,
+            pathname_context,
+        );
+        if let Some(record) = records
+            .iter_mut()
+            .rev()
+            .find(|record| record.source_node_id == entry.source_node_id)
+        {
+            record.result = entry.result.clone();
+        }
+
         let resolved = match &entry.result {
             ResolveInvocationArtifactResult::Resolved(resolved) => Some(resolved),
             _ => None,
@@ -4306,6 +4037,7 @@ fn collect_execution_unit_resolve_records(
         if let Some(resolved) = resolved {
             children.extend(expanded_config_program_children(
                 registry,
+                pathname_context,
                 session,
                 request,
                 &entry,
@@ -4392,20 +4124,13 @@ fn collect_execution_unit_resolve_records(
                 &entry,
                 resolved,
                 &program_context,
-                legacy_payload_sources.contains(&entry.source_node_id),
+                legacy_payload_sources.contains(&entry.source_node_id) && substitution_fields.is_empty(),
                 max_nested_parse_depth,
                 first_payload_id,
                 &mut derived_payloads,
                 &mut syntax_scopes,
             ));
-            children.extend(expanded_command_substitution_materialization_children(
-                &mut syntax_scopes,
-                registry,
-                session,
-                request,
-                &entry,
-                max_nested_parse_depth,
-            ));
+
             children.extend(expanded_static_xargs_children(
                 registry,
                 session,
@@ -5723,6 +5448,9 @@ fn expanded_dispatch_children(
         child_inherited_scope.dispatch_working_directory =
             (!inherits_cwd).then(|| child.working_directory.clone());
         child_inherited_scope.dispatch_stdout_to_parent = child.stdout_to_parent;
+        if child.stdin_from_parent || child.stdin_from_tool {
+            child_inherited_scope.native_stdin_route = None;
+        }
         let command = materialized_dispatch_child_command_fact(resolved, &child);
         let parent_bindings = crate::support::command_environment_bindings(
             &entry.bindings,
@@ -5736,19 +5464,20 @@ fn expanded_dispatch_children(
         let stdin_available = child.stdin_from_parent
             || child.stdin_from_tool
             || resolved.projection.stdin_payload_available;
-        let resolved_child = caushell_profile::resolve_invocation_in_namespace_with_stdout_proofs(
-            registry,
-            &command,
-            InvocationRuntimeContext {
-                shell_kind: entry.shell_kind,
-                stdin_payload_available: stdin_available,
-                interactive_session: false,
-            },
-            &child_bindings,
-            child.module_runtime.as_deref(),
-            &forwarded_substitution_shapes(resolved, &command),
-        )
-        .into_artifact();
+        let resolved_child =
+            caushell_profile::resolve_invocation_in_lookup_domain_with_stdout_proofs(
+                registry,
+                &command,
+                InvocationRuntimeContext {
+                    shell_kind: entry.shell_kind,
+                    stdin_payload_available: stdin_available,
+                    interactive_session: false,
+                },
+                &child_bindings,
+                &child.lookup_domain,
+                &forwarded_substitution_shapes(resolved, &command),
+            )
+            .into_artifact();
         let source_node_id = if entry.origin_kind == ExecutionUnitOriginKind::TopLevel {
             dispatch_derived_invocation_node_id(
                 &request.session_id,
@@ -5855,6 +5584,10 @@ fn expanded_shell_payload_children(
     bind_shell_positional_arguments(&mut parsed_payload, &positional_args);
     let shell_bindings = shell_payload_session_bindings(&parent_bindings, &positional_args);
     let mut payload_scope = entry.inherited_scope.clone();
+    // A shell program can persistently replace descriptors (including through
+    // functions/eval). Its descriptor-state proof is separate; do not carry a
+    // native launcher's null route into arbitrary script events.
+    payload_scope.native_stdin_route = None;
     payload_scope.native_template_input = payload_scope
         .native_template_input
         .filter(|input| input.source_text == shell_payload);
@@ -6346,114 +6079,6 @@ fn expanded_command_substitution_body_children(
     children
 }
 
-fn expanded_command_substitution_materialization_children(
-    syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
-    registry: &ProfileRegistry,
-    session: SessionView<'_>,
-    request: &CheckRequest,
-    entry: &ExpandedFrontierEntry,
-    max_nested_parse_depth: u8,
-) -> Vec<ExpandedFrontierEntry> {
-    let Some(command) = entry
-        .parsed_scope
-        .commands
-        .get(entry.command_ref.command_index)
-    else {
-        return Vec::new();
-    };
-    let remaining_depth = max_nested_parse_depth.saturating_sub(entry.depth);
-    if remaining_depth == 0 {
-        return Vec::new();
-    }
-    let Some(rendered_command) = render_command_with_static_substitution_outputs(
-        command,
-        caushell_query::QuerySession::from_session(&session),
-        entry.shell_kind,
-        request.sequence_no,
-        &entry.bindings,
-        request.shell_state_before.cwd(),
-        request.home.as_deref(),
-        remaining_depth,
-    ) else {
-        return Vec::new();
-    };
-    let Ok(parsed_command) = caushell_parse::parse_command(&rendered_command, entry.shell_kind)
-    else {
-        return Vec::new();
-    };
-
-    if parsed_command.commands.is_empty() {
-        register_shell_redirection_scope(
-            registry,
-            request,
-            syntax_scopes,
-            &parsed_command,
-            &entry.bindings,
-            entry.source_node_id.clone(),
-            None,
-            ExecutionUnitOriginKind::CommandSubstitutionMaterialization,
-            ExecutionUnitOriginLocator::CommandSubstitutionMaterialization,
-            entry.depth.saturating_add(1),
-            entry.root_command_index,
-            false,
-            max_nested_parse_depth,
-        );
-    }
-
-    parsed_command
-        .commands
-        .iter()
-        .enumerate()
-        .map(|(command_index, rendered_child)| {
-            let command_bindings = apply_runtime_variable_bindings_before_span(
-                registry,
-                request,
-                entry.bindings.clone(),
-                &parsed_command,
-                rendered_child.span.start_byte,
-                request.sequence_no,
-            );
-            ExpandedFrontierEntry {
-                source_node_id: expanded_virtual_node_id(
-                    "subst-mat",
-                    &entry.source_node_id,
-                    command_index,
-                ),
-                command_ref: ParsedCommandRef::new(command_index, rendered_child.span.clone()),
-                parsed_scope: parsed_command.clone(),
-                rendered_command_text: rendered_child.text.clone(),
-                result: resolve_invocation_artifact_with_bindings(
-                    registry,
-                    rendered_child,
-                    runtime_context_for_parsed_command(
-                        &parsed_command,
-                        command_index,
-                        rendered_child,
-                    ),
-                    &command_bindings,
-                ),
-                shell_kind: entry.shell_kind,
-                root_command_index: entry.root_command_index,
-                depth: entry.depth.saturating_add(1),
-                parent_execution_node_id: entry.source_node_id.clone(),
-                bindings: command_bindings.clone(),
-                static_payload_scope: StaticPayloadLookupScope {
-                    parsed_scope: parsed_command.clone(),
-                    command_index,
-                    bindings: command_bindings,
-                    scope_base_bindings: entry.bindings.clone(),
-                    stdin_is_parent_output: false,
-                },
-                history_anchor_node_id: entry.history_anchor_node_id.clone(),
-                origin_kind: ExecutionUnitOriginKind::CommandSubstitutionMaterialization,
-                origin_index: command_index,
-                origin_locator: ExecutionUnitOriginLocator::CommandSubstitutionMaterialization,
-                inherited_scope: entry.inherited_scope.clone(),
-            }
-        })
-        .collect()
-}
-
 fn expanded_process_substitution_body_children(
     syntax_scopes: &mut Vec<caushell_runner::ShellRedirectionScope>,
     registry: &ProfileRegistry,
@@ -6464,8 +6089,9 @@ fn expanded_process_substitution_body_children(
 ) -> Vec<ExpandedFrontierEntry> {
     let mut children = Vec::new();
 
-    if (entry.origin_kind != ExecutionUnitOriginKind::TopLevel || resolved.is_none())
-        && entry.origin_kind != ExecutionUnitOriginKind::StaticXargs
+    // Shell expansions happen before native option parsing, including words
+    // that the profile ignores, cannot bind, or projects as attached operands.
+    if entry.origin_kind != ExecutionUnitOriginKind::StaticXargs
         && let Some(command) = entry
             .parsed_scope
             .commands
@@ -6475,8 +6101,30 @@ fn expanded_process_substitution_body_children(
             if token.runtime_data || token.implicit_input_source.is_some() {
                 continue; // Expanded argv is data, never fresh shell source.
             }
+            // Preserve established parameter locators for standalone process
+            // substitutions. Every other original word is admitted from syntax,
+            // independently of native binding. Never evaluate decoded strings.
+            let covered = resolved.is_some_and(|r| {
+                r.bound.bound_parameters.iter().any(|p| {
+                    p.values.iter().any(|v| {
+                        matches!(v, caushell_profile::BoundValue::Argument {
+                    node_kind, span, ..
+                } if node_kind == "process_substitution" && span == &token.span)
+                    })
+                })
+            });
+            if covered {
+                continue;
+            }
+            let Some(raw_word) = entry
+                .parsed_scope
+                .raw_command
+                .get(token.span.start_byte..token.span.end_byte)
+            else {
+                continue;
+            };
             let Ok(substitutions) =
-                caushell_parse::parse_process_substitutions(&token.text, entry.shell_kind)
+                caushell_parse::parse_argument_process_substitutions(raw_word, entry.shell_kind)
             else {
                 continue;
             };
@@ -6631,7 +6279,7 @@ fn expanded_process_substitution_body_children(
             }
 
             let Ok(substitutions) =
-                caushell_parse::parse_process_substitutions(text, entry.shell_kind)
+                caushell_parse::parse_argument_process_substitutions(text, entry.shell_kind)
             else {
                 continue;
             };
@@ -6783,7 +6431,7 @@ fn expanded_process_substitution_body_children(
         }
 
         let Ok(substitutions) =
-            caushell_parse::parse_process_substitutions(&target.text, entry.shell_kind)
+            caushell_parse::parse_argument_process_substitutions(&target.text, entry.shell_kind)
         else {
             continue;
         };
@@ -7782,7 +7430,7 @@ fn expanded_static_xargs_children(
             &forwarded_substitution_shapes(resolved, &command),
         );
         if symbolic_input && !has_applied_modifier(&resolved.bound, "arg_file") {
-            super::native_read_envelope::refine(
+            super::native_effect_envelope::refine(
                 registry,
                 &command,
                 &child_bindings,
@@ -7793,6 +7441,23 @@ fn expanded_static_xargs_children(
         let source_node_id =
             expanded_virtual_node_id("xargs", &entry.source_node_id, command_index);
         let mut inherited_scope = entry.inherited_scope.clone();
+        // GNU and BSD/macOS xargs feed utility argv from their input stream,
+        // but attach /dev/null to utility FD 0 by default. GNU -a preserves
+        // xargs' own FD 0 instead. An incomplete parent cannot prove routing;
+        // unsupported controls (including -o) keep the original uncertainty.
+        inherited_scope.native_stdin_route = if resolved.bound.operation_semantics_unresolved
+            || !resolved.bound.residuals.is_empty()
+        {
+            None
+        } else if has_applied_modifier(&resolved.bound, "arg_file") {
+            execution_unit_inherits_stdin(entry)
+                .then(|| entry.inherited_scope.native_stdin_route.clone())
+                .flatten()
+        } else {
+            Some(caushell_runner::NativeStdinRoute::Null {
+                dispatcher_node_id: entry.source_node_id.clone(),
+            })
+        };
         inherited_scope.native_argument_inputs = crate::support::forwarded_native_argument_inputs(
             &entry.inherited_scope,
             &entry.source_node_id,
@@ -8537,39 +8202,24 @@ fn shell_payload_session_bindings(
         )
         .map(SessionValue::exact_scalar)
     }));
-    if positional_args.iter().any(|argument| {
-        caushell_profile::argument_structure(argument).fields
+    let positive = if positional_args.first().is_some_and(|arg| {
+        caushell_profile::argument_structure(arg).fields
             != caushell_profile::ArgumentFieldCount::ExactlyOne
     }) {
-        // The first argv item supplies $0, but an unknown-width first field
-        // can also supply $1...$n. Dropping its marker is NOT proof of empty $@.
-        bindings.forget_positional_parameters();
-        return bindings;
-    }
-    let values = positional_args
-        .iter()
-        .skip(1) // The first argument after SCRIPT becomes $0, not a positional parameter.
-        .map(|argument| {
-            if argument.implicit_input_source.is_some() {
-                return SessionValue::opaque_dynamic("runtime shell positional argument");
-            }
-            if argument.runtime_data {
-                return SessionValue::exact_scalar(argument.text.clone());
-            }
-            caushell_parse::decode_static_shell_argument(
-                &argument.text,
-                argument.quoted,
-                &argument.node_kind,
-            )
-            .map(SessionValue::exact_scalar)
-            .unwrap_or_else(|| SessionValue::opaque_dynamic("dynamic shell positional argument"))
-        })
-        .collect::<Vec<_>>();
-    bindings.replace_positional_parameters(values);
-    for (position, argument) in positional_args.iter().enumerate() {
-        if let Some(domain) = &argument.runtime_argument_domain {
-            bindings.set_positional_argument_domain(position, domain.clone());
-        }
+        // A sole final native tail may supply argv0 and any remaining
+        // positionals. Removing its first item preserves the per-item domain,
+        // but supplies no proof about $0 or the positive list's exact length.
+        positional_args
+    } else {
+        positional_args.get(1..).unwrap_or_default()
+    };
+    bindings.bind_positional_arguments(positive, &[]);
+    if let Some(argument) = positional_args.first()
+        && caushell_profile::argument_structure(argument).fields
+            == caushell_profile::ArgumentFieldCount::ExactlyOne
+        && let Some(domain) = &argument.runtime_argument_domain
+    {
+        bindings.set_positional_argument_domain(0, domain.clone());
     }
     bindings
 }
@@ -9085,56 +8735,278 @@ fn decode_xargs_scalar_operand(raw: &str) -> String {
     }
 }
 
-fn render_command_with_static_substitution_outputs(
+fn static_substitution_argument_fields(
     command: &caushell_parse::CommandFact,
     session: caushell_query::QuerySession<'_>,
     shell_kind: caushell_types::ShellKind,
     sequence_no: caushell_types::CommandSequenceNo,
     bindings: &SessionBindings,
     cwd: &str,
+    cwd_reliable: bool,
     home: Option<&str>,
     remaining_depth: u8,
-) -> Option<String> {
-    let mut rendered_parts = Vec::new();
-    let mut expanded = false;
-    let Some(command_name) = command.command_name.as_deref() else {
-        return None;
-    };
-    rendered_parts.push(command_name.to_string());
-
-    for token in &command.tokens {
-        if token.kind == caushell_parse::CommandTokenKind::DashDash {
-            rendered_parts.push("--".to_string());
-            continue;
-        }
-
-        if !token.command_substitutions.is_empty() {
-            let Some(materialized) = materialize_static_token_command_substitutions(
-                &token.text,
-                &token.command_substitutions,
-                session,
-                shell_kind,
-                sequence_no,
-                bindings,
-                cwd,
-                home,
-                remaining_depth,
-            ) else {
+) -> Vec<caushell_profile::ArgumentFieldsProof> {
+    use caushell_parse::ScalarArgumentPart;
+    use caushell_profile::ShellFieldFragment::{Literal, QuotedExpansion, UnquotedExpansion};
+    if shell_kind != caushell_types::ShellKind::Bash || remaining_depth == 0 {
+        return Vec::new();
+    }
+    command
+        .tokens
+        .iter()
+        .filter_map(|token| {
+            if token.command_substitutions.is_empty()
+                || token.runtime_data
+                || token.implicit_input_source.is_some()
+                || token.runtime_argument_domain.is_some()
+            {
+                return None;
+            }
+            let start = token.span.start_byte.checked_sub(command.span.start_byte)?;
+            let end = token.span.end_byte.checked_sub(command.span.start_byte)?;
+            let original = command.text.get(start..end)?;
+            let output = |text: &str| {
+                crate::support::static_command_substitution_output_with_cwd(
+                    text,
+                    session,
+                    shell_kind,
+                    sequence_no,
+                    bindings,
+                    cwd,
+                    home,
+                    remaining_depth,
+                    cwd_reliable,
+                )
+            };
+            let fragments = if let Some(parts) =
+                caushell_parse::scalar_argument_parts(&token.text, token.quoted, &token.node_kind)
+            {
+                parts
+                    .into_iter()
+                    .map(|part| {
+                        Some(match part {
+                            ScalarArgumentPart::Literal(s) => Literal(s),
+                            ScalarArgumentPart::Parameter(s) => QuotedExpansion(
+                                caushell_profile::materialize_shell_assignment_value(
+                                    &s, true, "string", bindings,
+                                )?,
+                            ),
+                            ScalarArgumentPart::CommandSubstitution(s) => {
+                                QuotedExpansion(output(&s)?)
+                            }
+                        })
+                    })
+                    .collect::<Option<Vec<_>>>()?
+            } else if !token.quoted
+                && token.command_substitutions.len() == 1
+                && original == token.command_substitutions[0].text
+            {
+                vec![UnquotedExpansion(output(original)?)]
+            } else {
                 return None;
             };
-            expanded = true;
-            if token.quoted {
-                rendered_parts.push(shell_quote_arg(materialized));
-            } else {
-                rendered_parts.extend(materialized.split_whitespace().map(shell_quote_arg));
-            }
-        } else {
-            let materialized = materialize_static_token_text(&token.text, bindings);
-            rendered_parts.push(render_command_reconstruction_token(token, &materialized));
-        }
-    }
+            let fields = caushell_profile::materialize_bash_field_fragments(&fragments, bindings)?;
+            Some(caushell_profile::ArgumentFieldsProof {
+                span: token.span.clone(),
+                source_word: token.text.clone(),
+                fields,
+            })
+        })
+        .collect()
+}
 
-    expanded.then(|| rendered_parts.join(" "))
+/// Both policy/path consumers and the diagnostic child use this one field
+/// proof. Rebind through the complete native profile; never clear a risk flag.
+fn refresh_substitution_argument_fields(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &mut ExpandedFrontierEntry,
+    context: &ProgramSourceContext,
+    max_depth: u8,
+    ctx: &mut RunnerContext,
+) -> Vec<caushell_profile::ArgumentFieldsProof> {
+    // Dispatch receives argv already expanded in the launcher's shell frame.
+    // An unresolved historical source token must not be evaluated again using
+    // the callee's environment or executable namespace.
+    if entry.depth >= max_depth || entry.origin_kind == ExecutionUnitOriginKind::Dispatch {
+        return Vec::new();
+    }
+    let Some(command) = entry
+        .parsed_scope
+        .commands
+        .get(entry.command_ref.command_index)
+    else {
+        return Vec::new();
+    };
+    if !command
+        .tokens
+        .iter()
+        .any(|t| !t.runtime_data && !t.command_substitutions.is_empty())
+    {
+        return Vec::new();
+    }
+    // Preserve the executable/module namespace and every unresolved lookup.
+    let normalized = match &entry.result {
+        ResolveInvocationArtifactResult::Resolved(r) => &r.normalized_command_name,
+        ResolveInvocationArtifactResult::SelectionError {
+            normalized_command_name,
+            error,
+            ..
+        } if matches!(
+            error,
+            caushell_profile::BindError::NoFormMatched { .. }
+                | caushell_profile::BindError::MultipleFormsMatched { .. }
+                | caushell_profile::BindError::UnsupportedProfileFeature { .. }
+        ) =>
+        {
+            normalized_command_name
+        }
+        _ => return Vec::new(),
+    };
+    if registry
+        .lookup(command.command_name.as_deref().unwrap_or(""))
+        .normalized_command_name
+        != *normalized
+    {
+        return Vec::new();
+    }
+    let index = program_command_index(entry);
+    let observations = source_scope_observations(
+        registry,
+        request,
+        &entry.parsed_scope,
+        index,
+        program_scope_bindings(entry),
+    );
+    let cwd = super::compute_effective_cwd::source_scope_execution_cwds(
+        &entry.parsed_scope,
+        request,
+        &context.entry_cwd,
+        &observations,
+    )
+    .0
+    .get(index)
+    .cloned()
+    .unwrap_or(caushell_runner::EffectiveCwd::Unknown);
+    let cwd_reliable = !entry.inherited_scope.static_input_cwd_unproven && cwd.as_known().is_some();
+    let fields = static_substitution_argument_fields(
+        command,
+        caushell_query::QuerySession::from_session(&session),
+        entry.shell_kind,
+        request.sequence_no,
+        &entry.bindings,
+        cwd.as_known()
+            .unwrap_or_else(|| request.shell_state_before.cwd()),
+        cwd_reliable,
+        request.home.as_deref(),
+        max_depth - entry.depth,
+    );
+    if fields.is_empty() {
+        return fields;
+    }
+    let (shapes, runtime) = match &entry.result {
+        ResolveInvocationArtifactResult::Resolved(r) => (
+            r.projection
+                .args
+                .iter()
+                .filter_map(|a| a.substitution_shape.map(|shape| (a.span.clone(), shape)))
+                .collect(),
+            InvocationRuntimeContext {
+                shell_kind: entry.shell_kind,
+                stdin_payload_available: r
+                    .materialized_projection
+                    .invocation
+                    .stdin_payload_available,
+                interactive_session: r.materialized_projection.invocation.interactive_session,
+            },
+        ),
+        _ => (
+            Vec::new(),
+            runtime_context_for_parsed_command(
+                &entry.parsed_scope,
+                entry.command_ref.command_index,
+                command,
+            ),
+        ),
+    };
+    entry.result = caushell_profile::resolve_invocation_artifact_with_argument_proofs(
+        registry,
+        command,
+        runtime,
+        &entry.bindings,
+        &shapes,
+        &fields,
+    );
+    let materialized_command = render_command_with_argument_fields(command, &fields);
+    for (index, proof) in fields.iter().enumerate() {
+        ctx.add_evidence(Evidence {
+            rule_id: caushell_types::RuleId::SelectionError,
+            summary: "complete static shell argument fields".into(),
+            kind: caushell_types::EvidenceKind::ShellArgumentFields(
+                caushell_types::ShellArgumentFieldsEvidence {
+                    node_id: entry.source_node_id.0.clone(),
+                    source_start_byte: proof.span.start_byte,
+                    source_end_byte: proof.span.end_byte,
+                    source_word: proof.source_word.clone(),
+                    fields: proof.fields.clone(),
+                    materialized_command: (index == 0)
+                        .then(|| materialized_command.clone())
+                        .flatten(),
+                },
+            ),
+        });
+    }
+    fields
+}
+
+fn render_command_with_argument_fields(
+    command: &caushell_parse::CommandFact,
+    proofs: &[caushell_profile::ArgumentFieldsProof],
+) -> Option<String> {
+    let mut edits = Vec::new();
+    let mut expanded = false;
+    for token in &command.tokens {
+        if token.command_substitutions.is_empty() && !token.runtime_data {
+            continue;
+        }
+        if token.implicit_input_source.is_some() || token.runtime_argument_domain.is_some() {
+            return None;
+        }
+        let start = token.span.start_byte.checked_sub(command.span.start_byte)?;
+        let end = token.span.end_byte.checked_sub(command.span.start_byte)?;
+        if token.runtime_data {
+            edits.push((start, end, shell_quote_arg(&token.text)));
+            continue;
+        }
+        let proof = proofs
+            .iter()
+            .find(|p| p.span == token.span && p.source_word == token.text)?;
+        edits.push((
+            start,
+            end,
+            proof
+                .fields
+                .iter()
+                .map(shell_quote_arg)
+                .collect::<Vec<_>>()
+                .join(" "),
+        ));
+        expanded = true;
+    }
+    if !expanded {
+        return None;
+    }
+    edits.sort_by_key(|e| e.0);
+    let mut out = String::new();
+    let mut cursor = 0;
+    for (start, end, replacement) in edits {
+        out.push_str(command.text.get(cursor..start)?);
+        out.push_str(&replacement);
+        cursor = end;
+    }
+    out.push_str(command.text.get(cursor..)?);
+    (out.len() <= 262_144).then_some(out)
 }
 
 fn expanded_virtual_node_id(
@@ -9154,35 +9026,6 @@ fn expanded_virtual_node_id_with_suffix(
     suffix: &str,
 ) -> caushell_graph::NodeId {
     caushell_graph::NodeId::new(format!("expanded-{kind}:{}:{suffix}", parent_node_id.0))
-}
-
-fn render_command_reconstruction_token(
-    token: &caushell_parse::CommandToken,
-    materialized: &str,
-) -> String {
-    match token.kind {
-        caushell_parse::CommandTokenKind::Flag | caushell_parse::CommandTokenKind::DashDash => {
-            materialized.to_string()
-        }
-        caushell_parse::CommandTokenKind::Arg => {
-            if token.quoted || needs_shell_quoting(materialized) {
-                shell_quote_arg(materialized)
-            } else {
-                materialized.to_string()
-            }
-        }
-    }
-}
-
-fn needs_shell_quoting(text: &str) -> bool {
-    text.is_empty()
-        || text.chars().any(|ch| {
-            ch.is_whitespace()
-                || matches!(
-                    ch,
-                    '\'' | '"' | '$' | '`' | '\\' | '(' | ')' | ';' | '&' | '|' | '<' | '>'
-                )
-        })
 }
 
 fn shell_quote_arg(text: impl AsRef<str>) -> String {
@@ -9223,18 +9066,30 @@ fn project_dispatch_derived_invocation_mutation(
 }
 
 fn project_unresolved_dispatch_records(
-    _request: &caushell_types::CheckRequest,
-    unresolved_dispatches: &[TopLevelUnresolvedDispatch],
+    registry: &ProfileRegistry,
+    records: &[ExecutionUnitResolveRecord],
 ) -> Vec<UnresolvedDispatchRecord> {
-    unresolved_dispatches
+    records
         .iter()
-        .map(|dispatch| {
-            UnresolvedDispatchRecord::new(
-                dispatch.source_node_id.clone(),
-                ParsedCommandRef::new(dispatch.source_command_index, dispatch.span.clone()),
-                dispatch.dispatch_index,
-                dispatch.command_slot.clone(),
-            )
+        .flat_map(|record| {
+            let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+                return Vec::new();
+            };
+            if should_skip_generic_dispatch_projection(resolved) {
+                return Vec::new();
+            }
+            registered_dispatch_projection(registry, resolved)
+                .unresolved
+                .into_iter()
+                .map(|candidate| {
+                    UnresolvedDispatchRecord::new(
+                        record.source_node_id.clone(),
+                        record.command_ref.clone(),
+                        candidate.dispatch_index,
+                        candidate.command_slot.as_str().to_owned(),
+                    )
+                })
+                .collect::<Vec<_>>()
         })
         .collect()
 }
@@ -11544,7 +11399,7 @@ mod tests {
             .commands
             .remove(0);
         let child = caushell_profile::DispatchCommandCandidate {
-            module_runtime: None,
+            lookup_domain: caushell_profile::CommandLookupDomain::External,
             dispatch_index: 0,
             command: caushell_profile::DispatchArgument {
                 slot: caushell_profile::SlotName::new("child"),
@@ -12600,15 +12455,12 @@ modifiers:
             r#"bash -lc "$(sh -c 'printf "echo ok"')""#,
         );
 
-        let materialized = ctx
-            .execution_unit_resolve_records()
-            .iter()
-            .filter(|record| {
-                record.origin_kind
-                    == caushell_runner::ExecutionUnitOriginKind::CommandSubstitutionMaterialization
-            })
-            .map(|record| record.rendered_command_text.as_str())
-            .collect::<Vec<_>>();
+        let materialized = ctx.evidence.iter().filter_map(|e| match &e.kind {
+            caushell_types::EvidenceKind::ShellArgumentFields(p) => p.materialized_command.as_deref(),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert!(!ctx.execution_unit_resolve_records().iter().any(|record|
+            record.origin_kind == caushell_runner::ExecutionUnitOriginKind::CommandSubstitutionMaterialization));
 
         assert!(
             materialized.contains(&"bash -lc 'echo ok'"),
@@ -12626,15 +12478,12 @@ modifiers:
             r#"bash -lc "$(cat <(printf 'echo ok'))""#,
         );
 
-        let materialized = ctx
-            .execution_unit_resolve_records()
-            .iter()
-            .filter(|record| {
-                record.origin_kind
-                    == caushell_runner::ExecutionUnitOriginKind::CommandSubstitutionMaterialization
-            })
-            .map(|record| record.rendered_command_text.as_str())
-            .collect::<Vec<_>>();
+        let materialized = ctx.evidence.iter().filter_map(|e| match &e.kind {
+            caushell_types::EvidenceKind::ShellArgumentFields(p) => p.materialized_command.as_deref(),
+            _ => None,
+        }).collect::<Vec<_>>();
+        assert!(!ctx.execution_unit_resolve_records().iter().any(|record|
+            record.origin_kind == caushell_runner::ExecutionUnitOriginKind::CommandSubstitutionMaterialization));
 
         assert!(
             materialized.contains(&"bash -lc 'echo ok'"),
@@ -12666,6 +12515,8 @@ modifiers:
             record.origin_kind
                 == caushell_runner::ExecutionUnitOriginKind::CommandSubstitutionMaterialization
         }));
+        assert!(!ctx.evidence.iter().any(|e|matches!(&e.kind,
+            caushell_types::EvidenceKind::ShellArgumentFields(p) if p.materialized_command.is_some())));
     }
 
     #[test]

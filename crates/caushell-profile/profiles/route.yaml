@@ -1,0 +1,22 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: permuted_options
+opaque_on_unresolved: true
+identity: {canonical_name: route, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: routing_table_query
+    selector: {kind: no_positional_args}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+    effects: [{kind: transform_data, target: {kind: none}}]
+modifiers:
+  - {id: display, matcher: {kind: any_flag, flags: [-n, -v]}}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://github.com/ecki/net-tools/blob/master/route.c
+    - https://github.com/apple-oss-distributions/network_cmds/blob/main/route.tproj/route.c
+  caushell.profile/review_scope:
+    - Only no-operand query/usage with numeric or verbose display. Darwin no-operand usage has no route mutation.
+    - add/delete/change/flush and unreviewed controls remain unresolved. Darwin -f may flush routes and must not be confused with a display flag.

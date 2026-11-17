@@ -1,0 +1,269 @@
+{
+  "dsl_version": "caushell.profile/v1alpha1",
+  "kind": "command_profile",
+  "option_scope": "permuted_options",
+  "opaque_on_unresolved": true,
+  "identity": {
+    "canonical_name": "lsblk",
+    "aliases": []
+  },
+  "trust": {
+    "tier": "tier_a",
+    "source": "built_in"
+  },
+  "platform": {
+    "os_families": [
+      "posix",
+      "linux"
+    ],
+    "shell_families": [],
+    "requires_features": []
+  },
+  "forms": [
+    {
+      "id": "query",
+      "selector": {
+        "kind": "all",
+        "items": []
+      },
+      "stream_contract": {
+        "stdin_mode": "ignored",
+        "stdout_mode": "data",
+        "stderr_mode": "opaque",
+        "stdout_dependency": "independent"
+      },
+      "effects": [
+        {
+          "kind": "read_path",
+          "path_access": "content_open",
+          "target": {
+            "kind": "slot",
+            "name": "devices"
+          }
+        }
+      ],
+      "remaining_selector": {
+        "kind": "no_positional_args"
+      },
+      "parameters": [
+        {
+          "name": "devices",
+          "semantic": {
+            "kind": "path",
+            "role": "read",
+            "purpose": "generic_operand"
+          },
+          "binding": {
+            "kind": "remaining_positionals"
+          },
+          "cardinality": "optional_many"
+        }
+      ]
+    }
+  ],
+  "modifiers": [
+    {
+      "id": "display",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-A",
+          "--noempty",
+          "-a",
+          "--all",
+          "-b",
+          "--bytes",
+          "-D",
+          "--discard",
+          "-d",
+          "--nodeps",
+          "-f",
+          "--fs",
+          "-i",
+          "--ascii",
+          "-J",
+          "--json",
+          "-l",
+          "--list",
+          "-M",
+          "--merge",
+          "-m",
+          "--perms",
+          "-N",
+          "--nvme",
+          "-v",
+          "--virtio",
+          "-n",
+          "--noheadings",
+          "-O",
+          "--output-all",
+          "-P",
+          "--pairs",
+          "-p",
+          "--paths",
+          "-r",
+          "--raw",
+          "-S",
+          "--scsi",
+          "-s",
+          "--inverse",
+          "-t",
+          "--topology",
+          "-y",
+          "--shell",
+          "-z",
+          "--zoned",
+          "-h",
+          "--help",
+          "-V",
+          "--version"
+        ]
+      }
+    },
+    {
+      "id": "columns",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-o",
+          "--output"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "columns",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "dedup",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-E",
+          "--dedup"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "dedup_column",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "exclude",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-e",
+          "--exclude"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "exclude_devices",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "include",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-I",
+          "--include"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "include_devices",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "width",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-w",
+          "--width"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "width",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    },
+    {
+      "id": "sort",
+      "matcher": {
+        "kind": "any_flag",
+        "flags": [
+          "-x",
+          "--sort"
+        ]
+      },
+      "parameters": [
+        {
+          "name": "sort_column",
+          "semantic": {
+            "kind": "plain_value"
+          },
+          "binding": {
+            "kind": "following_matched_flag",
+            "operand_mode": "next_arg"
+          },
+          "cardinality": "required_many"
+        }
+      ]
+    }
+  ],
+  "subcommands": null,
+  "extensions": {
+    "caushell.profile/sources": [
+      "https://github.com/util-linux/util-linux/blob/v2.41/misc-utils/lsblk.8.adoc"
+    ],
+    "caushell.profile/review_scope": "Native sysfs/udev/blkid block-device metadata reader. -D reports discard capabilities; it does not discard data. Explicit devices remain possible content reads; no stdin use. --sysroot/properties/filter/experimental controls unreviewed and stay Ask."
+  }
+}

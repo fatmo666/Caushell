@@ -604,7 +604,7 @@ fn transform_kinds_by_source_node(
                 .effects
                 .iter()
                 .find(|effect| effect.kind == EffectKind::TransformData)
-                .map(|effect| transform_kind_from_extensions(&effect.extensions))
+                .and_then(|effect| effect.provenance_transform_kind())
                 .unwrap_or(ProvenanceTransformKind::Generic);
 
             resolved
@@ -615,25 +615,6 @@ fn transform_kinds_by_source_node(
                 .then(|| (record.source_node_id.clone(), transform_kind))
         })
         .collect()
-}
-
-fn transform_kind_from_extensions(
-    extensions: &caushell_profile::ExtensionMap,
-) -> ProvenanceTransformKind {
-    match extensions
-        .get("transform.kind")
-        .and_then(|value| value.as_str())
-        .unwrap_or("generic")
-    {
-        "encode" => ProvenanceTransformKind::Encode,
-        "decode" => ProvenanceTransformKind::Decode,
-        "encrypt" => ProvenanceTransformKind::Encrypt,
-        "decrypt" => ProvenanceTransformKind::Decrypt,
-        "hash" => ProvenanceTransformKind::Hash,
-        "compress" => ProvenanceTransformKind::Compress,
-        "decompress" => ProvenanceTransformKind::Decompress,
-        _ => ProvenanceTransformKind::Generic,
-    }
 }
 
 #[cfg(test)]

@@ -1,6 +1,14 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 opaque_on_unresolved: true
+option_scope: leading_options
+# Native seq stops option scanning at a negative-number operand. Unreviewed
+# locale-specific spellings stay conservative; this never evaluates a number.
+option_operand_matcher:
+  kind: regex_pattern
+  pattern: '^-(?:[0-9]+(?:\.[0-9]*)?(?:[eE][+-]?[0-9]+)?|\.[0-9]+(?:[eE][+-]?[0-9]+)?|0[xX][0-9a-fA-F]+(?:\.[0-9a-fA-F]*)?(?:[pP][+-]?[0-9]+)?)$'
+read_only_control_surface: true
+native_argv_effect_envelope: []
 
 identity:
   canonical_name: seq
@@ -19,6 +27,11 @@ platform:
   requires_features: []
 
 forms:
+  - id: information
+    selector: {kind: has_modifier, modifier: information}
+    parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: inputs}
+    effects: [{kind: transform_data, target: {kind: none}}]
   # Fixed-point integer operands and the native newline separator produce
   # decimal arithmetic text. Do not borrow this contract for custom formats,
   # floating-point spellings, unknown controls, or arbitrarily large inputs.
@@ -26,7 +39,10 @@ forms:
     selector: &integer_sequence
       kind: all
       items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
         - {kind: not, item: {kind: has_modifier, modifier: format}}
+        - {kind: not, item: {kind: has_modifier, modifier: separator}}
+        - {kind: not, item: {kind: has_modifier, modifier: equal_width}}
         - {kind: has_positional_at_matching, index: 0, matcher: &integer {kind: regex_pattern, pattern: '^[0-9]{1,9}$'}}
         - kind: any
           items:
@@ -46,13 +62,15 @@ forms:
         binding: {kind: remaining_positionals}
         cardinality: required_many
     remaining_selector: {kind: no_positional_args}
-    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
     stdout_scalar: arithmetic_text
     effects: [{kind: transform_data, target: {kind: none}}]
   - id: generate_sequence
     selector:
-      kind: not
-      item: *integer_sequence
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - {kind: not, item: *integer_sequence}
     parameters:
       - name: sequence_values
         semantic:
@@ -64,7 +82,9 @@ forms:
     stream_contract:
       stdin_mode: ignored
       stdout_mode: data
-      stderr_mode: opaque
+      stderr_mode: data
+      stdout_dependency: inputs
+      stderr_dependency: inputs
     effects:
       - kind: transform_data
         target:
@@ -85,9 +105,22 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: optional_one
+        cardinality: required_many
+  - id: separator
+    matcher: {kind: any_flag, flags: [-s, --separator]}
+    parameters:
+      - {name: separator, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - {id: equal_width, matcher: {kind: any_flag, flags: [-w, --equal-width]}}
+  - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
 
 subcommands: null
 extensions:
   caushell.profile/source_research:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
+  caushell.profile/sources:
+    - https://github.com/coreutils/coreutils/blob/master/src/seq.c
+    - https://www.gnu.org/software/coreutils/manual/html_node/seq-invocation.html
+  caushell.profile/review_scope:
+    - Native CLI modes only generate data or diagnostics; they do not read input files, write paths, dispatch commands or evaluate argument text as shell.
+    - Format/width/separator/help and symbolic argv do not inherit the default bounded-integer arithmetic-output proof. All argument-derived output retains input provenance.
+    - No output record/count/growth assertion for symbolic argv; unknown literal controls remain unresolved.

@@ -3,6 +3,7 @@ kind: command_profile
 option_scope: permuted_options
 opaque_on_unresolved: true
 read_only_control_surface: true
+native_argv_effect_envelope: metadata_query
 identity: {canonical_name: stat, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}

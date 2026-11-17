@@ -5,6 +5,7 @@ use caushell_types::*;
 
 fn output(blocks: &[&str], order: StreamRecordOrder) -> StdoutRecordsEvidence {
     StdoutRecordsEvidence {
+        producer_contract_sha256: None,
         node_id: "producer".into(),
         producer_node_id: "producer".into(),
         session_id: "s".into(),

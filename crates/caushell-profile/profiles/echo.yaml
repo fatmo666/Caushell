@@ -1,7 +1,10 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+read_only_control_surface: true
+native_argv_effect_envelope: []
 
 identity:
+  execution_domain: shell_and_external
   canonical_name: echo
   aliases: []
 

@@ -33,7 +33,7 @@ pub enum DispatchWorkingDirectory {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct DispatchCommandCandidate {
-    pub module_runtime: Option<String>,
+    pub lookup_domain: crate::CommandLookupDomain,
     pub dispatch_index: usize,
     pub command: DispatchArgument,
     pub argv: Vec<DispatchArgument>,
@@ -52,7 +52,7 @@ pub struct DispatchCommandCandidate {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct UnresolvedDispatchCommand {
-    pub module_runtime: Option<String>,
+    pub lookup_domain: crate::CommandLookupDomain,
     pub dispatch_index: usize,
     pub command_slot: SlotName,
 }
@@ -156,7 +156,7 @@ pub fn collect_dispatch_command_projection(
                 let joined_value = if join_arguments {
                     let Some(value) = joined_command_argument(parameter) else {
                         unresolved.push(UnresolvedDispatchCommand {
-                            module_runtime: target.module_runtime.clone(),
+                            lookup_domain: target.lookup_domain.clone(),
                             dispatch_index,
                             command_slot: slot.clone(),
                         });
@@ -186,7 +186,7 @@ pub fn collect_dispatch_command_projection(
                     };
                     let Some(crate::SemanticValueResolution::Known(text)) = resolution else {
                         unresolved.push(UnresolvedDispatchCommand {
-                            module_runtime: target.module_runtime.clone(),
+                            lookup_domain: target.lookup_domain.clone(),
                             dispatch_index: index,
                             command_slot: slot.clone(),
                         });
@@ -202,7 +202,7 @@ pub fn collect_dispatch_command_projection(
                     };
                     let Some((executable, words)) = projected else {
                         unresolved.push(UnresolvedDispatchCommand {
-                            module_runtime: target.module_runtime.clone(),
+                            lookup_domain: target.lookup_domain.clone(),
                             dispatch_index: index,
                             command_slot: slot.clone(),
                         });
@@ -238,7 +238,7 @@ pub fn collect_dispatch_command_projection(
                             .map(|word| literal_dispatch_argument(word, &mut next_span)),
                     );
                     resolved.push(DispatchCommandCandidate {
-                        module_runtime: target.module_runtime.clone(),
+                        lookup_domain: target.lookup_domain.clone(),
                         dispatch_index: index,
                         command,
                         argv,
@@ -296,7 +296,7 @@ pub fn collect_dispatch_command_projection(
                 };
                 let Some(command) = single_argument_for_parameter(slot, parameter) else {
                     unresolved.push(UnresolvedDispatchCommand {
-                        module_runtime: target.module_runtime.clone(),
+                        lookup_domain: target.lookup_domain.clone(),
                         dispatch_index: current_dispatch_index,
                         command_slot: slot.clone(),
                     });
@@ -318,7 +318,7 @@ pub fn collect_dispatch_command_projection(
         // (including potential options) as a completely resolved invocation.
         if let Some(slot) = projected_argv.unresolved_slot {
             unresolved.push(UnresolvedDispatchCommand {
-                module_runtime: target.module_runtime.clone(),
+                lookup_domain: target.lookup_domain.clone(),
                 dispatch_index: current_dispatch_index,
                 command_slot: slot,
             });
@@ -332,7 +332,7 @@ pub fn collect_dispatch_command_projection(
         );
 
         resolved.push(DispatchCommandCandidate {
-            module_runtime: target.module_runtime.clone(),
+            lookup_domain: target.lookup_domain.clone(),
             dispatch_index: current_dispatch_index,
             command,
             argv,
@@ -870,7 +870,7 @@ mod tests {
             namespace_effect: None,
             path_scope: None,
             target: EffectTarget::Dispatch(DispatchTarget {
-                module_runtime: None,
+                lookup_domain: crate::CommandLookupDomain::External,
                 command: crate::DispatchCommandSource::Slot(SlotName::new(command)),
                 argv_prefix: Vec::new(),
                 argv: argv.iter().copied().map(SlotName::new).collect(),

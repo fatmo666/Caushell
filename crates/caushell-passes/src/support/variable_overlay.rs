@@ -1449,28 +1449,7 @@ pub(crate) fn apply_positional_parameter_mutation(
             bindings.replace_positional_parameters(values);
         }
         PositionalParameterMutation::Shift(count) => {
-            if !bindings.positional_parameters_are_complete() {
-                bindings.forget_positional_parameters();
-                return;
-            }
-            let domains = (count..bindings.positional_parameters().len())
-                .filter_map(|index| {
-                    bindings
-                        .positional_argument_domain(index + 1)
-                        .cloned()
-                        .map(|domain| (index + 1 - count, domain))
-                })
-                .collect::<Vec<_>>();
-            let values = bindings
-                .positional_parameters()
-                .iter()
-                .skip(count)
-                .cloned()
-                .collect::<Vec<_>>();
-            bindings.replace_positional_parameters(values);
-            for (position, domain) in domains {
-                bindings.set_positional_argument_domain(position, domain);
-            }
+            bindings.shift_positional_frame(count);
         }
         PositionalParameterMutation::Forget => {
             bindings.forget_positional_parameters();
@@ -1495,7 +1474,9 @@ fn shift_positional_parameters(
         _ => return None,
     };
 
-    if !bindings.positional_parameters_are_complete() {
+    if !bindings.positional_parameters_are_complete()
+        && (!bindings.has_positional_runtime_tail() || count > bindings.positional_parameters().len())
+    {
         return Some(PositionalParameterMutation::Forget);
     }
     if count > bindings.positional_parameters().len() {
@@ -1509,6 +1490,12 @@ fn exact_set_positional_token_value(
     token: &CommandToken,
     bindings: &SessionBindings,
 ) -> Option<String> {
+    // A native argv field has already crossed quote removal/materialization.
+    // Its old source node kind (e.g. simple_expansion for $1) is not a reason
+    // to parse the decoded bytes as shell source again or forget its value.
+    if token.runtime_data && token.implicit_input_source.is_none() {
+        return Some(token.text.clone());
+    }
     if exact_shell_parameter_reference(&token.text).is_some() {
         let value = exact_scalar_shell_parameter_reference_value(&token.text, bindings)?;
         return (token.quoted || is_plain_unquoted_set_arg_literal(&value)).then_some(value);

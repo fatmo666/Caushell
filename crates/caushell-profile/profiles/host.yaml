@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+read_only_control_surface: true
+native_argv_effect_envelope: [network_query]
+identity: {canonical_name: host, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: query_or_usage
+    selector: {kind: all, items: []}
+    parameters:
+      - {name: query_words, semantic: {kind: endpoint, endpoint_kind: host_port, usage: generic_endpoint}, value_projection: {kind: unknown}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects:
+      - {kind: network_endpoint, target: {kind: slot, name: query_words}, input_scope: {slots: [query_words, settings], stdin: false}}
+      - {kind: transform_data, target: {kind: none}}
+modifiers:
+  - {id: query_flags, matcher: {kind: any_flag, flags: ['-4', '-6', -a, -A, -C, -d, -D, -i, -l, -n, -r, -s, -T, -U, -v, -V, -w]}}
+  - id: settings
+    matcher: {kind: any_flag, flags: [-c, -m, -N, -p, -R, -t, -W]}
+    parameters:
+      - {name: settings, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://github.com/isc-projects/bind9/blob/v9.20.15/bin/dig/host.c
+    - https://github.com/isc-projects/bind9/blob/v9.20.15/bin/dig/dighost.c
+  caushell.profile/review_scope:
+    - Audited BIND host CLI performs DNS queries or diagnostics, including AXFR/IXFR. No file operand, command callback, script source, output file or interactive interpreter mode.
+    - Query and resolver spellings remain generic outgoing data with unknown routing; DNS results do not certify local egress or output shape. All uncertain argv fields retain query provenance.
+    - This network effect capability grants neither content reads nor writes nor execution. Hidden configuration/dispatch and changed native effects invalidate closure. Unreviewed literal controls stay unresolved.

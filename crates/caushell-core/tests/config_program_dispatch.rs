@@ -1,3 +1,5 @@
+#[path = "support/git_fixture.rs"]
+mod git_fixture;
 use caushell_core::ShellQueryCore;
 use caushell_types::*;
 
@@ -6,7 +8,10 @@ fn request(command: &str, persistent: bool) -> CheckRequest {
         session_id: SessionId::new("config-program-dispatch"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
-        shell_state_before: ShellStateSnapshot::new("/bench/workspace"),
+        shell_state_before: ShellStateSnapshot::new("/bench/workspace")
+            .with_variable_knowledge(ShellStateKnowledge::Complete)
+            .with_exact_scalar_variable("HOME", "/home/benchmark-user", true)
+            .with_exact_scalar_variable("GIT_CONFIG_NOSYSTEM", "1", true),
         shell_kind: ShellKind::Bash,
         home: Some("/home/benchmark-user".into()),
         workspace_root: Some("/bench/workspace".into()),
@@ -23,7 +28,7 @@ fn request(command: &str, persistent: bool) -> CheckRequest {
 }
 
 fn check(command: &str, expected: Decision) -> CheckResponse {
-    let r = ShellQueryCore::new().check(request(command, true));
+    let r = git_fixture::core().check(request(command, true));
     assert_eq!(r.decision, expected, "{command}: {:#?}", r.reasons);
     r
 }
@@ -46,9 +51,7 @@ fn configured_tasks_and_hooks_share_dispatch_expansion() {
             ("printf SAFE", Decision::Allow, "printf"),
         ] {
             let prefix = if file == "hook" {
-                format!(
-                    "git init .; echo '{body}' >.git/hooks/pre-commit; chmod +x .git/hooks/pre-commit"
-                )
+                format!("echo '{body}' >.git/hooks/pre-commit; chmod +x .git/hooks/pre-commit")
             } else {
                 setup(file, body)
             };
@@ -61,7 +64,7 @@ fn configured_tasks_and_hooks_share_dispatch_expansion() {
             ] {
                 let command = format!("{prefix}; {invocation}");
                 for persistent in [false, true] {
-                    let r = ShellQueryCore::new().check(request(&command, persistent));
+                    let r = git_fixture::core().check(request(&command, persistent));
                     assert_eq!(r.decision, expected, "{command}: {:?}", r.reasons);
                     let payloads: Vec<_> = r
                         .decision_trace
@@ -231,13 +234,13 @@ fn hook_dispatch_preserves_stage_and_executable_controls() {
     ] {
         check(
             &format!(
-                "git init .; echo 'rm -rf /' >.git/hooks/{stage}; chmod +x .git/hooks/{stage}; printf one | xargs -I{{}} {tail}"
+                "echo 'rm -rf /' >.git/hooks/{stage}; chmod +x .git/hooks/{stage}; printf one | xargs -I{{}} {tail}"
             ),
             expected,
         );
     }
     check(
-        "git init .; echo 'rm -rf /' >.git/hooks/pre-commit; chmod a-x .git/hooks/pre-commit; printf one | xargs -I{} git commit --allow-empty -m x",
+        "echo 'rm -rf /' >.git/hooks/pre-commit; chmod a-x .git/hooks/pre-commit; printf one | xargs -I{} git commit --allow-empty -m x",
         Decision::Allow,
     );
 }

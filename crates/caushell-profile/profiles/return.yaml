@@ -1,0 +1,29 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity:
+  execution_domain: shell_builtin
+  canonical_name: return
+  aliases: []
+trust: {tier: tier_a, source: built_in}
+platform:
+  os_families: [posix, linux, macos]
+  shell_families: [bourne, bash, sh, dash]
+  requires_features: []
+opaque_on_unresolved: true
+forms:
+  # Every native argv shape either returns from the current function/source,
+  # shows help, or reports a status/arity error. None executes argv as code.
+  # The declared effect is MAY-return; consumers must retain continuation too.
+  - id: possible_scope_return
+    selector: {kind: all, items: []}
+    parameters:
+      - name: status_arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - kind: return_from_shell_scope
+        target: {kind: none}
+modifiers: []
+subcommands: null
+extensions: {}

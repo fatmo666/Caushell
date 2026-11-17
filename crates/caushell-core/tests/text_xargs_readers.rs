@@ -29,6 +29,7 @@ fn text_input_can_use_a_proved_reader_control_envelope() {
         "find /unobserved -print | xargs cat --",
         "find /unobserved -print | xargs -n1 cat",
         "find /unobserved -print | xargs wc -l --",
+        "find /unobserved -print | xargs grep -e --",
     ] {
         let r = check(c);
         assert_eq!(r.decision, Decision::Allow, "{c}: {:?}", r.reasons);
@@ -39,7 +40,6 @@ fn indirect_input_and_unproved_control_ownership_remain_guarded() {
     for c in [
         "find /unobserved -print | xargs wc -l",
         "find /unobserved -print | xargs wc --files0-from",
-        "find /unobserved -print | xargs grep -e --",
         "find /unobserved -print | xargs cat --unreviewed-control",
         "find /unobserved -print | xargs cat -f /outside/args",
         "producer | xargs cat",

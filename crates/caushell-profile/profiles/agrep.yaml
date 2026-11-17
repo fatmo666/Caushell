@@ -1,0 +1,43 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+option_scope: leading_options
+opaque_on_unresolved: true
+identity: {canonical_name: agrep, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+forms:
+  - id: positional_pattern
+    selector: {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: pattern}, {kind: has_modifier, modifier: pattern_file}]}}
+    parameters:
+      - {name: pattern, semantic: {kind: structured_value, context: regex}, binding: {kind: next_positional}, cardinality: required_one}
+      - &files {name: input_files, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    stream_contract: &stream {stdin_mode: data_optional, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects: &effects [{kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}, {kind: transform_data, target: {kind: none}}]
+  - id: explicit_pattern
+    selector: {kind: any, items: [{kind: has_modifier, modifier: pattern}, {kind: has_modifier, modifier: pattern_file}]}
+    parameters: [*files]
+    stream_contract: *stream
+    effects: *effects
+modifiers:
+  - {id: switches, matcher: {kind: any_flag, flags: ['-0', '-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8', '-9', -c, -h, -i, -k, -l, -n, -s, -v, -w, -y, -B]}}
+  - id: delimiter
+    matcher: {kind: any_flag, flags: [-d]}
+    parameters:
+      - {name: delimiter, semantic: {kind: structured_value, context: regex}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: pattern
+    matcher: {kind: any_flag, flags: [-e]}
+    parameters:
+      - {name: explicit_pattern, semantic: {kind: structured_value, context: regex}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+  - id: pattern_file
+    matcher: {kind: any_flag, flags: [-f]}
+    parameters:
+      - {name: pattern_files, semantic: {kind: path, role: read, purpose: auxiliary_input}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
+    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: pattern_files}}]
+subcommands: null
+extensions:
+  caushell.profile/sources:
+    - https://github.com/Wikinaut/agrep/blob/master/agrep.c
+    - https://github.com/laurikari/tre/blob/master/src/agrep.c
+  caushell.profile/review_scope:
+    - Finite reviewed search controls only; no total native argv certificate. Pattern files and input files retain content reads and stdin conservatively retains data dependence.
+    - TRE and Wu/Manber spellings differ. Unreviewed -H/-G dictionary and extension modes remain unresolved; do not invent line/record/scalar bounds from delimiters.

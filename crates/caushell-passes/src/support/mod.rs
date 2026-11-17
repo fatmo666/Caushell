@@ -2,7 +2,9 @@ mod module_contract;
 pub(crate) use module_contract::module_contract_evidence;
 mod alias;
 pub(crate) mod config_tasks;
+mod execution_environment;
 mod execution_records;
+pub(crate) use execution_environment::ExecutionEnvironment;
 mod file_execution;
 mod function_overlay;
 pub(crate) mod git_hooks;
@@ -90,10 +92,9 @@ pub(crate) use hard_deny::{
     collect_execution_unit_scoped_reason_buckets, collect_resolved_device_target_reason_buckets,
 };
 pub(crate) use implicit_startup::{
-    ImplicitStartupEnvironmentSource, collect_implicit_startup_config_candidates,
-    command_env_artifact_node_id, command_env_value_artifact, implicit_startup_path_fact_index,
-    implicit_startup_slot_name, implicit_startup_source_node_ids, inherited_env_artifact_node_id,
-    inherited_env_value_artifact,
+    collect_implicit_startup_config_candidates, command_env_artifact_node_id,
+    command_env_value_artifact, implicit_startup_path_fact_index, implicit_startup_slot_name,
+    implicit_startup_source_node_ids,
 };
 pub(crate) use node_ids::{
     execution_semantics_node_id, nested_payload_node_id, pipeline_segment_node_id,
@@ -120,7 +121,8 @@ pub(crate) use shell_sink_hard_deny::{
 pub(crate) use static_payload::{
     StaticFileContent, StaticStreamEvidence, known_literal_path_content_before_execution_unit,
     known_literal_path_content_before_scoped_command, known_literal_path_content_before_sequence,
-    materialize_static_token_command_substitutions, materialize_static_token_text,
+    materialize_static_token_text,
+    static_command_substitution_output_with_cwd,
     process_substitution_evidence, static_file_content_before_scoped_command,
     static_io_target_evidence, static_stdin_evidence_for_scoped_command,
 };

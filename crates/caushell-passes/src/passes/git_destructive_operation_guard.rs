@@ -110,7 +110,9 @@ mod tests {
             session_id: SessionId::new("sess-1"),
             sequence_no: CommandSequenceNo::new(1),
             command: command.to_string(),
-            shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string()),
+            shell_state_before: caushell_types::ShellStateSnapshot::new("/tmp/project".to_string())
+                // Isolate repository-operation policy from unobserved config selectors.
+                .with_variable_knowledge(caushell_types::ShellStateKnowledge::Complete),
             shell_kind: ShellKind::Bash,
             runtime: RuntimeMetadata {
                 runtime_name: "codex".to_string(),
@@ -226,7 +228,13 @@ mod tests {
             let ctx = run_pass(command);
             assert_eq!(ctx.final_decision, Some(Decision::Allow), "{command}");
             assert!(ctx.decision_proposals.is_empty(), "{command}");
-            assert!(ctx.evidence.is_empty(), "{command}");
+            assert!(
+                ctx.evidence.iter().all(|e| !matches!(
+                    e.kind,
+                    caushell_types::EvidenceKind::RepositoryOperation(_)
+                )),
+                "{command}"
+            );
         }
     }
 }

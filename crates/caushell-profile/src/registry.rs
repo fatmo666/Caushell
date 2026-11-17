@@ -196,6 +196,39 @@ impl ProfileRegistry {
         )
     }
 
+    pub(crate) fn lookup_in_domain(
+        &self,
+        name: &str,
+        decoded: bool,
+        domain: &crate::CommandLookupDomain,
+    ) -> RegistryLookupResult<'_> {
+        if matches!(domain, crate::CommandLookupDomain::Builtin) && name.contains('/') {
+            return RegistryLookupResult {
+                normalized_command_name: name.into(),
+                profile: None,
+            };
+        }
+        let mut result = match domain {
+            crate::CommandLookupDomain::Module(runtime) => self.lookup_module(runtime, name),
+            _ if decoded => self.lookup_executable(name),
+            _ => self.lookup(name),
+        };
+        let shell_word = if decoded {
+            name
+        } else {
+            super::lookup::command_name_without_shell_escape(name)
+        };
+        result.profile = result.profile.filter(|profile| {
+            let requires_builtin_identity = matches!(domain, crate::CommandLookupDomain::Builtin)
+                || (matches!(domain, crate::CommandLookupDomain::Shell)
+                    && profile.identity.execution_domain
+                        == crate::ProfileExecutionDomain::ShellBuiltin);
+            profile.identity.execution_domain.supports(domain)
+                && (!requires_builtin_identity || profile.matches_name(shell_word))
+        });
+        result
+    }
+
     fn lookup_normalized(&self, exact_normalized_command_name: String) -> RegistryLookupResult<'_> {
         let coalesced_command_name =
             super::lookup::coalesce_command_family_name(&exact_normalized_command_name);
@@ -235,7 +268,8 @@ impl ProfileRegistry {
 }
 
 fn profile_runtime_variable_writer(profile: &CommandProfile) -> bool {
-    profile_has_effect(profile, crate::EffectKind::BindVariableFromRuntimeInput)
+    profile.native_variable_writes.is_some()
+        || profile_has_effect(profile, crate::EffectKind::BindVariableFromRuntimeInput)
 }
 
 fn profile_has_effect(profile: &CommandProfile, kind: crate::EffectKind) -> bool {

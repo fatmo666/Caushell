@@ -14,6 +14,13 @@ use crate::support::{ExecutionResolveRecordRef, graph_backed_execution_resolve_r
 
 pub struct ObserveStdoutRecordsPass;
 
+/// Candidates are private, decodable inputs, not an accepted snapshot. Their
+/// full directory/namespace closure is checked when the refined graph is
+/// accepted and again by the final observation pass before any decision.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(super) enum ObservationPhase { Candidate, Validated }
+
+
 impl SessionTransformPass for ObserveStdoutRecordsPass {
     fn name(&self) -> &'static str {
         "observe_stdout_records"
@@ -53,7 +60,7 @@ impl SessionTransformPass for ObserveStdoutRecordsPass {
                 _ => None,
             })
             .collect::<std::collections::BTreeMap<_, _>>();
-        observe_outputs(ctx, &BTreeSet::new(), &completed);
+        observe_outputs(ctx, &BTreeSet::new(), &completed, ObservationPhase::Validated);
         let failed = ctx
             .evidence
             .iter()
@@ -109,6 +116,7 @@ pub(super) fn observe_outputs(
     ctx: &mut RunnerContext,
     deferred: &BTreeSet<String>,
     completed: &BTreeSet<String>,
+    phase: ObservationPhase,
 ) {
     if !ctx.execution_unit_resolve_records().iter().any(|record| {
         matches!(&record.result,ResolveInvocationArtifactResult::Resolved(r)
@@ -126,6 +134,7 @@ pub(super) fn observe_outputs(
             continue;
         };
         let mut output = StdoutRecordsEvidence {
+            producer_contract_sha256: None,
             node_id: record.source_node_id().0.clone(),
             producer_node_id: record.source_node_id().0.clone(),
             session_id: ctx.request().session_id.0.clone(),
@@ -150,6 +159,7 @@ pub(super) fn observe_outputs(
                 &mut output,
                 deferred,
                 completed,
+                phase,
             )
         });
         match result {
@@ -241,13 +251,10 @@ fn observe(
     output: &mut StdoutRecordsEvidence,
     deferred: &BTreeSet<String>,
     completed: &BTreeSet<String>,
+    phase: ObservationPhase,
 ) -> Result<(), String> {
     let command = record.command().ok_or("producer command is unavailable")?;
-    output.encoding = Some(match plan.output.as_slice() {
-        [caushell_profile::NativeRecordFormat::Line] => caushell_types::StreamRecordEncoding::Lines,
-        [caushell_profile::NativeRecordFormat::Nul] => caushell_types::StreamRecordEncoding::Nul,
-        _ => caushell_types::StreamRecordEncoding::NativeFormat,
-    });
+    output.encoding = Some(plan.record_encoding());
     let pipe_stdout = crate::support::collect_pipeline_groups(record.parsed_scope())
         .iter()
         .any(|g| {
@@ -265,18 +272,7 @@ fn observe(
     {
         return Err("producer stdout terminal mode is unobserved".into());
     }
-    if plan.predicates.iter().any(|p| {
-        matches!(
-            p,
-            caushell_profile::NativePathPredicate::Name {
-                insensitive: true,
-                ..
-            } | caushell_profile::NativePathPredicate::Path {
-                insensitive: true,
-                ..
-            }
-        )
-    }) {
+    if plan.needs_case_locale() {
         let mut bindings = record.bindings().clone();
         for (name, value) in
             caushell_profile::materialize_prefix_environment(command, record.bindings())
@@ -310,39 +306,47 @@ fn observe(
         })
         .copied()
         .collect::<Vec<_>>();
-    if others.iter().any(|r| match r.result() {
-        ResolveInvocationArtifactResult::Resolved(resolved) => {
-            resolved.bound.operation_semantics_unresolved
-                || !resolved.bound.residuals.is_empty()
-                || resolved.bound.effects.iter().any(|e| {
-                    if e.kind == caushell_profile::EffectKind::DispatchCommand
-                        && completed.contains(&r.source_node_id().0)
-                    {
-                        return false;
-                    }
-                    !matches!(
-                        e.kind,
-                        caushell_profile::EffectKind::ReadPath
-                            | caushell_profile::EffectKind::WritePath
-                            | caushell_profile::EffectKind::DeletePath
-                            | caushell_profile::EffectKind::MovePath
-                            | caushell_profile::EffectKind::ChangeMode
-                            | caushell_profile::EffectKind::ChangeOwner
-                            | caushell_profile::EffectKind::ChangeGroup
-                            | caushell_profile::EffectKind::MetadataMutation
-                            | caushell_profile::EffectKind::SetCurrentWorkingDirectory
-                            | caushell_profile::EffectKind::SetExecutionWorkingDirectory
-                            | caushell_profile::EffectKind::ConsumeStdin
-                            | caushell_profile::EffectKind::ConsumeAuxiliaryValue
-                            | caushell_profile::EffectKind::ConsumeAuxiliaryEnvironment
-                            | caushell_profile::EffectKind::NetworkEndpoint
-                            | caushell_profile::EffectKind::TransformData
-                    )
-                })
-        }
-        _ => true,
+    if let Some((node, gap)) = others.iter().find_map(|r| {
+        let gap = match r.result() {
+            ResolveInvocationArtifactResult::Resolved(resolved) => {
+                if resolved.bound.operation_semantics_unresolved
+                    || !resolved.bound.residuals.is_empty()
+                {
+                    Some(format!(
+                        "{} has incomplete operation semantics: {:?}",
+                        resolved.normalized_command_name, resolved.bound.residuals
+                    ))
+                } else {
+                    resolved
+                        .bound
+                        .effects
+                        .iter()
+                        .find(|e| {
+                            match e.filesystem_namespace_impact() {
+                                caushell_profile::FilesystemNamespaceImpact::Neutral
+                                | caushell_profile::FilesystemNamespaceImpact::PathMutation => false,
+                                caushell_profile::FilesystemNamespaceImpact::Delegated => {
+                                    !completed.contains(&r.source_node_id().0)
+                                }
+                                caushell_profile::FilesystemNamespaceImpact::Opaque => true,
+                            }
+                        })
+                        .map(|e| {
+                            format!(
+                                "{} has unproved effect {:?}",
+                                resolved.normalized_command_name, e.kind
+                            )
+                        })
+                }
+            }
+            _ => Some("execution unit is unresolved".into()),
+        };
+        gap.map(|gap| (r.source_node_id(), gap))
     }) {
-        return Err("other action effects may change the producer namespace".into());
+        return Err(format!(
+            "other action effects may change the producer namespace: {}: {}",
+            node.0, gap
+        ));
     }
     let writes = namespace_changes(ctx, &others, &mut namespace);
     // Shell redirections take effect before the producer runs.
@@ -385,6 +389,27 @@ fn observe(
             None,
         ));
     }
+    let contract = caushell_runner::content_sha256(format!("{plan:?}").as_bytes());
+    output.producer_contract_sha256 = Some(contract.clone());
+    // A refined consumer changes the graph, not the native enumeration. Reuse
+    // its bytes only after the final consumer effects above are closed, the
+    // complete output contract/frame agree, and ALL directory/namespace facts
+    // are freshly revalidated below. The shared physical-read budget is intact.
+    if let Some(previous) = ctx.evidence.iter().find_map(|e| match &e.kind {
+        EvidenceKind::StdoutRecords(p)
+            if p.node_id == output.node_id
+                && p.complete
+                && p.producer_contract_sha256.as_ref() == Some(&contract)
+                && p.cwd == output.cwd
+                && p.environment_observations == output.environment_observations =>
+        {
+            Some(p.clone())
+        }
+        _ => None,
+    }) {
+        *output = previous;
+        queue.clear();
+    }
     let mut visited = 0usize;
     let mut bytes = 0usize;
     let mut path_bytes = 0usize;
@@ -398,27 +423,15 @@ fn observe(
         } else {
             spelling.rsplit('/').next().unwrap_or(&spelling)
         };
-        if plan
-            .accepts(&spelling, name, kind, depth)
-            .map_err(String::from)?
-        {
-            path_bytes = path_bytes
-                .checked_add(spelling.len())
-                .filter(|n| *n <= MAX_OBSERVED_STREAM_BYTES)
-                .ok_or("producer path byte budget exceeded")?;
-            let encoded = plan
-                .encode(&spelling, &relative, name)
-                .map_err(String::from)?;
-            bytes = bytes
-                .checked_add(encoded.len())
-                .filter(|n| *n <= MAX_OBSERVED_STREAM_BYTES)
-                .ok_or("producer byte budget exceeded")?;
-            output.records.push(ObservedStreamRecord {
-                path_spelling: spelling.clone(),
-                bytes: encoded,
-            });
+        let evaluation = plan.evaluate(&spelling, &relative, name, kind, depth).map_err(String::from)?;
+        if evaluation.emitted {
+            path_bytes = path_bytes.checked_add(spelling.len())
+                .filter(|n|*n<=MAX_OBSERVED_STREAM_BYTES).ok_or("producer path byte budget exceeded")?;
+            bytes = bytes.checked_add(evaluation.bytes.len())
+                .filter(|n|*n<=MAX_OBSERVED_STREAM_BYTES).ok_or("producer byte budget exceeded")?;
+            output.records.push(ObservedStreamRecord{path_spelling:spelling.clone(),bytes:evaluation.bytes});
         }
-        if kind != DirectoryEntryKind::Directory {
+        if kind != DirectoryEntryKind::Directory || evaluation.prune {
             continue;
         }
         let read = ctx.read_directory(&path, depth);
@@ -449,11 +462,31 @@ fn observe(
             }
         }
     }
+    // Preparation never publishes its candidate. Re-reading the entire tree
+    // here duplicates the mandatory acceptance closure and consumes the shared
+    // physical-read budget before either acceptance or the final check. The
+    // parent/child identities above still constrain this traversal; acceptance
+    // must freshly verify every stored observation before publishing it.
+    if phase == ObservationPhase::Candidate { return Ok(()); }
     // A later subtree read must not certify a stale earlier root observation.
     for previous in output.directory_observations.clone() {
         let read = ctx.read_directory(&previous.path, 0);
         if read.observation != previous {
-            return Err("directory changed during producer observation".into());
+            return Err(
+                if read.observation.status != caushell_types::DirectoryReadStatus::Complete {
+                    format!(
+                        "producer directory revalidation unavailable: {}: {:?}: {}",
+                        previous.path,
+                        read.observation.status,
+                        read.observation.detail.as_deref().unwrap_or("no detail")
+                    )
+                } else {
+                    format!(
+                        "directory changed during producer observation: {}",
+                        previous.path
+                    )
+                },
+            );
         }
     }
     let view = ctx.filesystem_view();

@@ -6595,7 +6595,7 @@ mod tests {
             argument_texts(find_bound_parameter(&invocation, "pathspecs")),
             vec!["src/main.rs", "Cargo.toml"]
         );
-        assert_eq!(invocation.effects.len(), 2);
+        assert_eq!(invocation.effects.len(), 3);
         assert_eq!(invocation.effects[0].kind, EffectKind::WritePath);
         assert_eq!(invocation.effects[1].kind, EffectKind::RepositoryOperation);
     }
@@ -6700,7 +6700,7 @@ mod tests {
             argument_texts(find_bound_parameter(&invocation, "pathspecs")),
             vec!["src/main.rs"]
         );
-        assert_eq!(invocation.effects.len(), 2);
+        assert_eq!(invocation.effects.len(), 3);
         assert_eq!(invocation.effects[0].kind, EffectKind::WritePath);
         assert_eq!(invocation.effects[1].kind, EffectKind::RepositoryOperation);
     }
@@ -6730,7 +6730,7 @@ mod tests {
             argument_texts(find_bound_parameter(&invocation, "pathspecs")),
             vec!["src/main.rs", "Cargo.toml"]
         );
-        assert_eq!(invocation.effects.len(), 2);
+        assert_eq!(invocation.effects.len(), 3);
         assert_eq!(invocation.effects[0].kind, EffectKind::WritePath);
         assert_eq!(invocation.effects[1].kind, EffectKind::RepositoryOperation);
     }
@@ -6965,7 +6965,7 @@ mod tests {
 
         assert_eq!(selection.form.id.as_str(), "reset_hard_worktree");
         assert_eq!(selection.subcommand_path, vec!["reset".to_string()]);
-        assert_eq!(invocation.effects.len(), 2);
+        assert_eq!(invocation.effects.len(), 3);
         assert_eq!(invocation.effects[0].kind, EffectKind::WritePath);
         assert_eq!(invocation.effects[1].kind, EffectKind::RepositoryOperation);
         assert!(matches!(
@@ -7121,7 +7121,8 @@ mod tests {
                 EffectKind::ReadPath,
                 EffectKind::LoadConfig,
                 EffectKind::WritePath,
-                EffectKind::ExecuteHook
+                EffectKind::ExecuteHook,
+                EffectKind::ReadPath
             ]
         );
     }
@@ -7153,7 +7154,8 @@ mod tests {
             vec![
                 EffectKind::ReadPath,
                 EffectKind::LoadConfig,
-                EffectKind::WritePath
+                EffectKind::WritePath,
+                EffectKind::ReadPath
             ]
         );
     }
@@ -7176,7 +7178,7 @@ mod tests {
             argument_texts(find_bound_parameter(&invocation, "subtree")),
             vec!["."]
         );
-        assert_eq!(invocation.effects.len(), 2);
+        assert_eq!(invocation.effects.len(), 3);
         assert_eq!(invocation.effects[0].kind, EffectKind::WritePath);
         assert_eq!(invocation.effects[1].kind, EffectKind::RepositoryOperation);
         assert!(matches!(
@@ -7204,7 +7206,7 @@ mod tests {
 
         assert_eq!(selection.form.id.as_str(), "checkout_branch_worktree");
         assert_eq!(selection.subcommand_path, vec!["checkout".to_string()]);
-        assert_eq!(invocation.effects.len(), 1);
+        assert_eq!(invocation.effects.len(), 2);
         assert_eq!(invocation.effects[0].kind, EffectKind::WritePath);
         assert!(matches!(
             &invocation.effects[0].target,
