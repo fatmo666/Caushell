@@ -603,3 +603,93 @@ fn an_existing_bounded_proof_does_not_become_fabricated_exact_fields() {
             .any(|s| s.operation_semantics_unresolved)
     );
 }
+
+fn without_pathname_options(command: &str) -> CheckRequest {
+    let mut request = request(command);
+    request.shell_state_before.pathname = None;
+    request
+}
+
+#[test]
+fn no_match_keeps_literal_targets_and_native_defaults_without_claiming_exact_argv() {
+    let response = check(
+        without_pathname_options("find */201111 -name '*.jpg'"),
+        Files::new(&["ordinary"]),
+    );
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    let proof = proofs(&response)[0];
+    assert_eq!(proof.unmatched_literal.as_deref(), Some("*/201111"));
+    assert!(proof.gap.is_none(), "{proof:?}");
+    assert!(!proof.complete && proof.fields.is_empty());
+    assert!(
+        response.decision_trace.path_targets.iter().any(|fact| {
+            let SemanticResolution::Resolved { value } = &fact.resolution else {
+                return false;
+            };
+            matches!(value, PathResolution::BoundedPathSet { roots, .. }
+                if roots == &["/workspace"])
+                || value.concrete_path() == Some("/workspace")
+        }),
+        "{:?}",
+        response.decision_trace.path_targets
+    );
+}
+
+#[test]
+fn no_match_does_not_hide_other_pipeline_stages_or_new_native_roles() {
+    let simple_pipeline = check(
+        without_pathname_options("file *.php | grep UTF"),
+        Files::new(&["ordinary"]),
+    );
+    assert_eq!(
+        simple_pipeline.decision,
+        Decision::Allow,
+        "{:?}",
+        simple_pipeline.reasons
+    );
+    assert!(has_command(&simple_pipeline, "grep"));
+    let outcome = check(
+        without_pathname_options("file *.php | python3 -"),
+        Files::new(&["ordinary"]),
+    );
+    assert_ne!(outcome.decision, Decision::Allow);
+    assert!(has_command(&outcome, "python3"));
+    let changed = check(
+        without_pathname_options("file -m *.missing local"),
+        Files::new(&["local"]),
+    );
+    assert_ne!(changed.decision, Decision::Allow, "{:?}", changed.reasons);
+    assert!(proofs(&changed)[0].gap.is_some());
+}
+
+#[test]
+fn possible_matches_and_stale_directory_observations_cannot_close_the_bound() {
+    for names in [&[".HIDDEN.PHP"][..], &["é"][..]] {
+        let outcome = check(without_pathname_options("file *.php"), Files::new(names));
+        assert!(proofs(&outcome)[0].unmatched_literal.is_none());
+    }
+    let mut files = Files::new(&["ordinary"]);
+    files.changed = true;
+    let outcome = check(without_pathname_options("file *.php"), files);
+    assert!(proofs(&outcome)[0].gap.is_some());
+    assert_ne!(outcome.decision, Decision::Allow);
+}
+
+#[test]
+fn no_match_joins_the_same_operands_across_layouts() {
+    for command in ["chmod +x *.sh", "find . name *foo", "find *-name hi.dat"] {
+        let result = check(without_pathname_options(command), Files::new(&["ordinary"]));
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(proofs(&result)[0].gap.is_none());
+    }
+    let outside = check(
+        without_pathname_options("chmod +x /outside/*.sh"),
+        Files::new(&["ordinary"]),
+    );
+    assert_ne!(outside.decision, Decision::Allow, "{:?}", outside.reasons);
+}

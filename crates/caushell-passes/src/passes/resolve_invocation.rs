@@ -2818,7 +2818,7 @@ fn materialize_pathname_fields(
     {
         frame = Err("pathname execution frame is incomplete".into());
     }
-    let proofs = super::pathname_fields::observe(
+    let mut proofs = super::pathname_fields::observe(
         ctx,
         &entry.source_node_id.0,
         &resolved.projection.args,
@@ -2831,10 +2831,6 @@ fn materialize_pathname_fields(
     if proofs.is_empty() {
         return;
     }
-    for proof in &proofs {
-        ctx.add_evidence(super::pathname_fields::evidence(proof.clone()));
-    }
-    entry.bindings.set_pathname_fields(proofs);
     let Some(command) = entry
         .parsed_scope
         .commands
@@ -2842,16 +2838,42 @@ fn materialize_pathname_fields(
     else {
         return;
     };
-    entry.result = resolve_invocation_artifact_with_bindings(
-        registry,
+    let runtime_context = runtime_context_for_parsed_command(
+        &entry.parsed_scope,
+        entry.command_ref.command_index,
         command,
-        runtime_context_for_parsed_command(
-            &entry.parsed_scope,
-            entry.command_ref.command_index,
-            command,
-        ),
-        &entry.bindings,
     );
+    let envelope = if entry.origin_kind == ExecutionUnitOriginKind::TopLevel
+        && proofs.iter().all(|proof| proof.unmatched_literal.is_some())
+    {
+        super::pathname_fields::unmatched_effects(
+            registry,
+            &entry.parsed_scope,
+            command,
+            runtime_context.clone(),
+            &entry.bindings,
+            resolved,
+            &proofs,
+        )
+    } else {
+        None
+    };
+    if envelope.is_some() {
+        for proof in &mut proofs {
+            proof.exact_fields_required = false;
+            proof.gap = None;
+        }
+    }
+    for proof in &proofs {
+        ctx.add_evidence(super::pathname_fields::evidence(proof.clone()));
+    }
+    entry.bindings.set_pathname_fields(proofs);
+    entry.result = match envelope {
+        Some(resolved) => ResolveInvocationArtifactResult::Resolved(resolved),
+        None => resolve_invocation_artifact_with_bindings(
+            registry, command, runtime_context, &entry.bindings,
+        ),
+    };
 }
 
 fn program_command_index(entry: &ExpandedFrontierEntry) -> usize {

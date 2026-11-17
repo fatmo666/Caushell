@@ -151,6 +151,19 @@ pub struct PathnamePattern {
 }
 
 impl PathnamePattern {
+    /// A subset for which case folding and dotfile eligibility can be widened
+    /// without interpreting locale-sensitive pattern syntax or recursive stars.
+    pub fn supports_option_independent_match_bound(&self) -> bool {
+        !self.recursive_star
+            && self.components.iter().all(|component| {
+                component.0.iter().all(|unit| match unit {
+                    Unit::Literal(c) => c.is_ascii(),
+                    Unit::Any => true,
+                    _ => false,
+                })
+            })
+    }
+
     /// Quote removal and wildcard activity only; variables and substitutions
     /// remain with the ordinary materializer until their field shape is proved.
     pub fn from_argument(arg: &ProjectedArg) -> Result<Option<Self>, String> {

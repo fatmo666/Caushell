@@ -20,6 +20,10 @@ pub struct PathnameFieldsEvidence {
     pub complete: bool,
     pub exact_fields_required: bool,
     pub fields: Vec<String>,
+    /// Quote-removed spelling for a pattern proved to have no possible match.
+    /// Unknown shell options still permit retention, removal or no invocation.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unmatched_literal: Option<String>,
     pub shell_options: Option<crate::ShellPathnameSnapshot>,
     pub environment_observations: Vec<crate::ShellEnvironmentSnapshot>,
     pub namespace_observations: Vec<crate::FilesystemObservation>,
