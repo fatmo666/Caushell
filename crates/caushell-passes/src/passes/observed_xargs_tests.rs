@@ -22,6 +22,7 @@ fn output(blocks: &[&str], order: StreamRecordOrder) -> StdoutRecordsEvidence {
             })
             .collect(),
         namespace_observations: vec![],
+        missing_starting_point_observations: vec![],
         directory_observations: vec![],
         environment_observations: vec![],
         forwarded_by: vec![],

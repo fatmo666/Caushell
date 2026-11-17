@@ -145,6 +145,7 @@ pub(super) fn observe_outputs(
             encoding: None,
             records: Vec::new(),
             namespace_observations: Vec::new(),
+            missing_starting_point_observations: Vec::new(),
             directory_observations: Vec::new(),
             environment_observations: Vec::new(),
             forwarded_by: Vec::new(),
@@ -365,6 +366,7 @@ fn observe(
             format!("{}/{root}", cwd.trim_end_matches('/'))
         };
         let (resolution, observations) = namespace.resolve(&spelling, PathTargetAccess::Entry);
+        let first_root_observation = output.namespace_observations.len();
         output.namespace_observations.extend(observations);
         let path = match resolution {
             SemanticResolution::Resolved { value } => value.concrete_path().map(str::to_owned),
@@ -377,8 +379,56 @@ fn observe(
         {
             return Err("producer namespace may change within this action".into());
         }
-        if ctx.filesystem_view().entry(&path) != FilesystemEntry::Directory {
-            return Err("native root is not an observed directory".into());
+        match ctx.filesystem_view().entry(&path) {
+            FilesystemEntry::Directory => (),
+            FilesystemEntry::Missing => {
+                let view = ctx.filesystem_view();
+                let (resolution, cwd_observations) = namespace.resolve(&cwd, PathTargetAccess::Follow);
+                let SemanticResolution::Resolved { value } = resolution else {
+                    return Err("missing producer root has no observed execution directory".into());
+                };
+                let Some(anchor) = value.concrete_path()
+                    .filter(|path| view.entry(path) == FilesystemEntry::Directory)
+                else {
+                    return Err("missing producer root has no observed execution directory".into());
+                };
+                let root_observations = &output.namespace_observations[first_root_observation..];
+                let source = view.source();
+                if source == caushell_types::FilesystemObservationSource::Unavailable {
+                    return Err("producer root absence is not observed".into());
+                }
+                if root_observations.iter().chain(&cwd_observations).any(|observation| {
+                    writes.iter().any(|writer| writer.as_ref().is_none_or(|writer| {
+                        caushell_query::path_is_within_root(&observation.path, writer)
+                    }))
+                }) {
+                    return Err("producer starting point may change within this action".into());
+                }
+                let first = first_root_observation;
+                let (missing, observed): (Vec<_>, Vec<_>) = output.namespace_observations
+                    .drain(first..)
+                    .partition(|observation| observation.entry == FilesystemEntry::Missing);
+                output.missing_starting_point_observations.extend(missing);
+                output.namespace_observations.extend(observed);
+                output.namespace_observations.extend(cwd_observations);
+                output.namespace_observations.push(caushell_types::FilesystemObservation {
+                    source,
+                    path: anchor.to_owned(),
+                    entry: FilesystemEntry::Directory,
+                });
+                // Entry resolution preserves the terminal spelling without
+                // looking it up. Pin the separate observation made above.
+                output.missing_starting_point_observations.push(caushell_types::FilesystemObservation {
+                    source,
+                    path,
+                    entry: FilesystemEntry::Missing,
+                });
+                // A missing find starting point may report a diagnostic on
+                // stderr. It supplies no stdout records and does not prevent
+                // the other starting points from being observed.
+                continue;
+            }
+            _ => return Err("native root is not an observed directory".into()),
         }
         queue.push_back((
             path,
@@ -493,6 +543,7 @@ fn observe(
     if output
         .namespace_observations
         .iter()
+        .chain(&output.missing_starting_point_observations)
         .any(|o| o.source != view.source() || view.entry(&o.path) != o.entry)
     {
         return Err("producer root namespace changed during observation".into());

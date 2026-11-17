@@ -195,6 +195,89 @@ fn empty_output_missing_directory_and_failed_observations_are_distinct() {
 }
 
 #[test]
+fn missing_starting_points_contribute_no_stdout_records() {
+    let response = check("find missing -print0 | cat", Files::new());
+    let proof = proofs(&response)[0];
+    assert!(proof.complete, "{proof:#?}");
+    assert_eq!(proof.complete_bytes(), Some(Vec::new()));
+    assert!(
+        proof
+            .missing_starting_point_observations
+            .iter()
+            .any(|observation| {
+                observation.path == "/workspace/missing"
+                    && observation.entry == FilesystemEntry::Missing
+            })
+    );
+
+    let mixed = check("find missing input -name a.csv -print0 | cat", Files::new());
+    let proof = proofs(&mixed)[0];
+    assert_eq!(
+        proof.complete_bytes(),
+        Some(b"input/a.csv\0".to_vec()),
+        "{proof:#?}"
+    );
+}
+
+#[test]
+fn a_missing_starting_point_cannot_hide_consumer_effects() {
+    let response = check(
+        "find missing -print0 | xargs -0 mkdir /outside/fixture",
+        Files::new(),
+    );
+    assert_ne!(response.decision, Decision::Allow);
+    assert!(
+        response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|facts| facts.normalized_command_name == "mkdir")
+    );
+
+    let response = check("find missing -print0 |& xargs -0 chmod 644", Files::new());
+    assert!(
+        !response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind, EvidenceKind::NativeInputDecode(decode) if decode.complete))
+    );
+
+    let response = check("find missing -print0 | xargs -0 chmod 644", Files::new());
+    assert_ne!(response.decision, Decision::Allow);
+    assert!(
+        response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|facts| facts.normalized_command_name == "chmod")
+    );
+
+    let response = check("find missing -print0 | xargs -0 echo fixture", Files::new());
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(
+        response
+            .decision_trace
+            .evidence
+            .iter()
+            .any(|e| matches!(&e.kind, EvidenceKind::NativeInputDecode(decode) if decode.complete))
+    );
+
+    let response = check("mkdir missing; find missing -print0 | cat", Files::new());
+    assert!(!proofs(&response)[0].complete);
+}
+
+#[test]
+fn absolute_missing_root_requires_an_observed_execution_directory() {
+    let mut request = request("find /absent -print0 | cat");
+    request.shell_state_before = ShellStateSnapshot::new("/unobserved-cwd");
+    let response = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(Files::new()))
+        .check(request);
+    assert!(!proofs(&response)[0].complete);
+}
+
+#[test]
 fn formatting_and_single_record_exact_bytes_are_independent_of_path_containment() {
     let r = check(
         r"find ./input -name a.csv -printf '../dest/%P\0%f\n' | cat",

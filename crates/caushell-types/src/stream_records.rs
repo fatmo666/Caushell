@@ -43,6 +43,10 @@ pub struct StdoutRecordsEvidence {
     pub encoding: Option<StreamRecordEncoding>,
     pub records: Vec<ObservedStreamRecord>,
     pub namespace_observations: Vec<FilesystemObservation>,
+    /// Negative observations from skipped, definitely missing starting points.
+    /// These are part of producer revalidation, not failed directory reads.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub missing_starting_point_observations: Vec<FilesystemObservation>,
     pub directory_observations: Vec<DirectoryObservation>,
     pub environment_observations: Vec<crate::ShellEnvironmentSnapshot>,
     pub forwarded_by: Vec<String>,
@@ -267,7 +271,14 @@ impl StdoutRecordsEvidence {
                     o.entry,
                     crate::FilesystemEntry::Missing | crate::FilesystemEntry::Unavailable { .. }
                 )
-        }) {
+        }) || (!self.missing_starting_point_observations.is_empty()
+            && (self.producer_contract_sha256.is_none()
+                || self.cwd.is_none()
+                || self.missing_starting_point_observations.iter().any(|o| {
+                    o.source == crate::FilesystemObservationSource::Unavailable
+                        || o.entry != crate::FilesystemEntry::Missing
+                })))
+        {
             return None;
         }
         let bytes = self
@@ -298,6 +309,7 @@ mod tests {
                 bytes: b"a\nb\0".to_vec(),
             }],
             namespace_observations: vec![],
+            missing_starting_point_observations: vec![],
             directory_observations: vec![],
             environment_observations: vec![],
             forwarded_by: vec![],

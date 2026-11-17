@@ -2,7 +2,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use caushell_graph::NodeId;
 use caushell_profile::{ResolveInvocationArtifactResult, SessionBindings};
-use caushell_runner::{RunnerContext, SessionTransformPass, SessionView};
+use caushell_runner::{ExecutionUnitOriginKind, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
     Decision, Evidence, EvidenceKind, NativeInputDecodeEvidence, RuleId, StdoutRecordsEvidence,
 };
@@ -26,6 +26,34 @@ pub(super) struct ObservedInputs {
 /// A later effect audit may discharge only this consumer's byte-gap proposal.
 /// Equal diagnostic text from a different consumer must retain its own floor.
 pub(super) fn gap_source(node: &str) -> String { format!("resolve_native_inputs:{node}") }
+
+// Producer failure can establish the bytes of a stream in this namespace.
+// It cannot erase a consumer's potential writes, execution, or unproved
+// controls by making its native invocation disappear or select a no-op form.
+fn can_refine_from_missing_starting_points(
+    ctx: &RunnerContext,
+    registry: &caushell_profile::ProfileRegistry,
+    consumer: &NodeId,
+) -> bool {
+    let records = ctx.execution_unit_resolve_records();
+    let mut children = records.iter().filter(|record| {
+        &record.parent_execution_node_id == consumer && &record.source_node_id != consumer
+    }).peekable();
+    children.peek().is_some() && children.all(|child| {
+        let ResolveInvocationArtifactResult::Resolved(resolved) = &child.result else {
+            return false;
+        };
+        child.origin_kind == ExecutionUnitOriginKind::StaticXargs
+            && !resolved.bound.operation_semantics_unresolved
+            && resolved.bound.residuals.is_empty()
+            && resolved.bound.effects.iter().all(super::symbolic_native_inputs::read_effect)
+            && !records.iter().any(|record| record.parent_execution_node_id == child.source_node_id)
+            && registry.lookup(&resolved.normalized_command_name).profile.is_some_and(|profile| {
+                profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+                    && super::symbolic_native_inputs::reader_profile(profile)
+            })
+    })
+}
 
 pub(super) fn prepare(
     session: SessionView<'_>,
@@ -76,7 +104,7 @@ pub(super) fn prepare(
                     && r.variable_frame() == consumer.variable_frame()
             })
         };
-        let Some((output, _)) = stdin_observed_records(
+        let Some((mut output, _)) = stdin_observed_records(
             consumer.parsed_scope(),
             consumer.command_index(),
             64,
@@ -97,6 +125,14 @@ pub(super) fn prepare(
         ) else {
             continue;
         };
+        if output.complete
+            && !output.missing_starting_point_observations.is_empty()
+            && !can_refine_from_missing_starting_points(ctx, registry, consumer.source_node_id())
+        {
+            output.complete = false;
+            output.records.clear();
+            output.gap = Some("missing producer starting points do not close consumer effects".into());
+        }
         if !output.complete
             && let Some(proof) = super::symbolic_native_inputs::prove(
                 ctx,

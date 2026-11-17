@@ -41,6 +41,7 @@ mod observed_record_tests {
                 bytes: b"a\nb\0".to_vec(),
             }],
             namespace_observations: vec![],
+            missing_starting_point_observations: vec![],
             directory_observations: vec![],
             environment_observations: vec![],
             forwarded_by: vec![],
@@ -361,6 +362,11 @@ pub(crate) struct StaticStreamEvidence {
 
 impl From<&caushell_types::StdoutRecordsEvidence> for StaticStreamEvidence {
     fn from(records: &caushell_types::StdoutRecordsEvidence) -> Self {
+        // Do not use a producer's namespace failure to certify a quiet
+        // payload, a bounded write, or an absent downstream operation.
+        if !records.missing_starting_point_observations.is_empty() {
+            return Self::unknown();
+        }
         match records
             .complete_bytes()
             .and_then(|bytes| String::from_utf8(bytes).ok())
