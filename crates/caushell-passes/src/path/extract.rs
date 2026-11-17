@@ -2412,6 +2412,59 @@ fn effect_targets_slot(effect: &Effect, slot_name: &str) -> bool {
     matches!(&effect.target, EffectTarget::Slot(target) if target.as_str() == slot_name)
 }
 
+const METADATA_OPERAND_SLOT: &str = "metadata_mutation.raw_operand_slot";
+const METADATA_RECURSIVE: &str = "metadata_mutation.recursive";
+
+/// Return the metadata detail shared with the staged path target only after
+/// every annotation on this effect has a complete interpretation.
+pub(crate) fn checked_metadata_mutation_for_target(
+    invocation: &BoundInvocation,
+    effect: &Effect,
+) -> Option<PathMetadataMutation> {
+    let EffectTarget::Slot(slot) = &effect.target else {
+        return None;
+    };
+    let mutation = metadata_mutation_for_effect(invocation, effect)?;
+    let complete = effect.extensions.iter().all(|(key, value)| match key.as_str() {
+        METADATA_OPERAND_SLOT => metadata_mutation_operand_parameter(invocation, effect)
+            .is_some_and(|parameter| {
+                let [
+                    BoundValue::Argument {
+                        text,
+                        quoted,
+                        node_kind,
+                        materialization,
+                        ..
+                    },
+                ] = parameter.values.as_slice()
+                else {
+                    return false;
+                };
+                !matches!(materialization, BoundArgumentMaterialization::Literal)
+                    || caushell_profile::shell_word_structure(text, *quoted, node_kind)
+                        .exact_value() == Some(text.as_str())
+            }),
+        METADATA_RECURSIVE => value.is_boolean(),
+        _ => false,
+    });
+    // A generic metadata effect may add recursive coverage to a typed
+    // mutation on the same slot. On its own it cannot justify closure.
+    let target = metadata_mutation_for_path_slot(invocation, slot.as_str())?;
+    (complete
+        && (!mutation.mutation_kinds.contains(&PathMetadataMutationKind::Generic)
+            || mutation.recursive)
+        && !target.mutation_kinds.contains(&PathMetadataMutationKind::Generic)
+        && mutation
+            .raw_operand
+            .as_ref()
+            .is_none_or(|operand| target.raw_operand.as_ref() == Some(operand))
+        && mutation
+            .owner_group
+            .as_ref()
+            .is_none_or(|owner_group| target.owner_group.as_ref() == Some(owner_group)))
+    .then_some(target)
+}
+
 fn metadata_mutation_for_effect(
     invocation: &BoundInvocation,
     effect: &Effect,
@@ -2422,7 +2475,7 @@ fn metadata_mutation_for_effect(
     let mutation_kinds = metadata_mutation_kinds(effect.kind, owner_group.as_ref())?;
     let recursive = effect
         .extensions
-        .get("metadata_mutation.recursive")
+        .get(METADATA_RECURSIVE)
         .and_then(|value| value.as_bool())
         .unwrap_or(false);
 
@@ -2500,7 +2553,7 @@ fn metadata_mutation_operand_parameter<'a>(
 ) -> Option<&'a BoundParameter> {
     let slot_name = effect
         .extensions
-        .get("metadata_mutation.raw_operand_slot")
+        .get(METADATA_OPERAND_SLOT)
         .and_then(|value| value.as_str())?;
 
     invocation

@@ -255,6 +255,9 @@ pub(super) fn accept(
         if expected.is_none() || current != expected {
             accepted = false;
             decoded.complete = false;
+            decoded.rejected_candidate_encoding = expected
+                .filter(|output| output.complete && !output.records.is_empty())
+                .and_then(|output| output.encoding);
             decoded.gap = Some(format!(
                 "producer input revalidation failed: {}",
                 current
@@ -293,6 +296,7 @@ pub(super) fn reject(
                     complete: false,
                     alternative_groups: 0,
                     gap: Some("consumer frame does not match the observed input".into()),
+                    rejected_candidate_encoding: None,
                 });
         decoded.complete = false;
         decoded.gap.get_or_insert_with(|| {

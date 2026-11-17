@@ -7175,6 +7175,7 @@ fn expanded_static_xargs_children(
                 complete: groups.is_ok(),
                 alternative_groups: groups.as_ref().map_or(0, Vec::len),
                 gap: groups.as_ref().err().cloned(),
+                rejected_candidate_encoding: None,
             },
         );
     }

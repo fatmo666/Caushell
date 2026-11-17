@@ -56,6 +56,10 @@ pub struct NativeInputDecodeEvidence {
     pub complete: bool,
     pub alternative_groups: usize,
     pub gap: Option<String>,
+    /// Encoding of a nonempty candidate that decoded completely before
+    /// revalidation rejected it. The record bytes themselves are invalid.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected_candidate_encoding: Option<StreamRecordEncoding>,
 }
 
 /// A reviewed total native control contract, not an argument/output decoder.

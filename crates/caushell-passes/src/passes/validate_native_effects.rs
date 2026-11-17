@@ -9,7 +9,7 @@ use caushell_runner::{ExecutionUnitOriginKind, RunnerContext, SessionAnalysisPas
 use caushell_types::{
     Decision, EvidenceKind, FilesystemObservationSource, NativeBoundEffectsProof,
     NativeInputEffectEvidence, NativePathEffectReference, PathResolution, PathTargetFact, RuleId,
-    SemanticResolution,
+    SemanticResolution, StreamRecordEncoding,
 };
 
 pub struct ValidateNativeEffectsPass {
@@ -21,14 +21,20 @@ impl ValidateNativeEffectsPass {
     }
 }
 
-fn modeled(invocation: &caushell_profile::BoundInvocation, effect: &Effect) -> bool {
+fn modeled(
+    invocation: &caushell_profile::BoundInvocation,
+    effect: &Effect,
+    rejected_nul_records: bool,
+) -> bool {
     if effect.state_operation.is_some()
         || effect.repository_operation.is_some()
         || effect.database_operation.is_some()
         || effect.terminal_session_operation.is_some()
         || effect.shell_job_operation.is_some()
         || effect.interactive_escape_surface.is_some()
-        || !effect.extensions.is_empty()
+        || (!effect.extensions.is_empty()
+            && !(rejected_nul_records
+                && crate::path::checked_metadata_mutation_for_target(invocation, effect).is_some()))
     {
         return false;
     }
@@ -81,6 +87,7 @@ fn prove(
     registry: &ProfileRegistry,
     facts: &[&PathTargetFact],
     node: &str,
+    rejected_nul_records: bool,
     checks: &mut usize,
 ) -> Option<NativeBoundEffectsProof> {
     let records = ctx.execution_unit_resolve_records();
@@ -129,7 +136,7 @@ fn prove(
             .bound
             .effects
             .iter()
-            .any(|e| !modeled(&invocation.bound, e))
+            .any(|e| !modeled(&invocation.bound, e, rejected_nul_records))
         {
             return None;
         }
@@ -139,7 +146,10 @@ fn prove(
         let rebound =
             super::symbolic_native_inputs::strictly_bound_invocation(profile, invocation)?;
         if rebound.effects != invocation.bound.effects
-            || rebound.effects.iter().any(|e| !modeled(&rebound, e))
+            || rebound
+                .effects
+                .iter()
+                .any(|e| !modeled(&rebound, e, rejected_nul_records))
         {
             return None;
         }
@@ -149,6 +159,9 @@ fn prove(
                 continue;
             };
             let key = format!("effect:{index}");
+            let metadata = (!effect.extensions.is_empty())
+                .then(|| crate::path::checked_metadata_mutation_for_target(&rebound, effect))
+                .flatten();
             let mut matched = false;
             for fact in facts {
                 *checks += 1;
@@ -162,7 +175,12 @@ fn prove(
                 let absent =
                     crate::path::path_target_is_inapplicable(&invocation.bound, &effect.target)
                         && matches!(fact.resolution, SemanticResolution::NotApplicable { .. });
-                if fact.operation != operation || !(absent || resolved(fact)) {
+                if fact.operation != operation
+                    || !(absent || resolved(fact))
+                    || metadata.as_ref().is_some_and(|expected| {
+                        fact.metadata_mutation.as_ref() != Some(expected)
+                    })
+                {
                     return None;
                 }
                 references.push(NativePathEffectReference {
@@ -222,7 +240,19 @@ impl SessionAnalysisPass for ValidateNativeEffectsPass {
             }) {
                 continue;
             }
-            let Some(proof) = prove(ctx, &self.registry, &facts, &node, &mut checks) else {
+            // Mutating annotations require a known pathname route. A rejected
+            // NUL decode may leave bounded effects; a missing observation or
+            // unsupported record format cannot establish that route.
+            let rejected_nul_records =
+                gap.rejected_candidate_encoding == Some(StreamRecordEncoding::Nul);
+            let Some(proof) = prove(
+                ctx,
+                &self.registry,
+                &facts,
+                &node,
+                rejected_nul_records,
+                &mut checks,
+            ) else {
                 continue;
             };
             let children = ctx
@@ -267,23 +297,24 @@ mod tests {
         let mut bound =
             BoundInvocation::new(CommandName::new("anonymous"), FormId::new("selected"));
         let effect = Effect::new(EffectKind::ExecutePayload).for_slot("optional_code");
-        assert!(!modeled(&bound, &effect));
+        assert!(!modeled(&bound, &effect, false));
         let p = BoundParameter::new(SlotName::new("optional_code"), SemanticType::PlainValue);
         bound.bound_parameters.push(p);
-        assert!(!modeled(&bound, &effect));
+        assert!(!modeled(&bound, &effect, false));
         bound.bound_parameters[0].projected_values = Some(vec![]);
-        assert!(modeled(&bound, &effect));
+        assert!(modeled(&bound, &effect, false));
         let mut annotated = effect.clone();
         annotated
             .extensions
             .insert("unknown_operation".into(), serde_json::json!(true));
-        assert!(!modeled(&bound, &annotated));
+        assert!(!modeled(&bound, &annotated, true));
         assert!(!modeled(
             &bound,
             &Effect {
                 target: EffectTarget::None,
                 ..effect
-            }
+            },
+            false,
         ));
     }
     #[test]

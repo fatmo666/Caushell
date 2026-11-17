@@ -22,7 +22,8 @@ pub(crate) use expression::{
 };
 pub(crate) use extract::{
     EXECUTABLE_FILE_SLOT, ExecutableFileReference, RedirectionPathFactCandidate,
-    collect_effect_mutation_targets, collect_mutation_scope_facts, collect_path_facts,
+    checked_metadata_mutation_for_target, collect_effect_mutation_targets,
+    collect_mutation_scope_facts, collect_path_facts,
     collect_redirection_path_fact, collect_redirection_path_facts, derived_path_slot_name,
     edge_kind_for_mutation_scope_operation, edge_kind_for_path_role, mutation_scope_fact_node_id,
     path_fact_node_id, path_operand_depends_on_cwd, path_target_is_inapplicable,

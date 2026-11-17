@@ -150,6 +150,88 @@ fn bounded_writes_use_existing_targets_without_claiming_input_bytes() {
         );
     }
 }
+
+#[test]
+fn bounded_permission_and_owner_changes_use_the_staged_metadata_targets() {
+    for (command, operand, kind, recursive) in [
+        (
+            "find . -type d -print0 | xargs -0 chmod 755",
+            "755",
+            PathMetadataMutationKind::ChangeMode,
+            false,
+        ),
+        (
+            "find . -type f -print0 | xargs -0 chown username",
+            "username",
+            PathMetadataMutationKind::ChangeOwner,
+            false,
+        ),
+        (
+            r#"find . -maxdepth 1 -not -name "." -print0 | xargs --null chown -R apache:apache"#,
+            "apache:apache",
+            PathMetadataMutationKind::ChangeOwner,
+            true,
+        ),
+    ] {
+        let r = check(command, Namespace::ordinary());
+        assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+        let ps = proofs(&r);
+        let [proof] = ps.as_slice() else {
+            panic!("{command}: expected exactly one bound-effect proof");
+        };
+        assert!(r.decision_trace.evidence.iter().any(|e| {
+            matches!(&e.kind, EvidenceKind::NativeInputDecode(g)
+                if g.node_id == proof.node_id && !g.complete
+                    && g.rejected_candidate_encoding == Some(StreamRecordEncoding::Nul))
+        }));
+        let bound_effects = proof.bound_effects.as_ref().unwrap();
+        assert!(bound_effects.argument_ownership_complete && !bound_effects.path_targets.is_empty());
+        for reference in &bound_effects.path_targets {
+            assert!(r.decision_trace.path_targets.iter().any(|fact| {
+                fact.source_node_id == reference.source_node_id
+                    && fact.effect_key == reference.effect_key
+                    && fact.slot_name == reference.slot_name
+                    && fact.operation == PathTargetOperation::Metadata
+                    && fact.metadata_mutation.as_ref().is_some_and(|metadata| {
+                        metadata.raw_operand.as_deref() == Some(operand)
+                            && metadata.mutation_kinds.contains(&kind)
+                            && metadata.recursive == recursive
+                    })
+            }));
+        }
+    }
+}
+
+#[test]
+fn bounded_metadata_requires_complete_input_routing_and_safe_targets() {
+    for command in [
+        "find /outside -type d -print0 | xargs -0 chmod 755",
+        "find . -type d -print0 | xargs chmod 755",
+        "find . -type d -print0 | xargs -0 chmod --unknown-option 755",
+        r#"find . -type d -print0 | xargs -0 chmod "$mode""#,
+    ] {
+        let r = check(command, Namespace::ordinary());
+        assert_eq!(
+            r.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            r.reasons
+        );
+    }
+    let ns = Namespace::ordinary().set(
+        "/workspace/src/link",
+        FilesystemEntry::Symlink {
+            target: "/outside/secret".into(),
+        },
+    );
+    let r = check(
+        "find . -type d -print0 | xargs -0 chown -R apache:apache",
+        ns,
+    );
+    assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.reasons);
+    assert!(proofs(&r).is_empty());
+}
+
 #[test]
 fn completeness_is_not_path_or_delete_authority() {
     let r = check(
