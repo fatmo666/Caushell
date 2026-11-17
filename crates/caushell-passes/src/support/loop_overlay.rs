@@ -113,6 +113,7 @@ fn iteration_projection(
                 runtime_argument_domain: item.runtime_argument_domain.clone(),
                 runtime_data: item.runtime_data,
                 substitution_shape: None,
+                native_region_field: None,
                 lexical_field_prefix: None,
             })
             .collect(),

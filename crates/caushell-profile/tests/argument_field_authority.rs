@@ -18,15 +18,15 @@ fn resolve(
         .map(|(t, fields)| ArgumentFieldsProof {
             span: t.span.clone(),
             source_word: t.text.clone(),
-            fields,
+            layout: ArgumentFieldLayout::Exact(fields),
         })
         .collect::<Vec<_>>();
     if let Some(proof) = proofs.first_mut() {
         match invalid {
             Some("span") => proof.span.start_byte += 1,
             Some("source") => proof.source_word.push('x'),
-            Some("nul") => proof.fields = vec!["a\0b".into()],
-            Some("budget") => proof.fields = vec!["x".repeat(262145)],
+            Some("nul") => proof.layout = ArgumentFieldLayout::Exact(vec!["a\0b".into()]),
+            Some("budget") => proof.layout = ArgumentFieldLayout::Exact(vec!["x".repeat(262145)]),
             _ => (),
         }
     }

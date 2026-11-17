@@ -479,6 +479,9 @@ fn native_path_common_prefix(roots: &[String]) -> Option<String> {
 /// Ambiguous quoted vectors use a bounded syntax proof; unsupported forms
 /// retain Unknown rather than treating nested command words as outer fields.
 pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
+    if arg.native_region_field.is_some() {
+        return ArgumentStructure::unknown();
+    }
     if arg.word_context == crate::WordContext::Scalar {
         if arg.implicit_input_source.is_none() {
             if arg.runtime_data {
@@ -907,6 +910,7 @@ pub fn shell_word_structure(text: &str, quoted: bool, node_kind: &str) -> Argume
         runtime_argument_domain: None,
         runtime_data: false,
         substitution_shape: None,
+        native_region_field: None,
         lexical_field_prefix: None,
         kind: crate::ProjectedArgKind::Positional,
         quoted,

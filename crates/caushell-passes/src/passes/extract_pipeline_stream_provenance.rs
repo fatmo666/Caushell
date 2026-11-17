@@ -743,6 +743,32 @@ mod tests {
     }
 
     #[test]
+    fn finite_find_child_layouts_all_contribute_stdout_provenance() {
+        let ctx = run_pass(r"find . -exec grep $(printf '\15') -l {} + | wc -l");
+        let edges = stdout_edges(&ctx);
+        assert_eq!(edges.len(), 6);
+        let children = edges
+            .iter()
+            .filter_map(|edge| match edge {
+                PendingMutation::AddProvenanceArtifact {
+                    source_node_id,
+                    relation: EdgeKind::Produces,
+                    ..
+                } => Some(source_node_id.0.as_str()),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(children.len(), 3);
+        assert_eq!(
+            edges.iter().filter(|edge| matches!(edge,
+                PendingMutation::AddProvenanceArtifact { source_node_id, relation: EdgeKind::Consumes, .. }
+                if source_node_id.0 == "pipeline-segment:sess-1:4:0"
+            )).count(),
+            3
+        );
+    }
+
+    #[test]
     fn undeclared_dispatch_has_no_fabricated_stdout_data_flow() {
         let ctx = run_stdout_router(false, "arbitrary-stdout-router cat .env | cat");
         assert!(stdout_edges(&ctx).is_empty());

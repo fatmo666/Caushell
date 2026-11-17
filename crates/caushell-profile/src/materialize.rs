@@ -2459,14 +2459,28 @@ pub struct MaterializedShellField {
     pub resolution: ValueMaterialization,
 }
 
-/// Analysis-produced, complete shell fields for one original source word.
-/// The caller owns producer/quoting/IFS/pathname proofs. This is not runtime
-/// input and is deliberately neither serializable nor stored in SessionBindings.
+/// Analysis-produced fields for one original source word. The caller owns
+/// producer, quoting and pathname proofs. These facts are not runtime input.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArgumentFieldsProof {
     pub span: caushell_parse::SourceSpan,
     pub source_word: String,
-    pub fields: Vec<String>,
+    pub layout: ArgumentFieldLayout,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ArgumentFieldLayout {
+    Exact(Vec<String>),
+    Optional(crate::OptionalBashField),
+}
+
+impl ArgumentFieldsProof {
+    pub fn exact_fields(&self) -> Option<&[String]> {
+        match &self.layout {
+            ArgumentFieldLayout::Exact(fields) => Some(fields),
+            ArgumentFieldLayout::Optional(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -2480,13 +2494,14 @@ pub fn materialize_projected_invocation(
     projection: &ProjectedInvocation,
     bindings: &SessionBindings,
 ) -> MaterializedProjectedInvocation {
-    materialize_projected_invocation_with_argument_fields(projection, bindings, &[])
+    materialize_projected_invocation_with_argument_fields(projection, bindings, &[], false)
 }
 
 pub(crate) fn materialize_projected_invocation_with_argument_fields(
     projection: &ProjectedInvocation,
     bindings: &SessionBindings,
     proofs: &[ArgumentFieldsProof],
+    supports_region_alternatives: bool,
 ) -> MaterializedProjectedInvocation {
     let dialect;
     let bindings = if bindings.shell_kind() != projection.shell_kind {
@@ -2506,9 +2521,10 @@ pub(crate) fn materialize_projected_invocation_with_argument_fields(
     let mut shell_expansion_gaps = Vec::new();
 
     // An invalid/over-budget proof set never supplies a safe partial prefix.
+    let exact_fields = || proofs.iter().filter_map(ArgumentFieldsProof::exact_fields).flatten();
     let proof_budget_valid = proofs.len() <= 256
-        && proofs.iter().map(|p| p.fields.len()).sum::<usize>() <= 4096
-        && proofs.iter().flat_map(|p| &p.fields).try_fold(0usize, |n, s| {
+        && exact_fields().count() <= 4096
+        && exact_fields().try_fold(0usize, |n, s| {
             (!s.contains('\0')).then(|| n.checked_add(s.len())).flatten()
         }).is_some_and(|n| n <= 262_144);
 
@@ -2525,18 +2541,34 @@ pub(crate) fn materialize_projected_invocation_with_argument_fields(
             if let Some(proof) = matching.next()
                 && matching.next().is_none()
             {
-                for text in &proof.fields {
-                    let mut field = original.clone();
-                    field.text = text.clone();
-                    field.runtime_data = true;
-                    field.quoted = true;
-                    field.node_kind = "substitution_field".into();
-                    field.substitution_shape = None;
-                    field.lexical_field_prefix = None;
-                    args.push(field);
-                    arg_resolutions.push(ValueMaterialization::ResolvedShellWord { value: text.clone() });
+                match &proof.layout {
+                    ArgumentFieldLayout::Exact(fields) => {
+                        for text in fields {
+                            let mut field = original.clone();
+                            field.text = text.clone();
+                            field.runtime_data = true;
+                            field.quoted = true;
+                            field.node_kind = "substitution_field".into();
+                            field.substitution_shape = None;
+                            field.lexical_field_prefix = None;
+                            args.push(field);
+                            arg_resolutions.push(ValueMaterialization::ResolvedShellWord { value: text.clone() });
+                        }
+                        continue;
+                    }
+                    ArgumentFieldLayout::Optional(shape) if supports_region_alternatives => {
+                        let mut field = original.clone();
+                        field.native_region_field = Some(*shape);
+                        field.substitution_shape = None;
+                        field.lexical_field_prefix = None;
+                        args.push(field);
+                        arg_resolutions.push(ValueMaterialization::UnsupportedDynamicText {
+                            text: original.text.clone(),
+                        });
+                        continue;
+                    }
+                    ArgumentFieldLayout::Optional(_) => {}
                 }
-                continue;
             }
         }
         if !original.runtime_data
@@ -2662,6 +2694,7 @@ pub(crate) fn materialize_projected_invocation_with_argument_fields(
                     implicit_input_source: arg.implicit_input_source,
                     runtime_argument_domain: arg.runtime_argument_domain.clone(),
                     substitution_shape: arg.substitution_shape,
+                    native_region_field: arg.native_region_field,
                     lexical_field_prefix: arg.lexical_field_prefix.clone().or_else(|| {
                         if arg.runtime_data
                             || arg.implicit_input_source.is_some()

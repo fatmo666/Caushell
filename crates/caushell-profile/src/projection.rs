@@ -62,6 +62,9 @@ pub struct ProjectedArg {
     /// Positive lexical spelling bound for every field of a shell expansion.
     /// Not an exact value or a filesystem containment/provenance assertion.
     pub lexical_field_prefix: Option<String>,
+    /// A post-expansion layout bound usable only inside a modeled native
+    /// dispatch region. It does not make this word an exact argv operand.
+    pub native_region_field: Option<crate::OptionalBashField>,
     pub kind: ProjectedArgKind,
     pub quoted: bool,
     pub node_kind: String,
@@ -186,6 +189,7 @@ pub fn project_invocation(
             runtime_argument_domain: token.runtime_argument_domain.clone(),
             runtime_data: token.runtime_data,
             substitution_shape: None,
+            native_region_field: None,
             lexical_field_prefix: None,
             kind: project_arg_kind(&token.kind),
             quoted: token.quoted,

@@ -16,7 +16,9 @@ pub struct BoundArgumentRegion {
 }
 
 pub(crate) fn argv_value(arg: &ProjectedArg) -> Option<Cow<'_, str>> {
-    if arg.runtime_data {
+    if arg.native_region_field.is_some() {
+        None
+    } else if arg.runtime_data {
         Some(Cow::Borrowed(&arg.text))
     } else {
         let structure = argument_structure(arg);
@@ -147,6 +149,14 @@ pub(crate) fn scan(
             result.flags.push((index, FlagName::new(value.as_ref())));
             let mut end = index + 1;
             while end < scope.end_index {
+                if let Some(field) = projection.args[end].native_region_field {
+                    // The child may see different argv layouts. The outer
+                    // owner is stable only if none can end this region.
+                    result.ownership_unresolved |= end == index + 1
+                        || region.terminators.iter().any(|t| field.may_equal(&t.value));
+                    end += 1;
+                    continue;
+                }
                 let Some(word) = argv_value(&projection.args[end]) else {
                     let structure = argument_structure(&projection.args[end]);
                     // A bounded word may exclude every parent delimiter but

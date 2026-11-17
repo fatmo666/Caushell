@@ -2377,6 +2377,7 @@ fn exact_output_field(
         runtime_argument_domain: None,
         runtime_data: token.runtime_data,
         substitution_shape: None,
+        native_region_field: None,
         lexical_field_prefix: None,
         kind: caushell_profile::ProjectedArgKind::Positional,
     };

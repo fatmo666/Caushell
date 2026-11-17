@@ -1844,25 +1844,24 @@ fn dispatch_projection_for_resolved(
             .iter()
             .all(|r| matches!(r.id.as_str(), "exec" | "execdir" | "ok" | "okdir"))
     {
-        let candidates = find_dispatch_candidates(resolved, cwd, home);
+        let (candidates, mut unresolved) = find_dispatch_candidates(registry, resolved, cwd, home);
         // This adapter marks only completely decoded executable bytes as
         // runtime data. A preserved source token such as "$UNKNOWN" is not
         // a resolved executable, even without a find placeholder domain.
         let command_is_exact = |c: &caushell_profile::DispatchCommandCandidate| {
             c.command.runtime_data && c.command.implicit_input_source.is_none()
         };
-        let unresolved = candidates
-            .iter()
-            .filter(|c| !command_is_exact(c))
-            .map(|c| caushell_profile::UnresolvedDispatchCommand {
-                lookup_domain: caushell_profile::CommandLookupDomain::External,
-                dispatch_index: c.dispatch_index,
-                command_slot: c.command.slot.clone(),
-            })
-            .collect();
-        // Each validated region owns one child. The old singular-slot
-        // projection cannot classify a multi-action find invocation and must
-        // not contribute independent, contradictory resolution records.
+        unresolved.extend(
+            candidates.iter().filter(|c| !command_is_exact(c)).map(|c| {
+                caushell_profile::UnresolvedDispatchCommand {
+                    lookup_domain: caushell_profile::CommandLookupDomain::External,
+                    dispatch_index: c.dispatch_index,
+                    command_slot: c.command.slot.clone(),
+                }
+            }),
+        );
+        // Each validated region supplies all possible child argv layouts.
+        // Consumers share this partition, including depth and coverage checks.
         return caushell_profile::DispatchCommandProjection {
             resolved: candidates
                 .into_iter()
@@ -1931,13 +1930,20 @@ pub(super) fn complete_native_dispatch_nodes(
 }
 
 fn find_dispatch_candidates(
+    registry: &ProfileRegistry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     cwd: &str,
     home: Option<&str>,
-) -> Vec<caushell_profile::DispatchCommandCandidate> {
+) -> (
+    Vec<caushell_profile::DispatchCommandCandidate>,
+    Vec<caushell_profile::UnresolvedDispatchCommand>,
+) {
     use caushell_profile::{
-        ArgumentBindingSource, DispatchArgument, DispatchCommandCandidate, DispatchWorkingDirectory,
+        ArgumentBindingSource, CommandLookupDomain, DispatchArgument, DispatchCommandCandidate,
+        DispatchWorkingDirectory, SlotName, UnresolvedDispatchCommand,
     };
+
+    const MAX_LAYOUTS_PER_REGION: usize = 16;
 
     let tokens = &resolved.materialized_projection.invocation.args;
     let decoded = tokens
@@ -2104,6 +2110,7 @@ fn find_dispatch_candidates(
         may_escape: roots_unknown,
     };
     let mut candidates = Vec::new();
+    let mut unresolved = Vec::new();
 
     // Use the same ownership result as Profile selection and binding. Do not
     // rediscover actions inside option operands or child argv.
@@ -2178,46 +2185,97 @@ fn find_dispatch_candidates(
             .get(command_index)
             .and_then(|value| value.as_deref());
         let command = make_argument(command_slot, command_token, command_value, false);
-        let argv = tokens[command_index + 1..end]
+        let operands = command_index + 1..end;
+        let optional_fields = tokens[operands.clone()]
             .iter()
-            .enumerate()
-            .map(|(offset, token)| {
-                let value = decoded
-                    .get(command_index + 1 + offset)
-                    .and_then(|value| value.as_deref());
-                let find_substitution = value.is_some_and(|value| value.contains("{}"));
-                make_argument("exec_args", token, value, find_substitution)
-            })
-            .collect();
-
-        candidates.push(DispatchCommandCandidate {
-            lookup_domain: caushell_profile::CommandLookupDomain::External,
-            stdin_from_parent: false,
-            stdin_from_tool: false,
-            stdout_to_parent: false,
-            dispatch_index: candidates.len(),
-            command,
-            argv,
-            environment: Vec::new(),
-            clear_environment: false,
-            unknown_environment: false,
-            unknown_environment_from: Vec::new(),
-            unknown_environment_names: Vec::new(),
-            generated_environment: Vec::new(),
-            unset_environment: Vec::new(),
-            working_directory: if execdir {
-                DispatchWorkingDirectory::ContainingDirectories {
-                    roots: roots.clone(),
-                    start_points_excluded,
-                    may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
-                }
+            .filter(|token| token.native_region_field.is_some())
+            .count();
+        // Alternatives share the same execution frame, but the graph does
+        // not join writes or execution state across mutually exclusive argv.
+        // Recover only for declared closed, non-mutating reader variants.
+        // Retain the original partial child and an explicit gap otherwise.
+        let expand_layouts = optional_fields != 0
+            && 3usize.checked_pow(optional_fields as u32)
+                .is_some_and(|count| count <= MAX_LAYOUTS_PER_REGION)
+            && command.runtime_data
+            && registry
+                .lookup_in_domain(&command.text, true, &CommandLookupDomain::External)
+                .profile
+                .is_some_and(|profile| {
+                    profile.native_argv_effect_envelope.is_some_and(|kind| {
+                        !kind.queries_network()
+                            && super::symbolic_native_inputs::effect_profile(profile, kind)
+                    })
+                });
+        if optional_fields != 0 && !expand_layouts {
+            unresolved.push(UnresolvedDispatchCommand {
+                lookup_domain: CommandLookupDomain::External,
+                dispatch_index: candidates.len() + unresolved.len(),
+                command_slot: SlotName::new(command_slot),
+            });
+        }
+        let mut layouts = vec![Vec::new()];
+        for at in operands {
+            let token = &tokens[at];
+            if expand_layouts && let Some(field) = token.native_region_field {
+                layouts = layouts
+                    .into_iter()
+                    .flat_map(|prefix| {
+                        field.variants().into_iter().map(move |value| {
+                            let mut argv = prefix.clone();
+                            if let Some(value) = value {
+                                argv.push(make_argument("exec_args", token, Some(&value), false));
+                            }
+                            argv
+                        })
+                    })
+                    .collect();
             } else {
-                DispatchWorkingDirectory::Inherit
-            },
-        });
+                let value = decoded[at].as_deref();
+                let argument = make_argument(
+                    "exec_args", token, value, value.is_some_and(|value| value.contains("{}")),
+                );
+                let (last, earlier) = layouts.split_last_mut().expect("at least one argv layout");
+                for argv in earlier {
+                    argv.push(argument.clone());
+                }
+                last.push(argument);
+            }
+        }
+
+        let working_directory = if execdir {
+            DispatchWorkingDirectory::ContainingDirectories {
+                roots: roots.clone(),
+                start_points_excluded,
+                may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
+            }
+        } else {
+            DispatchWorkingDirectory::Inherit
+        };
+        for argv in layouts {
+            candidates.push(DispatchCommandCandidate {
+                lookup_domain: CommandLookupDomain::External,
+                stdin_from_parent: false,
+                stdin_from_tool: false,
+                // Every admitted layout may contribute bytes to find's
+                // output. Do not let read-only closure erase their origin.
+                stdout_to_parent: expand_layouts,
+                dispatch_index: candidates.len() + unresolved.len(),
+                command: command.clone(),
+                argv,
+                environment: Vec::new(),
+                clear_environment: false,
+                unknown_environment: false,
+                unknown_environment_from: Vec::new(),
+                unknown_environment_names: Vec::new(),
+                generated_environment: Vec::new(),
+                unset_environment: Vec::new(),
+                working_directory: working_directory.clone(),
+            });
+        }
     }
 
-    candidates
+    (candidates, unresolved)
 }
 
 fn decoded_projected_argv_value(
@@ -4123,7 +4181,7 @@ fn collect_execution_unit_resolve_records(
                 &entry,
                 resolved,
                 &program_context,
-                legacy_payload_sources.contains(&entry.source_node_id) && substitution_fields.is_empty(),
+                legacy_payload_sources.contains(&entry.source_node_id) && !substitution_fields.iter().any(|proof| proof.exact_fields().is_some()),
                 max_nested_parse_depth,
                 first_payload_id,
                 &mut derived_payloads,
@@ -6629,6 +6687,7 @@ fn dispatch_argument_scalar(argument: &caushell_profile::DispatchArgument) -> Op
         runtime_argument_domain: None,
         runtime_data: argument.runtime_data,
         substitution_shape: None,
+        native_region_field: None,
         lexical_field_prefix: None,
         kind: caushell_profile::ProjectedArgKind::Positional,
     };
@@ -7291,6 +7350,7 @@ fn expanded_static_xargs_children(
                         runtime_argument_domain: None,
                         runtime_data: false,
                         substitution_shape: None,
+                        native_region_field: None,
                         lexical_field_prefix: None,
                         kind: caushell_profile::ProjectedArgKind::Positional,
                     };
@@ -8807,11 +8867,17 @@ fn static_substitution_argument_fields(
             } else {
                 return None;
             };
-            let fields = caushell_profile::materialize_bash_field_fragments(&fragments, bindings)?;
+            use caushell_profile::ArgumentFieldLayout;
+            let layout = caushell_profile::materialize_bash_field_fragments(&fragments, bindings)
+                .map(ArgumentFieldLayout::Exact)
+                .or_else(|| {
+                    caushell_profile::OptionalBashField::from_fragments(&fragments)
+                        .map(ArgumentFieldLayout::Optional)
+                })?;
             Some(caushell_profile::ArgumentFieldsProof {
                 span: token.span.clone(),
                 source_word: token.text.clone(),
-                fields,
+                layout,
             })
         })
         .collect()
@@ -8904,8 +8970,10 @@ fn refresh_substitution_argument_fields(
         request.home.as_deref(),
         max_depth - entry.depth,
     );
-    if fields.is_empty() {
-        return fields;
+    if fields.is_empty()
+        || (*normalized != "find" && fields.iter().all(|proof| proof.exact_fields().is_none()))
+    {
+        return Vec::new();
     }
     let (shapes, runtime) = match &entry.result {
         ResolveInvocationArtifactResult::Resolved(r) => (
@@ -8941,7 +9009,10 @@ fn refresh_substitution_argument_fields(
         &fields,
     );
     let materialized_command = render_command_with_argument_fields(command, &fields);
-    for (index, proof) in fields.iter().enumerate() {
+    for (index, (proof, exact)) in fields.iter()
+        .filter_map(|proof| Some((proof, proof.exact_fields()?)))
+        .enumerate()
+    {
         ctx.add_evidence(Evidence {
             rule_id: caushell_types::RuleId::SelectionError,
             summary: "complete static shell argument fields".into(),
@@ -8951,7 +9022,7 @@ fn refresh_substitution_argument_fields(
                     source_start_byte: proof.span.start_byte,
                     source_end_byte: proof.span.end_byte,
                     source_word: proof.source_word.clone(),
-                    fields: proof.fields.clone(),
+                    fields: exact.to_vec(),
                     materialized_command: (index == 0)
                         .then(|| materialized_command.clone())
                         .flatten(),
@@ -8988,7 +9059,7 @@ fn render_command_with_argument_fields(
             start,
             end,
             proof
-                .fields
+                .exact_fields()?
                 .iter()
                 .map(shell_quote_arg)
                 .collect::<Vec<_>>()

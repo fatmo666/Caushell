@@ -470,6 +470,7 @@ fn source_structure(source: &BoundValue) -> Option<crate::ArgumentStructure> {
             runtime_argument_domain: domain.clone(),
             runtime_data: false,
             substitution_shape: None,
+            native_region_field: None,
             lexical_field_prefix: None,
             kind: crate::ProjectedArgKind::Positional,
             quoted: true,

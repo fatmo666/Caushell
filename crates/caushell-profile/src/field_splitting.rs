@@ -24,6 +24,33 @@ pub fn observed_ifs_value(bindings: &SessionBindings) -> Option<String> {
     }
 }
 
+/// For a whole, unquoted expansion whose proven output is one ASCII byte
+/// without glob syntax, splitting can only preserve, empty or remove the
+/// field. Keeping all three covers IFS whitespace and dialect variation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct OptionalBashField(u8);
+
+impl OptionalBashField {
+    pub fn from_fragments(fragments: &[ShellFieldFragment]) -> Option<Self> {
+        let [ShellFieldFragment::UnquotedExpansion(text)] = fragments else {
+            return None;
+        };
+        let [byte] = *text.as_bytes() else {
+            return None;
+        };
+        (byte != 0 && byte.is_ascii() && !matches!(byte, b'*' | b'?' | b'['))
+            .then_some(Self(byte))
+    }
+
+    pub fn variants(self) -> [Option<String>; 3] {
+        [Some(char::from(self.0).to_string()), Some(String::new()), None]
+    }
+
+    pub(crate) fn may_equal(self, value: &str) -> bool {
+        value.is_empty() || value.as_bytes() == [self.0]
+    }
+}
+
 enum Atom {
     Character(char, bool), // expansion-origin: splitting and globbing may apply
     QuotedNull,

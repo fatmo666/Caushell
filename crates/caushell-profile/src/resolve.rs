@@ -489,7 +489,19 @@ fn resolve_invocation_with_proofs<'a>(
                 .map(|(_, shape)| *shape);
         }
     }
-    let mut materialized_projection = crate::materialize::materialize_projected_invocation_with_argument_fields(&projection, bindings, fields);
+    // The built-in find dispatch adapter expands every layout represented
+    // inside its regions. Other binders keep the ordinary unknown word.
+    let supports_region_alternatives = normalized_command_name == "find"
+        && profile.trust.source == crate::ProfileSourceKind::BuiltIn
+        && !profile.argument_regions.is_empty()
+        && profile
+            .argument_regions
+            .iter()
+            .all(|r| matches!(r.id.as_str(), "exec" | "execdir" | "ok" | "okdir"));
+    let mut materialized_projection =
+        crate::materialize::materialize_projected_invocation_with_argument_fields(
+            &projection, bindings, fields, supports_region_alternatives,
+        );
     if let Err(reason) =
         crate::option_environment::prepend(profile, command, bindings, &mut materialized_projection)
     {

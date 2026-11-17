@@ -901,6 +901,7 @@ pub(crate) fn collect_redirection_path_fact(
             runtime_argument_domain: None,
             runtime_data: false,
             substitution_shape: None,
+            native_region_field: None,
             lexical_field_prefix: None,
             kind: caushell_profile::ProjectedArgKind::Positional,
             quoted: target.quoted,

@@ -43,6 +43,7 @@ pub(crate) fn decoded_task_arguments(
                         runtime_data: *materialization
                             != caushell_profile::BoundArgumentMaterialization::Literal,
                         substitution_shape: None,
+                        native_region_field: None,
                         lexical_field_prefix: None,
                         kind: caushell_profile::ProjectedArgKind::Positional,
                     };

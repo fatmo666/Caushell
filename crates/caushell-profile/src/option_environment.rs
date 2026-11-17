@@ -140,6 +140,7 @@ fn native_arg(text: &str, span: &caushell_parse::SourceSpan) -> ProjectedArg {
         runtime_argument_domain: None,
         runtime_data: true,
         substitution_shape: None,
+        native_region_field: None,
         lexical_field_prefix: None,
         kind: if text == "--" {
             ProjectedArgKind::DashDash

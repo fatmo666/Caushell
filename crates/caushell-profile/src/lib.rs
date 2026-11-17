@@ -59,7 +59,7 @@ pub use native_stdout::{NativeOutputOrigin, NativeStdoutSource, decode_native_st
 pub use types::NativeVariableWrites;
 mod shell_read;
 mod field_splitting;
-pub use field_splitting::{ShellFieldFragment, materialize_bash_field_fragments, observed_ifs_value};
+pub use field_splitting::{OptionalBashField, ShellFieldFragment, materialize_bash_field_fragments, observed_ifs_value};
 pub use shell_read::{ShellReadResult, decode_shell_read};
 pub use types::ResourceNamespaceTransfer;
 pub use types::RuntimeInputBinding;
@@ -110,7 +110,7 @@ pub use loader::{
 };
 pub use lookup::{ProfileLookupResult, lookup_command_profile, normalize_command_name};
 pub use materialize::{
-    ArgumentFieldsProof, BindingOrigin, BindingValueRef, EnvironmentValueRef, MaterializedProjectedInvocation,
+    ArgumentFieldLayout, ArgumentFieldsProof, BindingOrigin, BindingValueRef, EnvironmentValueRef, MaterializedProjectedInvocation,
     MaterializedRecursivePayloadCandidate, MaterializedShellField, SessionBindings, SessionValue,
     ShellAllPositionalsKind, ShellArrayKind, ShellParameterExpansionOperator, ShellParameterName,
     ShellParameterReference, ShellVariableFacts, ValueMaterialization, VariablePresence,

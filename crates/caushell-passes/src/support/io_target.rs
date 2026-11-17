@@ -419,6 +419,7 @@ fn network_redirect_target(
         runtime_argument_domain: None,
         runtime_data: false,
         substitution_shape: None,
+        native_region_field: None,
         lexical_field_prefix: None,
     };
     let shape = caushell_profile::argument_structure(&arg);

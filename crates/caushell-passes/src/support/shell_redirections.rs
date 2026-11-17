@@ -250,6 +250,7 @@ fn materialized_opening_frame(
                         runtime_argument_domain: None,
                         runtime_data: false,
                         substitution_shape: None,
+                        native_region_field: None,
                         lexical_field_prefix: None,
                     }],
                 };

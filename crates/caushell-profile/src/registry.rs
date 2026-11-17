@@ -196,7 +196,9 @@ impl ProfileRegistry {
         )
     }
 
-    pub(crate) fn lookup_in_domain(
+    /// Apply the same execution-domain check for direct binding and dispatch.
+    /// Set `decoded` for argv data that has already undergone quote removal.
+    pub fn lookup_in_domain(
         &self,
         name: &str,
         decoded: bool,
