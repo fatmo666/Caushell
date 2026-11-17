@@ -41,6 +41,15 @@ pub struct UnresolvedDispatchRecord {
     pub command_slot: String,
 }
 
+/// Resolver-owned partition for one invocation in this request. Consumers
+/// reuse it without reinterpreting argv or reconstructing a profile registry.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DispatchProjectionRecord {
+    pub source_node_id: NodeId,
+    pub command_ref: ParsedCommandRef,
+    pub projection: caushell_profile::DispatchCommandProjection,
+}
+
 impl UnresolvedDispatchRecord {
     pub fn new(
         source_node_id: NodeId,
@@ -464,6 +473,7 @@ pub struct RunnerContext {
     parsed_command_scopes: Vec<ParsedCommandScope>,
     shell_redirection_scopes: Vec<ShellRedirectionScope>,
     unresolved_dispatch_records: Vec<UnresolvedDispatchRecord>,
+    dispatch_projection_records: Vec<DispatchProjectionRecord>,
     nested_payload_records: Vec<NestedPayloadRecord>,
     execution_unit_resolve_records: Vec<ExecutionUnitResolveRecord>,
     expanded_function_calls: BTreeMap<NodeId, String>,
@@ -503,6 +513,7 @@ impl RunnerContext {
             parsed_command_scopes: Vec::new(),
             shell_redirection_scopes: Vec::new(),
             unresolved_dispatch_records: Vec::new(),
+            dispatch_projection_records: Vec::new(),
             nested_payload_records: Vec::new(),
             execution_unit_resolve_records: Vec::new(),
             expanded_function_calls: BTreeMap::new(),
@@ -587,6 +598,7 @@ impl RunnerContext {
         self.parsed_command_scopes.clear();
         self.shell_redirection_scopes.clear();
         self.unresolved_dispatch_records.clear();
+        self.dispatch_projection_records.clear();
         self.nested_payload_records.clear();
         self.execution_unit_resolve_records.clear();
         self.expanded_function_calls.clear();
@@ -688,6 +700,22 @@ impl RunnerContext {
 
     pub fn unresolved_dispatch_records(&self) -> &[UnresolvedDispatchRecord] {
         &self.unresolved_dispatch_records
+    }
+
+    pub fn dispatch_projection_records(&self) -> &[DispatchProjectionRecord] {
+        &self.dispatch_projection_records
+    }
+
+    pub fn set_dispatch_projection_records(&mut self, records: Vec<DispatchProjectionRecord>) {
+        self.unresolved_dispatch_records = records.iter().flat_map(|record| {
+            record.projection.unresolved.iter().map(|candidate| {
+                UnresolvedDispatchRecord::new(
+                    record.source_node_id.clone(), record.command_ref.clone(),
+                    candidate.dispatch_index, candidate.command_slot.as_str(),
+                )
+            })
+        }).collect();
+        self.dispatch_projection_records = records;
     }
 
     pub fn set_unresolved_dispatch_records(

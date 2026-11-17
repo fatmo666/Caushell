@@ -16,7 +16,7 @@ use caushell_runner::{
     ExecutionUnitOriginKind, ExecutionUnitOriginLocator, ExecutionUnitResolveRecord,
     NestedPayloadParentRef, NestedPayloadRecord, NestedPayloadRecordId, NestedPayloadResolution,
     ParsedCommandRef, ParsedCommandScope, PendingMutation, ProcessSubstitutionLocationKind,
-    RunnerContext, SessionTransformPass, SessionView, StagedSession, UnresolvedDispatchRecord,
+    RunnerContext, SessionTransformPass, SessionView, StagedSession, DispatchProjectionRecord,
 };
 use caushell_types::{
     CheckRequest, DerivedInvocationOrigin, Evidence,
@@ -280,10 +280,10 @@ impl ResolveInvocationPass {
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
         }
-        let unresolved_records = project_unresolved_dispatch_records(
-            &self.registry, &execution_unit_resolve_records,
+        let dispatch_records = project_dispatch_records(
+            &self.registry, ctx.request(), &execution_unit_resolve_records,
         );
-        ctx.set_unresolved_dispatch_records(unresolved_records);
+        ctx.set_dispatch_projection_records(dispatch_records);
         ctx.set_execution_unit_resolve_records(execution_unit_resolve_records);
         let read_envelopes=ctx.execution_unit_resolve_records().iter().filter_map(|record| {
             matches!(&record.result,ResolveInvocationArtifactResult::Resolved(r) if r.bound.native_argv_effect_envelope.is_some())
@@ -1699,7 +1699,7 @@ fn collect_top_level_dispatch_derived_commands(
             continue;
         }
 
-        let projection = dispatch_candidates_for_resolved(
+        let projection = dispatch_projection_for_resolved(
             registry,
             resolved,
             request.shell_state_before.cwd(),
@@ -1827,7 +1827,10 @@ fn parsed_dispatch_scope(
     Some((parsed, command))
 }
 
-fn dispatch_candidates_for_resolved(
+/// Authoritative resolved/unresolved partition for every dispatch consumer:
+/// child expansion, unresolved reports, coverage and depth admission. Native
+/// argument regions and registered module contracts must stay paired here.
+fn dispatch_projection_for_resolved(
     registry: &ProfileRegistry,
     resolved: &caushell_profile::ResolvedInvocationArtifact,
     cwd: &str,
@@ -1842,9 +1845,15 @@ fn dispatch_candidates_for_resolved(
             .all(|r| matches!(r.id.as_str(), "exec" | "execdir" | "ok" | "okdir"))
     {
         let candidates = find_dispatch_candidates(resolved, cwd, home);
+        // This adapter marks only completely decoded executable bytes as
+        // runtime data. A preserved source token such as "$UNKNOWN" is not
+        // a resolved executable, even without a find placeholder domain.
+        let command_is_exact = |c: &caushell_profile::DispatchCommandCandidate| {
+            c.command.runtime_data && c.command.implicit_input_source.is_none()
+        };
         let unresolved = candidates
             .iter()
-            .filter(|c| c.command.implicit_input_source.is_some())
+            .filter(|c| !command_is_exact(c))
             .map(|c| caushell_profile::UnresolvedDispatchCommand {
                 lookup_domain: caushell_profile::CommandLookupDomain::External,
                 dispatch_index: c.dispatch_index,
@@ -1857,7 +1866,7 @@ fn dispatch_candidates_for_resolved(
         return caushell_profile::DispatchCommandProjection {
             resolved: candidates
                 .into_iter()
-                .filter(|c| c.command.implicit_input_source.is_none())
+                .filter(command_is_exact)
                 .collect(),
             unresolved,
         };
@@ -1903,30 +1912,20 @@ fn registered_dispatch_projection(
 pub(super) fn complete_native_dispatch_nodes(
     ctx: &RunnerContext,
 ) -> std::collections::BTreeSet<String> {
-    ctx.execution_unit_resolve_records()
+    ctx.dispatch_projection_records()
         .iter()
         .filter_map(|record| {
-            let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
-                return None;
-            };
-            if should_skip_generic_dispatch_projection(resolved) {
-                return None;
-            }
-            let projection = collect_dispatch_command_projection(&resolved.bound);
+            let projection = &record.projection;
             if projection.resolved.is_empty() || !projection.unresolved.is_empty() {
                 return None;
             }
-            projection
-                .resolved
-                .iter()
-                .all(|candidate| {
-                    ctx.execution_unit_resolve_records().iter().any(|child| {
-                        child.parent_execution_node_id == record.source_node_id
-                            && child.origin_kind == ExecutionUnitOriginKind::Dispatch
-                            && child.origin_index == candidate.dispatch_index
-                    })
+            projection.resolved.iter().all(|candidate| {
+                ctx.execution_unit_resolve_records().iter().any(|child| {
+                    child.parent_execution_node_id == record.source_node_id
+                        && child.origin_kind == ExecutionUnitOriginKind::Dispatch
+                        && child.origin_index == candidate.dispatch_index
                 })
-                .then(|| record.source_node_id.0.clone())
+            }).then(|| record.source_node_id.0.clone())
         })
         .collect()
 }
@@ -4169,7 +4168,10 @@ fn collect_execution_unit_resolve_records(
                 if resolved.is_none_or(should_skip_generic_dispatch_projection) {
                     0
                 } else {
-                    registered_dispatch_projection(registry, resolved.unwrap())
+                    dispatch_projection_for_resolved(
+                        registry, resolved.unwrap(), request.shell_state_before.cwd(),
+                        request.home.as_deref(),
+                    )
                         .unresolved
                         .len()
                 };
@@ -5431,7 +5433,7 @@ fn expanded_dispatch_children(
         request.home.as_deref(),
     );
 
-    for child in dispatch_candidates_for_resolved(
+    for child in dispatch_projection_for_resolved(
         registry,
         resolved,
         request.shell_state_before.cwd(),
@@ -9065,33 +9067,26 @@ fn project_dispatch_derived_invocation_mutation(
     }
 }
 
-fn project_unresolved_dispatch_records(
+fn project_dispatch_records(
     registry: &ProfileRegistry,
+    request: &CheckRequest,
     records: &[ExecutionUnitResolveRecord],
-) -> Vec<UnresolvedDispatchRecord> {
-    records
-        .iter()
-        .flat_map(|record| {
-            let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
-                return Vec::new();
-            };
-            if should_skip_generic_dispatch_projection(resolved) {
-                return Vec::new();
-            }
-            registered_dispatch_projection(registry, resolved)
-                .unresolved
-                .into_iter()
-                .map(|candidate| {
-                    UnresolvedDispatchRecord::new(
-                        record.source_node_id.clone(),
-                        record.command_ref.clone(),
-                        candidate.dispatch_index,
-                        candidate.command_slot.as_str().to_owned(),
-                    )
-                })
-                .collect::<Vec<_>>()
+) -> Vec<DispatchProjectionRecord> {
+    records.iter().filter_map(|record| {
+        let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+            return None;
+        };
+        if should_skip_generic_dispatch_projection(resolved) {
+            return None;
+        }
+        Some(DispatchProjectionRecord {
+            source_node_id: record.source_node_id.clone(),
+            command_ref: record.command_ref.clone(),
+            projection: dispatch_projection_for_resolved(
+                registry, resolved, request.shell_state_before.cwd(), request.home.as_deref(),
+            ),
         })
-        .collect()
+    }).collect()
 }
 
 fn project_alias_derived_invocation_mutation(
@@ -11386,6 +11381,69 @@ mod tests {
 
         ProfileRegistry::load_dir(&profiles_dir)
             .expect("expected built-in profiles directory to load")
+    }
+
+    #[test]
+    fn multi_action_dispatch_authority_known_regions_agree_across_consumers() {
+        let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash,
+            r"find . -exec echo {} \; -exec true {} \; -execdir printf %s {} \;");
+        let parent = top_level_record(&ctx, 0);
+        assert!(ctx.unresolved_dispatch_records().is_empty(), "{:?}", ctx.unresolved_dispatch_records());
+        assert!(super::complete_native_dispatch_nodes(&ctx).contains(&parent.source_node_id.0));
+        let indices: std::collections::BTreeSet<_> = ctx.execution_unit_resolve_records().iter()
+            .filter(|r| r.parent_execution_node_id == parent.source_node_id
+                && r.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch)
+            .map(|r| r.origin_index).collect();
+        assert_eq!(indices, [0, 1, 2].into_iter().collect());
+    }
+
+    #[test]
+    fn multi_action_dispatch_authority_unknown_region_keeps_its_own_identity() {
+        let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash,
+            r#"find . -exec echo {} \; -exec "$UNKNOWN" {} \; -exec true {} \;"#);
+        let parent = top_level_record(&ctx, 0);
+        let gaps = ctx.unresolved_dispatch_records();
+        assert_eq!(gaps.len(), 1, "{gaps:?}");
+        assert_eq!(gaps[0].dispatch_index, 1);
+        assert!(!super::complete_native_dispatch_nodes(&ctx).contains(&parent.source_node_id.0));
+    }
+
+    #[test]
+    fn multi_action_dispatch_authority_budget_counts_real_child_regions() {
+        let mut policy = PolicyConfig::default();
+        policy.semantic_expansion.max_nested_parse_depth = 0;
+        let ctx = run_pass_with_policy(&SessionSummary::new(), ShellKind::Bash,
+            r"find . -exec echo {} \; -exec true {} \;", policy);
+        let parent = top_level_record(&ctx, 0);
+        assert!(!super::complete_native_dispatch_nodes(&ctx).contains(&parent.source_node_id.0));
+        assert!(ctx.evidence.iter().any(|e| matches!(&e.kind,
+            EvidenceKind::ExecutionExpansionTruncated(t) if t.next_candidate_count == 2
+        )), "{:?}", ctx.evidence);
+    }
+
+    #[test]
+    fn multi_action_dispatch_authority_reparse_discards_previous_partition() {
+        let mut ctx = run_pass(&SessionSummary::new(), ShellKind::Bash,
+            r"find . -exec echo {} \; -exec true {} \;");
+        assert!(!ctx.dispatch_projection_records().is_empty());
+        ctx.set_parsed_command(caushell_parse::parse_command("echo new", ShellKind::Bash).unwrap());
+        assert!(ctx.dispatch_projection_records().is_empty());
+        assert!(ctx.unresolved_dispatch_records().is_empty());
+        assert!(super::complete_native_dispatch_nodes(&ctx).is_empty());
+    }
+
+    #[test]
+    fn multi_action_dispatch_authority_incomplete_parent_cannot_claim_coverage() {
+        for command in [
+            r"find . -exec echo {} \; -exec",
+            r"find . -exec echo {} \; -exec true {}",
+            r#"find . -exec echo {} \; -exec "$UNKNOWN" {} \;"#,
+        ] {
+            let ctx = run_pass(&SessionSummary::new(), ShellKind::Bash, command);
+            let parent = top_level_record(&ctx, 0);
+            assert!(!super::complete_native_dispatch_nodes(&ctx).contains(&parent.source_node_id.0),
+                "{command}: {:?}", ctx.dispatch_projection_records());
+        }
     }
 
     // This fixture exercises the shared consumer, independently of any tool

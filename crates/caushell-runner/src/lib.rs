@@ -27,6 +27,7 @@ mod staged;
 
 pub use context::{
     BlockDeviceSearchScope, CatastrophicSearchRootScope, CwdPathContext, DecisionProposal,
+    DispatchProjectionRecord,
     EffectiveCwd, ExecutionUnitInheritedScope, ExecutionUnitOriginKind, ExecutionUnitOriginLocator,
     ExecutionUnitResolveRecord, NativeArgumentInput, NativeArgumentProjection, NativeInputOrigin, NativeStdinRoute,
     NativeTemplateInput, ParsedCommandRef, ParsedCommandScope, ProcessSubstitutionLocationKind,
