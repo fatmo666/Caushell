@@ -10,11 +10,12 @@ struct Site {
     redirects: Vec<SourceSpan>,
 }
 
-fn tail_command(mut node: Node<'_>) -> Option<(SourceSpan, bool)> {
+fn tail_command(mut node: Node<'_>) -> Option<Node<'_>> {
     for _ in 0..128 {
         match node.kind() {
-            "command" | "test_command" => return Some((span_for(node), true)),
-            "subshell" | "compound_statement" => return Some((span_for(node), false)),
+            "command" | "test_command" | "subshell" | "compound_statement" => {
+                return Some(node);
+            }
             "list" | "pipeline" => {
                 node = named_children_of_kind(node, None)
                     .into_iter()
@@ -24,6 +25,26 @@ fn tail_command(mut node: Node<'_>) -> Option<(SourceSpan, bool)> {
             // acquire the authority of an enclosing execution scope.
             _ => return None,
         }
+    }
+    None
+}
+
+/// A grammar-owned redirect of a list or pipeline applies to its rightmost
+/// command. Follow only the list/pipeline chain; a compound shell scope
+/// never transfers its redirect operands into an inner command's argv.
+pub(super) fn trailing_redirect_scope(command: Node<'_>) -> Option<Node<'_>> {
+    let mut body = command.parent()?;
+    for _ in 0..128 {
+        if !matches!(body.kind(), "list" | "pipeline") {
+            return None;
+        }
+        let parent = body.parent()?;
+        if parent.kind() == "redirected_statement" {
+            return (parent.child_by_field_name("body") == Some(body)
+                && tail_command(body) == Some(command))
+            .then_some(parent);
+        }
+        body = parent;
     }
     None
 }
@@ -43,7 +64,17 @@ pub(super) fn restore(
         {
             sites.push(Site {
                 span: span_for(node),
-                owner: node.child_by_field_name("body").and_then(tail_command),
+                owner: node
+                    .child_by_field_name("body")
+                    .and_then(tail_command)
+                    .map(|owner| {
+                        let span = if owner.kind() == "command" {
+                            simple_command_span(owner, &simple_command_words(owner, source))
+                        } else {
+                            span_for(owner)
+                        };
+                        (span, matches!(owner.kind(), "command" | "test_command"))
+                    }),
                 redirects: named_children_of_kind(node, None)
                     .into_iter()
                     .filter(|n| {
@@ -250,6 +281,57 @@ fn try_restore(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn trailing_redirect_operands_and_argv_share_the_same_pipeline_owner() {
+        let source = "printf input | cat > 'output file' -- 'input file'";
+        let parsed = parse_command(source, ShellKind::Bash).unwrap();
+        assert_eq!(
+            parsed.status,
+            ParseStatus::Complete,
+            "{:?}",
+            parsed.diagnostics
+        );
+        let [producer, consumer] = parsed.commands.as_slice() else {
+            panic!("expected two pipeline stages");
+        };
+        assert_eq!(producer.tokens.len(), 1);
+        assert_eq!(producer.pipeline_span, consumer.pipeline_span);
+        assert_eq!(consumer.text, "cat > 'output file' -- 'input file'");
+        assert_eq!(consumer.tokens.len(), 2);
+        assert_eq!(consumer.tokens[0].kind, CommandTokenKind::DashDash);
+        assert_eq!(consumer.tokens[1].text, "input file");
+        let [redirect] = parsed.redirections.as_slice() else {
+            panic!("expected a single redirect");
+        };
+        assert_eq!(redirect.target.as_ref().unwrap().text, "output file");
+        assert_eq!(redirect.parent_command_span.as_ref(), Some(&consumer.span));
+        assert!(redirect.span.end_byte <= consumer.tokens[0].span.start_byte);
+    }
+
+    #[test]
+    fn trailing_redirect_preserves_second_stage_substitutions_and_redirect_order() {
+        let source = "printf input | cat >out $(printf item) 2>err other";
+        let parsed = parse_command(source, ShellKind::Bash).unwrap();
+        assert_eq!(
+            parsed.status,
+            ParseStatus::Complete,
+            "{:?}",
+            parsed.diagnostics
+        );
+        let consumer = &parsed.commands[1];
+        assert_eq!(consumer.tokens.len(), 2);
+        assert_eq!(
+            consumer.tokens[0].command_substitutions[0].body_text,
+            "printf item"
+        );
+        assert_eq!(consumer.tokens[1].text, "other");
+        assert_eq!(parsed.redirections.len(), 2);
+        for (redirect, target) in parsed.redirections.iter().zip(["out", "err"]) {
+            assert_eq!(redirect.target.as_ref().unwrap().text, target);
+            assert_eq!(redirect.parent_command_span.as_ref(), Some(&consumer.span));
+        }
+    }
 
     #[test]
     fn trailing_pipeline_redirects_belong_to_the_last_stage_without_reordering() {

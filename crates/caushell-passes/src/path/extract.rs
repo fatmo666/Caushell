@@ -3294,6 +3294,7 @@ mod tests {
                     RuntimeArgumentDomain::PathSet {
                         roots: vec![".".into()],
                         may_escape: false,
+                        basename_suffix: None,
                     },
                     "/tmp",
                     false,
@@ -3302,6 +3303,7 @@ mod tests {
                     RuntimeArgumentDomain::PathSet {
                         roots: vec!["/tmp/project/".into()],
                         may_escape: false,
+                        basename_suffix: None,
                     },
                     "/tmp",
                     false,
@@ -3703,6 +3705,7 @@ mod tests {
             Some(&RuntimeArgumentDomain::PathSet {
                 roots: vec!["$ROOT/~/out".to_string(), "/tmp/../var/data".to_string()],
                 may_escape: false,
+                basename_suffix: None,
             }),
             "/workspace/project",
         );

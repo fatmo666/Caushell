@@ -4,6 +4,7 @@ fn paths() -> RuntimeArgumentDomain {
     RuntimeArgumentDomain::PathSet {
         roots: vec![".".into(), "src".into()],
         may_escape: true,
+        basename_suffix: None,
     }
 }
 

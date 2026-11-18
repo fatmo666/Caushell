@@ -570,6 +570,7 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
             Some(caushell_types::RuntimeArgumentDomain::PathSet {
                 roots,
                 may_escape: false,
+                ..
             }) if !roots.is_empty()
                 && roots
                     .iter()
@@ -587,6 +588,7 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                 Some(caushell_types::RuntimeArgumentDomain::PathSet {
                     roots,
                     may_escape: false,
+                    ..
                 })
                 | Some(caushell_types::RuntimeArgumentDomain::PathTemplate {
                     roots,
@@ -632,6 +634,20 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
     }
     if arg.runtime_data || matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string") {
         return exact_word(arg.text.clone());
+    }
+    if !arg.quoted && arg.substitution_shape == Some(crate::StdoutScalarShape::ArithmeticText) {
+        // IFS may remove every byte or split the stream into many fields,
+        // but cannot add characters or introduce a glob into any field.
+        return ArgumentStructure {
+            fields: ArgumentFieldCount::ZeroOrMore,
+            static_prefix: String::new(),
+            static_suffix: String::new(),
+            exact: false,
+            spelling: Some(vec![SpellingPart::CharacterRun(
+                "0123456789+- \t\n\r\x0b\x0c".into(),
+            )]),
+            pathname_generation: false,
+        };
     }
     if arg.node_kind == "process_substitution" {
         // Supported Bash process substitution uses the /dev/fd backend. Keep

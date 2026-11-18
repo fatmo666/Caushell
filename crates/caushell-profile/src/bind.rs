@@ -737,7 +737,11 @@ pub fn bind_invocation(
         let mut accounting_gaps = Vec::new();
         collect_unresolved_arguments(&state, selection, &mut accounting_gaps);
         bound.stdout_growth_complete = accounting_gaps.is_empty();
-        bound.stdout_scalar_complete = audit_scalar && accounting_gaps.is_empty();
+        bound.stdout_scalar_complete = audit_scalar
+            && accounting_gaps.is_empty()
+            && selection.form.stdout_scalar_argv_grammar.is_none_or(|grammar| match grammar {
+                crate::StdoutScalarArgvGrammar::IntegerInfix => integer_infix_argv(projection),
+            });
         if profile.opaque_on_unresolved {
             residuals.extend(accounting_gaps);
         }
@@ -2515,6 +2519,26 @@ fn preview_form_consumption<'a>(
     FormConsumptionPreview {
         consumed: state.consumed,
     }
+}
+
+/// Parse the argv grammar, not the expression's value. A producer may fail
+/// (for example on overflow), in which case the output can be empty.
+fn integer_infix_argv(projection: &ProjectedInvocation) -> bool {
+    let args = &projection.args;
+    args.len() >= 3
+        && args.len() % 2 == 1
+        && args.iter().enumerate().all(|(index, arg)| {
+            let shape = crate::argument_structure(arg);
+            let Some(word) = shape.exact_value() else {
+                return false;
+            };
+            if index % 2 == 0 {
+                let digits = word.strip_prefix('-').unwrap_or(word);
+                !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit())
+            } else {
+                matches!(word, "+" | "-" | "*" | "/" | "%")
+            }
+        })
 }
 
 fn form_suppresses_modifier_effects(form: &Form) -> bool {

@@ -272,6 +272,7 @@ fn unknown_projection_does_not_inherit_a_source_path_bound() {
         domain: Some(RuntimeArgumentDomain::PathSet {
             roots: vec!["/workspace".into()],
             may_escape: false,
+            basename_suffix: None,
         }),
     };
     parameter.projected_values = Some(vec![ProjectedSemanticValue {

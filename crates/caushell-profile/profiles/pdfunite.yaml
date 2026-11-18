@@ -1,0 +1,41 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pdfunite, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: insufficient_arguments
+    selector: {kind: all, items: [&no_terminator {kind: no_dash_dash}, {kind: not, item: &pair {kind: has_positional_at, index: 1}}]}
+    parameters:
+      - {name: unused_argument, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: optional_one}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+  - id: merge_files
+    selector: {kind: all, items: [*no_terminator, *pair]}
+    parameters:
+      - name: input_files
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals_before_last}
+        cardinality: required_many
+        value_constraints: &file_operands [{kind: exclude_literal, value: ''}, {kind: exclude_literal, value: '-'}]
+      - name: output_file
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: last_positional}
+        cardinality: required_one
+        value_constraints: *file_operands
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: output_file}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs}
+
+extensions:
+  caushell.profile/sources:
+    - https://cgit.freedesktop.org/poppler/poppler/tree/utils/pdfunite.cc
+  caushell.profile/review_scope:
+    - With fewer than two positional operands, Poppler exits before constructing any PDFDoc or opening the destination.
+    - With file operands, every operand except the last is passed to PDFDoc. The raw last argument names the file opened for writing.
+    - This profile models local file operands. Option-bearing and unresolved invocations remain opaque.

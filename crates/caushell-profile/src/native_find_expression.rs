@@ -5,6 +5,7 @@ use caushell_types::{DirectoryEntryKind, MAX_DIRECTORY_DEPTH};
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) enum Expression {
     Test(NativePathPredicate),
+    MetadataTest { test: String, operand: String },
     And(Box<Self>, Box<Self>),
     Or(Box<Self>, Box<Self>),
     Not(Box<Self>),
@@ -27,6 +28,17 @@ pub(crate) struct ParsedFind {
 }
 
 impl Expression {
+    pub(crate) fn contains_metadata_test(&self) -> bool {
+        match self {
+            Self::MetadataTest { .. } => true,
+            Self::And(a, b) | Self::Or(a, b) => {
+                a.contains_metadata_test() || b.contains_metadata_test()
+            }
+            Self::Not(inner) => inner.contains_metadata_test(),
+            _ => false,
+        }
+    }
+
     pub(crate) fn record_encoding(&self) -> caushell_types::StreamRecordEncoding {
         fn visit(expression: &Expression, nul: &mut bool, line: &mut bool) {
             match expression {
@@ -75,30 +87,41 @@ impl Expression {
         relative: &str,
         name: &str,
         kind: DirectoryEntryKind,
+        case_fold_proven: bool,
         result: &mut NativeFindEvaluation,
     ) -> Result<bool, &'static str> {
         Ok(match self {
             Self::Test(test) => match test {
                 NativePathPredicate::Constant(v) => *v,
                 NativePathPredicate::Kind(v) => *v == kind,
-                NativePathPredicate::Name {
-                    pattern,
-                    insensitive,
-                } => glob(pattern, name, *insensitive)?,
-                NativePathPredicate::Path {
-                    pattern,
-                    insensitive,
-                } => glob(pattern, path, *insensitive)?,
+                NativePathPredicate::Name { pattern, insensitive }
+                | NativePathPredicate::Path { pattern, insensitive } => {
+                    if *insensitive && !case_fold_proven {
+                        return Err("native case folding locale is unobserved or unsupported");
+                    }
+                    let operand = if matches!(test, NativePathPredicate::Name { .. }) {
+                        name
+                    } else {
+                        path
+                    };
+                    glob(pattern, operand, *insensitive)?
+                }
             },
+            // The syntax is closed, but the observer does not have an
+            // authoritative value for this test. Only a branch that reaches
+            // it loses exact output; the existing short circuit owns that.
+            Self::MetadataTest { .. } => {
+                return Err("native numeric metadata predicate is unobserved");
+            }
             Self::And(a, b) => {
-                a.evaluate(path, relative, name, kind, result)?
-                    && b.evaluate(path, relative, name, kind, result)?
+                a.evaluate(path, relative, name, kind, case_fold_proven, result)?
+                    && b.evaluate(path, relative, name, kind, case_fold_proven, result)?
             }
             Self::Or(a, b) => {
-                a.evaluate(path, relative, name, kind, result)?
-                    || b.evaluate(path, relative, name, kind, result)?
+                a.evaluate(path, relative, name, kind, case_fold_proven, result)?
+                    || b.evaluate(path, relative, name, kind, case_fold_proven, result)?
             }
-            Self::Not(a) => !a.evaluate(path, relative, name, kind, result)?,
+            Self::Not(a) => !a.evaluate(path, relative, name, kind, case_fold_proven, result)?,
             Self::Prune => {
                 result.prune = true;
                 true
@@ -116,6 +139,19 @@ impl Expression {
             }
         })
     }
+}
+
+fn numeric_metadata_operand(test: &str, operand: &str) -> bool {
+    let number = operand.strip_prefix(['+', '-']).unwrap_or(operand);
+    let digits = if test == "-size" {
+        // This profile also serves BSD find, which rejects GNU's b/w suffixes.
+        number.strip_suffix(['c', 'k', 'M', 'G']).unwrap_or(number)
+    } else {
+        number
+    };
+    // Limit the admitted syntax to bounded decimal integers. Even the
+    // largest supported size multiplier stays within signed 64-bit range.
+    digits.bytes().all(|b| b.is_ascii_digit()) && digits.parse::<u32>().is_ok()
 }
 
 struct Parser<'a> {
@@ -190,6 +226,16 @@ impl Parser<'_> {
                 _ => return Err("unsupported native type test"),
             })),
             "-true" | "-false" => Expression::Test(NativePathPredicate::Constant(word == "-true")),
+            "-amin" | "-atime" | "-cmin" | "-ctime" | "-mmin" | "-mtime" | "-size" => {
+                let operand = self.take()?;
+                if !numeric_metadata_operand(&word, operand) {
+                    return Err("unsupported native numeric metadata operand");
+                }
+                Expression::MetadataTest {
+                    test: word,
+                    operand: operand.to_owned(),
+                }
+            }
             "-mindepth" | "-maxdepth" => {
                 let token = self.take()?;
                 let value = (!token.is_empty() && token.bytes().all(|b| b.is_ascii_digit()))

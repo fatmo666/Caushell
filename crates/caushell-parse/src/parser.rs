@@ -47,13 +47,20 @@ pub fn decode_static_shell_argument(text: &str, quoted: bool, node_kind: &str) -
     }
 
     let mut decoded = String::with_capacity(text.len());
-    let mut chars = text.chars();
+    let mut chars = text.chars().peekable();
     while let Some(character) = chars.next() {
         match character {
             '\\' => match chars.next()? {
                 '\n' => {}
                 escaped => decoded.push(escaped),
             },
+            '$' if node_kind == "word"
+                && chars
+                    .peek()
+                    .is_some_and(|&next| crate::word_boundary::literal_punctuation(next)) =>
+            {
+                decoded.push('$');
+            }
             '$' | '`' | '*' | '?' | '[' => return None,
             _ => decoded.push(character),
         }
@@ -386,6 +393,8 @@ pub enum ScalarArgumentPart {
     Literal(String),
     Parameter(String),
     CommandSubstitution(String),
+    UnquotedParameter(String),
+    UnquotedCommandSubstitution(String),
 }
 
 /// Decompose one scalar Bash word without evaluating its expansion values.
@@ -399,13 +408,13 @@ pub fn scalar_argument_parts(
     scalar_word_parts(text, quoted, node_kind, false)
 }
 
-/// Decompose scalar parameters even when unquoted. The caller must separately
-/// prove field splitting and pathname generation cannot change argv width.
+/// Decompose plain scalar expansions even when unquoted. The caller must
+/// separately apply field splitting and account for pathname generation.
 pub fn scalar_word_parts(
     text: &str,
     quoted: bool,
     node_kind: &str,
-    allow_unquoted_parameters: bool,
+    allow_unquoted_expansions: bool,
 ) -> Option<Vec<ScalarArgumentPart>> {
     fn parameter(text: &str) -> bool {
         let name = text
@@ -425,7 +434,7 @@ pub fn scalar_word_parts(
         source: &[u8],
         out: &mut Vec<ScalarArgumentPart>,
         budget: &mut usize,
-        allow_unquoted_parameters: bool,
+        allow_unquoted_expansions: bool,
     ) -> Option<()> {
         *budget = budget.checked_sub(1)?;
         match node.kind() {
@@ -439,7 +448,7 @@ pub fn scalar_word_parts(
                     if child.start_byte() != cursor {
                         return None;
                     }
-                    parts(child, source, out, budget, allow_unquoted_parameters)?;
+                    parts(child, source, out, budget, allow_unquoted_expansions)?;
                     cursor = child.end_byte();
                 }
                 if cursor != node.end_byte() {
@@ -449,6 +458,7 @@ pub fn scalar_word_parts(
             "string" => {
                 let mut cursor = node.start_byte() + 1;
                 let end = node.end_byte().checked_sub(1)?;
+                let start_parts = out.len();
                 for i in 0..node.named_child_count() {
                     *budget = budget.checked_sub(1)?;
                     let child = node.named_child(i as u32)?;
@@ -456,9 +466,11 @@ pub fn scalar_word_parts(
                         return None;
                     }
                     let gap = std::str::from_utf8(source.get(cursor..child.start_byte())?).ok()?;
-                    out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
-                        gap, true, "string",
-                    )?));
+                    if !gap.is_empty() {
+                        out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
+                            gap, true, "string",
+                        )?));
+                    }
                     let text = child.utf8_text(source).ok()?;
                     out.push(match child.kind() {
                         "command_substitution" => {
@@ -475,17 +487,24 @@ pub fn scalar_word_parts(
                     cursor = child.end_byte();
                 }
                 let tail = std::str::from_utf8(source.get(cursor..end)?).ok()?;
-                out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
-                    tail, true, "string",
-                )?));
+                if !tail.is_empty() || out.len() == start_parts {
+                    out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
+                        tail, true, "string",
+                    )?));
+                }
             }
             "simple_expansion" | "expansion"
-                if allow_unquoted_parameters && parameter(node.utf8_text(source).ok()?) =>
+                if allow_unquoted_expansions && parameter(node.utf8_text(source).ok()?) =>
             {
-                out.push(ScalarArgumentPart::Parameter(
+                out.push(ScalarArgumentPart::UnquotedParameter(
                     node.utf8_text(source).ok()?.into(),
                 ));
             }
+            "command_substitution" if allow_unquoted_expansions => out.push(
+                ScalarArgumentPart::UnquotedCommandSubstitution(
+                    node.utf8_text(source).ok()?.into(),
+                ),
+            ),
             _ => out.push(ScalarArgumentPart::Literal(decode_static_word_node(
                 node, source,
             )?)),
@@ -498,7 +517,8 @@ pub fn scalar_word_parts(
     let source = if quoted && node_kind == "string" {
         format!("\"{text}\"")
     } else if matches!(node_kind, "concatenation" | "word")
-        || allow_unquoted_parameters && matches!(node_kind, "simple_expansion" | "expansion")
+        || allow_unquoted_expansions
+            && matches!(node_kind, "simple_expansion" | "expansion" | "command_substitution")
     {
         text.to_owned()
     } else {
@@ -506,7 +526,7 @@ pub fn scalar_word_parts(
     };
     with_single_argument(&source, |node, source| {
         let mut out = Vec::new();
-        parts(node, source, &mut out, &mut 256, allow_unquoted_parameters)?;
+        parts(node, source, &mut out, &mut 256, allow_unquoted_expansions)?;
         Some(out)
     })
 }
@@ -626,6 +646,15 @@ fn planned_shell_variables(
         visited += 1;
         if visited > 100_000 || names.len() >= 128 {
             break;
+        }
+        if include_writes
+            && shell == ShellKind::Bash
+            && node.kind() == "command_substitution"
+            && node.parent().is_some_and(|parent| parent.kind() != "string")
+        {
+            // Field splitting consumes the owning shell's IFS even when no
+            // parameter is explicitly referenced in the substitution body.
+            names.insert("IFS".into());
         }
         if node.kind() == "variable_name" {
             if !include_writes
@@ -965,6 +994,28 @@ fn artifact_from_tree(
     redirection_precedence::restore(&mut artifact, root, source, heredocs);
     heredoc_pipeline::restore_evaluations(&mut artifact, heredocs);
     crate::backtick::restore(&mut artifact, backticks, root);
+    for iteration in &artifact.for_loops {
+        for item in iteration.items.iter().flatten() {
+            if item.command_substitutions.is_empty() {
+                continue;
+            }
+            artifact.shell_evaluations.push(crate::ShellEvaluationSite {
+                kind: crate::ShellEvaluationKind::ForListExpansion,
+                input: AssignmentValueFact {
+                    text: item.text.clone(),
+                    quoted: item.quoted,
+                    node_kind: item.node_kind.clone(),
+                    span: item.span.clone(),
+                    command_substitutions: item.command_substitutions.clone(),
+                },
+                top_level_span: iteration.top_level_span.clone(),
+                shell_scope_span: iteration.shell_scope_span.clone(),
+                numeric_locals: Vec::new(),
+                numeric_scope_span: None,
+                conditional_execution: iteration.conditional_execution,
+            });
+        }
+    }
     for redirect in &mut artifact.redirections {
         if redirect.operator.as_deref() == Some("<<-")
             && let Some(content) = &mut redirect.content
@@ -1745,7 +1796,9 @@ fn extract_for_loops(root: Node<'_>, source: &[u8]) -> Vec<crate::ForLoopFact> {
             items: explicit.then_some(items),
             span: span_for(node),
             body_span: span_for(body),
+            top_level_span: top_level_command_span(node),
             shell_scope_span: enclosing_shell_scope(node),
+            conditional_execution: conditionally_executed_in_shell(node),
         });
     });
     loops
@@ -3103,7 +3156,8 @@ fn collect_state_builtin_argument(
 }
 
 fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> {
-    let scope = simple_command_scope(node);
+    let words = simple_command_words(node, source);
+    let span = simple_command_span(node, &words);
     let mut command_name = None;
     let mut command_name_span: Option<SourceSpan> = None;
     let mut prefix_assignments = Vec::new();
@@ -3111,7 +3165,7 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
     let mut dashdash_seen = false;
     let mut joined_words = false;
 
-    for child in simple_command_words(node) {
+    for child in words {
         if child.kind() == "variable_assignment" {
             if command_name.is_none() {
                 if let Some(assignment) = parse_variable_assignment(child, source) {
@@ -3222,7 +3276,7 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
     Some(CommandFact {
         command_name,
         command_name_runtime_data: false,
-        text: source_text(scope, source),
+        text: String::from_utf8_lossy(&source[span.start_byte..span.end_byte]).into_owned(),
         prefix_assignments,
         tokens,
         in_pipeline: pipeline.is_some(),
@@ -3244,7 +3298,7 @@ fn extract_single_command(node: Node<'_>, source: &[u8]) -> Option<CommandFact> 
             ],
         ),
         top_level_span: top_level_command_span(node),
-        span: span_for(scope),
+        span,
     })
 }
 
@@ -3255,21 +3309,37 @@ fn continuation_gap(source: &[u8], start: usize, end: usize) -> bool {
     !gap.is_empty() && gap.len() % 2 == 0 && gap.chunks_exact(2).all(|pair| pair == b"\\\n")
 }
 
+fn same_shell_word(source: &[u8], end: usize, start: usize) -> bool {
+    end == start || continuation_gap(source, end, start)
+}
+
 fn simple_command_scope(node: Node<'_>) -> Node<'_> {
     node.parent()
         .filter(|parent| parent.kind() == "redirected_statement")
         .unwrap_or(node)
 }
 
+fn simple_command_span(node: Node<'_>, words: &[Node<'_>]) -> SourceSpan {
+    let mut span = span_for(simple_command_scope(node));
+    if let Some(last) = words.last()
+        && last.end_byte() > span.end_byte
+    {
+        span.end_byte = last.end_byte();
+        span.end_row = last.end_position().row;
+        span.end_column = last.end_position().column;
+    }
+    span
+}
+
 // tree-sitter-bash intentionally groups all literals following a file
 // redirect into repeated `destination` fields. Only the first is the shell
 // redirection operand; the others remain argv of this SAME simple command.
 // Never descend into a destination/expansion or a compound statement.
-fn simple_command_words(node: Node<'_>) -> Vec<Node<'_>> {
-    fn append<'a>(node: Node<'a>, words: &mut Vec<Node<'a>>) {
+fn simple_command_words<'a>(node: Node<'a>, source: &[u8]) -> Vec<Node<'a>> {
+    fn append<'a>(node: Node<'a>, source: &[u8], words: &mut Vec<Node<'a>>) {
         for child in all_children(node) {
             match child.kind() {
-                "file_redirect" => words.extend(file_redirect_argv(child)),
+                "file_redirect" => words.extend(file_redirect_argv(child, source)),
                 "herestring_redirect" | "heredoc_redirect" => {}
                 _ => words.push(child),
             }
@@ -3278,20 +3348,25 @@ fn simple_command_words(node: Node<'_>) -> Vec<Node<'_>> {
     let scope = simple_command_scope(node);
     let mut words = Vec::new();
     if scope.id() == node.id() {
-        append(node, &mut words);
+        append(node, source, &mut words);
     } else {
         for child in all_children(scope) {
             if child.id() == node.id() {
-                append(child, &mut words);
+                append(child, source, &mut words);
             } else if child.kind() == "file_redirect" {
-                words.extend(file_redirect_argv(child));
+                words.extend(file_redirect_argv(child, source));
             }
+        }
+    }
+    if let Some(statement) = redirection_precedence::trailing_redirect_scope(scope) {
+        for child in named_children_of_kind(statement, Some("file_redirect")) {
+            words.extend(file_redirect_argv(child, source));
         }
     }
     words
 }
 
-fn file_redirect_argv(node: Node<'_>) -> Vec<Node<'_>> {
+fn file_redirect_argv<'a>(node: Node<'a>, source: &[u8]) -> Vec<Node<'a>> {
     let closes_fd = all_children(node)
         .iter()
         .any(|child| matches!(child.kind(), "<&-" | ">&-"));
@@ -3302,7 +3377,11 @@ fn file_redirect_argv(node: Node<'_>) -> Vec<Node<'_>> {
     let mut start = usize::from(!closes_fd && !words.is_empty());
     while start > 0
         && start < words.len()
-        && words[start - 1].end_byte() == words[start].start_byte()
+        && same_shell_word(
+            source,
+            words[start - 1].end_byte(),
+            words[start].start_byte(),
+        )
     {
         start += 1;
     }
@@ -3664,7 +3743,7 @@ fn parse_file_redirect(node: Node<'_>, source: &[u8]) -> RedirectionFact {
             .children_by_field_name("destination", &mut cursor)
             .skip(1)
         {
-            if fragment.start_byte() != operand.span.end_byte {
+            if !same_shell_word(source, operand.span.end_byte, fragment.start_byte()) {
                 break;
             }
             operand.span.end_byte = fragment.end_byte();
@@ -4135,7 +4214,7 @@ fn parent_command_info(node: Node<'_>, source: &[u8]) -> (Option<String>, Option
 
     (
         command.and_then(|command| extract_command_name(command, source)),
-        command.map(|command| span_for(simple_command_scope(command))),
+        command.map(|command| simple_command_span(command, &simple_command_words(command, source))),
     )
 }
 
@@ -4183,7 +4262,7 @@ fn opening_statement_for_owner(owner: Node<'_>, source: &[u8]) -> CommandFact {
 
 fn extract_command_name(node: Node<'_>, source: &[u8]) -> Option<String> {
     let mut name_span: Option<SourceSpan> = None;
-    for child in simple_command_words(node) {
+    for child in simple_command_words(node, source) {
         if child.kind() == "command_name" {
             name_span = Some(span_for(child));
         } else if let Some(span) = &mut name_span {

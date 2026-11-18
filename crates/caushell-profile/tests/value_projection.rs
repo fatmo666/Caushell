@@ -462,6 +462,7 @@ fn projection_does_not_inherit_a_runtime_domain_for_the_whole_operand() {
         domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
             roots: vec!["/tmp/project".into()],
             may_escape: false,
+            basename_suffix: None,
         }),
     };
     let parameter = manual_parameter(original.clone());

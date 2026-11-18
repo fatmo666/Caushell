@@ -25,7 +25,12 @@ pub(crate) fn evaluate(
     base_bindings: &SessionBindings,
     max_depth: u8,
 ) -> Evaluation {
-    if let ShellEvaluationKind::RedirectionExpansion { unresolved, .. } = site.kind {
+    let direct_expansion = match site.kind {
+        ShellEvaluationKind::ForListExpansion => Some(false),
+        ShellEvaluationKind::RedirectionExpansion { unresolved, .. } => Some(unresolved),
+        _ => None,
+    };
+    if let Some(unresolved) = direct_expansion {
         return Evaluation {
             programs: site
                 .input
@@ -53,7 +58,8 @@ pub(crate) fn evaluate(
         max_depth: usize::from(max_depth),
     };
     match &site.kind {
-        ShellEvaluationKind::RedirectionExpansion { .. } => unreachable!(),
+        ShellEvaluationKind::ForListExpansion
+        | ShellEvaluationKind::RedirectionExpansion { .. } => unreachable!(),
         ShellEvaluationKind::ParameterReference { name }
         | ShellEvaluationKind::ParameterAssignment {
             name: Some(name), ..

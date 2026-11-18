@@ -158,6 +158,7 @@ fn native_batch_domains_survive_the_unknown_name_fallback() {
     let domain = RuntimeArgumentDomain::PathSet {
         roots: vec!["./input".into()],
         may_escape: false,
+        basename_suffix: None,
     };
     arg.runtime_argument_domain = Some(domain.clone());
     let p = profile();

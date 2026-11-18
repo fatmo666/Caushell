@@ -46,6 +46,7 @@ struct Input {
     namespace_write: bool,
     pending_resolution: bool,
     cwd_dependent: bool,
+    directory_anchor: Option<String>,
     namespace_effect: Option<caushell_types::PathNamespaceEffect>,
     relocation_scope: Option<String>,
 }
@@ -114,6 +115,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     &mut resolver,
                     ctx.filesystem_view(),
                     &mut tree_budget,
+                    ctx.request().shell_state_before.cwd(),
                 );
                 tree_evidence.push(evidence);
                 baseline
@@ -150,6 +152,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             tree_evidence.extend(entry_relocation::close_families(
                 &mut inputs, &mut baselines, &mut resolver,
                 ctx.filesystem_view(), &mut tree_budget,
+                ctx.request().shell_state_before.cwd(),
             ));
         }
         for proof in tree_evidence {
@@ -407,6 +410,7 @@ fn new_input(
             && access != PathTargetAccess::Follow,
         pending_resolution: true,
         cwd_dependent: false,
+        directory_anchor: None,
         namespace_effect: None,
         relocation_scope: None,
     }
@@ -550,6 +554,15 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             input.namespace_write = false;
                         }
                         input.cwd_dependent = target.cwd_dependent;
+                        if matches!(
+                            input.fact.lexical,
+                            PathResolution::BoundedPathSet { .. }
+                                | PathResolution::FileNamePrefix { .. }
+                        ) && let caushell_runner::CwdPathContext::Exact(path)
+                            | caushell_runner::CwdPathContext::Subtree(path) = case
+                        {
+                            input.directory_anchor = Some(path.to_owned());
+                        }
                         input.fact.implicit_incidental_cache = target.implicit_incidental_cache;
                         if not_applicable {
                             input.pending_resolution = false;

@@ -164,6 +164,7 @@ mod tests {
         let domain = RuntimeArgumentDomain::PathSet {
             roots: vec![".".into()],
             may_escape: false,
+            basename_suffix: None,
         };
         let mut invocation = consumer(true);
         bind_path_list_targets(

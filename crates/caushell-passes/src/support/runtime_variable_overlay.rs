@@ -510,6 +510,7 @@ impl RuntimeVariableContext<'_> {
                                         e.kind,
                                         caushell_profile::EffectKind::SourceScriptIntoCurrentShell
                                             | caushell_profile::EffectKind::ReturnFromShellScope
+                                            | caushell_profile::EffectKind::SetCurrentWorkingDirectory
                                     )
                                 })
                             })
@@ -927,6 +928,20 @@ impl RuntimeVariableContext<'_> {
             return (self.can_prove_termination && terminates && !command.conditional_execution)
                 .then(|| termination_fence(command, parsed))
                 .flatten();
+        }
+        if visible
+            && crate::passes::command_may_change_current_shell_cwd(&result, &expanded)
+        {
+            for name in ["PWD", "OLDPWD"] {
+                if bindings.variable_presence(name) != caushell_profile::VariablePresence::Unknown
+                    || bindings.get(name).is_some()
+                {
+                    // A change may fail and logical/physical spellings may
+                    // differ. Use neither the old value nor a cwd guess.
+                    touched.insert(name.into());
+                    bindings.insert_opaque_dynamic(name, "shell working directory may have changed");
+                }
+            }
         }
         if let ResolveInvocationArtifactResult::Resolved(resolved) = &result
             && resolved

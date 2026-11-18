@@ -1,7 +1,10 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use caushell_graph::NodeId;
-use caushell_profile::{ResolveInvocationArtifactResult, SessionBindings};
+use caushell_profile::{
+    BoundValue, ImplicitInputSource, PayloadFormat, ProfileRegistry, ProfileSourceKind,
+    ResolveInvocationArtifactResult, ResolvedInvocationArtifact, SessionBindings,
+};
 use caushell_runner::{ExecutionUnitOriginKind, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
     Decision, Evidence, EvidenceKind, NativeInputDecodeEvidence, RuleId, StdoutRecordsEvidence,
@@ -14,6 +17,7 @@ pub(super) struct ObservedInput {
     pub scope: caushell_parse::ParsedCommandArtifact,
     pub bindings: SessionBindings,
     pub records: StdoutRecordsEvidence,
+    pub direct_stdin: Option<String>,
 }
 
 #[derive(Default)]
@@ -27,10 +31,58 @@ pub(super) struct ObservedInputs {
 /// Equal diagnostic text from a different consumer must retain its own floor.
 pub(super) fn gap_source(node: &str) -> String { format!("resolve_native_inputs:{node}") }
 
-// Producer failure can establish the bytes of a stream in this namespace.
-// It cannot erase a consumer's potential writes, execution, or unproved
-// controls by making its native invocation disappear or select a no-op form.
-fn can_refine_from_missing_starting_points(
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum ConsumerMode {
+    Dispatch,
+    Direct,
+}
+
+fn consumer_mode(
+    registry: &ProfileRegistry,
+    resolved: &ResolvedInvocationArtifact,
+) -> Option<ConsumerMode> {
+    let bound = &resolved.bound;
+    if resolved.normalized_command_name == "xargs" && bound.form_id.as_str() == "dispatch_from_stdin" {
+        return Some(ConsumerMode::Dispatch);
+    }
+    if resolved.proven_stream_contract().is_none()
+        || registry
+            .lookup(&resolved.normalized_command_name)
+            .profile?
+            .trust
+            .source
+            != ProfileSourceKind::BuiltIn
+    {
+        return None;
+    }
+    let reads_name_list = bound.payload_projections.iter().any(|projection| {
+        matches!(
+            projection.format,
+            PayloadFormat::RenameArguments | PayloadFormat::RenamePerlArguments
+        )
+    }) && bound.bound_parameters.iter().any(|p| {
+        p.payload_generated
+            && p.values.iter().any(|value| {
+                matches!(value, BoundValue::ImplicitInput { source: ImplicitInputSource::StdinData, .. })
+            })
+    });
+    (reads_name_list || bound.effects.iter().any(|effect| effect.path_list.is_some()))
+        .then_some(ConsumerMode::Direct)
+}
+
+fn direct_stdin(output: &StdoutRecordsEvidence) -> Option<String> {
+    let records = output.complete_records()?;
+    // Reordering blocks can change what a native consumer decodes as a
+    // single path. Use exact byte order for the direct projection API.
+    if output.order != caushell_types::StreamRecordOrder::Exact {
+        return None;
+    }
+    String::from_utf8(records.iter().flat_map(|record| record.bytes.iter().copied()).collect()).ok()
+}
+
+// A limited producer observation may refine argv only when the original
+// dispatch's effects are already closed and read-only.
+fn has_closed_read_only_dispatch(
     ctx: &RunnerContext,
     registry: &caushell_profile::ProfileRegistry,
     consumer: &NodeId,
@@ -68,13 +120,20 @@ pub(super) fn prepare(
     let mut provisional = ctx.clone();
     ComputeEffectiveCwdPass.run(session, &mut provisional);
     ExtractPipelineFlowPass.run(session, &mut provisional);
-    let consumers = provisional.execution_unit_resolve_records().iter().filter(|r| matches!(&r.result,
-        ResolveInvocationArtifactResult::Resolved(r) if r.normalized_command_name.as_str() == "xargs" && r.bound.form_id.as_str() == "dispatch_from_stdin"))
-        .map(|r| r.source_node_id.0.clone()).collect::<BTreeSet<_>>();
+    let consumers: BTreeMap<_, _> = provisional
+        .execution_unit_resolve_records()
+        .iter()
+        .filter_map(|record| {
+            let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+                return None;
+            };
+            Some((record.source_node_id.0.clone(), consumer_mode(registry, resolved)?))
+        })
+        .collect();
     if consumers.is_empty() {
         return result;
     }
-    let mut deferred = consumers.clone();
+    let mut deferred: BTreeSet<_> = consumers.keys().cloned().collect();
     // Only a candidate projection may defer unresolved descendants. Acceptance
     // later checks every final child effect and the unchanged producer evidence.
     loop {
@@ -88,11 +147,16 @@ pub(super) fn prepare(
             break;
         }
     }
-    super::observe_stdout_records::observe_outputs(&mut provisional, &deferred, &BTreeSet::new(), super::observe_stdout_records::ObservationPhase::Candidate);
+    let metadata_limited = super::observe_stdout_records::observe_outputs(
+        &mut provisional,
+        &deferred,
+        &BTreeSet::new(),
+        super::observe_stdout_records::ObservationPhase::Candidate,
+    );
     let records = graph_backed_execution_resolve_records(&provisional);
     for &consumer in records
         .iter()
-        .filter(|r| consumers.contains(&r.source_node_id().0))
+        .filter(|r| consumers.contains_key(&r.source_node_id().0))
     {
         if consumer.static_input_cwd_unproven() {
             continue;
@@ -125,13 +189,39 @@ pub(super) fn prepare(
         ) else {
             continue;
         };
+        let limited_observation_gap = if !output.missing_starting_point_observations.is_empty() {
+            Some("missing producer starting points do not close consumer effects")
+        } else if metadata_limited.contains(&output.producer_node_id) {
+            Some("producer metadata tests do not close consumer effects")
+        } else {
+            None
+        };
+        let mode = consumers[&consumer.source_node_id().0];
+        if mode == ConsumerMode::Direct {
+            // Limited observations are insufficient to reduce a direct
+            // consumer's side effects. Keep its original projection.
+            if limited_observation_gap.is_none()
+                && let Some(direct_stdin) = direct_stdin(&output)
+            {
+                result.inputs.insert(
+                    consumer.source_node_id().clone(),
+                    ObservedInput {
+                        scope: consumer.parsed_scope().clone(),
+                        bindings: consumer.bindings().clone(),
+                        records: output,
+                        direct_stdin: Some(direct_stdin),
+                    },
+                );
+            }
+            continue;
+        }
         if output.complete
-            && !output.missing_starting_point_observations.is_empty()
-            && !can_refine_from_missing_starting_points(ctx, registry, consumer.source_node_id())
+            && let Some(gap) = limited_observation_gap
+            && !has_closed_read_only_dispatch(ctx, registry, consumer.source_node_id())
         {
             output.complete = false;
             output.records.clear();
-            output.gap = Some("missing producer starting points do not close consumer effects".into());
+            output.gap = Some(gap.into());
         }
         if !output.complete
             && let Some(proof) = super::symbolic_native_inputs::prove(
@@ -154,6 +244,7 @@ pub(super) fn prepare(
                 scope: consumer.parsed_scope().clone(),
                 bindings: consumer.bindings().clone(),
                 records: output,
+                direct_stdin: None,
             },
         );
     }
@@ -311,6 +402,18 @@ pub(super) fn reject(
     registry: &caushell_profile::ProfileRegistry,
 ) {
     for (node, proof) in &input.inputs {
+        if proof.direct_stdin.is_some() {
+            // A speculative direct refinement never replaces the ordinary
+            // static projection when the final action does not revalidate.
+            if let Some(decoded) = input.decoded.get(node).cloned() {
+                ctx.add_evidence(Evidence {
+                    rule_id: RuleId::SelectionError,
+                    summary: "direct native input refinement rejected".into(),
+                    kind: EvidenceKind::NativeInputDecode(decoded),
+                });
+            }
+            continue;
+        }
         if let Some(proof) = super::symbolic_native_inputs::prove(
             ctx,
             registry,

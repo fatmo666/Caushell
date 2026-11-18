@@ -98,6 +98,10 @@ pub enum PathNamespaceEffect {
     /// May fail, write contents, or create/replace an ordinary file at the
     /// target leaf. Cannot introduce a symlink or change a parent directory.
     RegularFileWrite,
+    /// Changes metadata on an existing regular file without replacing its
+    /// directory entry. This does not certify the metadata change or its
+    /// authorization. Consumers must still observe the current file kind.
+    ExistingFileMetadata,
     /// May create directories and regular files beneath declared roots, but
     /// cannot create links, rename directories, or traverse an unobserved link.
     DirectoryTreeWrite,

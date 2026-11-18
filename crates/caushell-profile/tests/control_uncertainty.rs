@@ -102,6 +102,7 @@ fn bounded_native_batch_is_not_an_unknown_option_just_because_its_width_varies()
     arg.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
         roots: vec!["htdocs".into(), "cgi-bin".into()],
         may_escape: false,
+        basename_suffix: None,
     });
     assert!(!argument_structure(arg).may_start_with("-"));
     let selection = select_invocation(&p, &projected).unwrap();

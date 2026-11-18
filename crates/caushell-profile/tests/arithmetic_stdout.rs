@@ -85,3 +85,35 @@ subcommands: null
         assert_eq!(r.proven_arithmetic_stdout(), expected, "{text}");
     }
 }
+
+#[test]
+fn integer_infix_proof_checks_the_complete_expr_argv() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    for (command, expected) in [
+        (r"expr 10 \* 1024 \* 2", true),
+        ("expr 4 + 3 % 2", true),
+        ("expr 10 / 0", true),
+        ("expr 10 +", false),
+        ("expr 10 * 2", false),
+        (r#"expr 10 \* "$value""#, false),
+        ("expr 'text' : 'pattern'", false),
+        ("expr --help", false),
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let result = resolve_invocation_artifact_with_bindings(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::default().with_shell_kind(ShellKind::Bash),
+            &SessionBindings::new(),
+        );
+        let ResolveInvocationArtifactResult::Resolved(result) = result else {
+            panic!("expr effects must still resolve: {command}");
+        };
+        assert_eq!(result.proven_arithmetic_stdout(), expected, "{command}");
+        assert_eq!(
+            result.proven_stdout_scalar() == Some(StdoutScalarShape::ArithmeticText),
+            expected,
+            "{command}"
+        );
+    }
+}

@@ -98,7 +98,7 @@ modifiers:
       - name: insert_batch_token
         semantic: {kind: plain_value}
         binding: {kind: following_matched_flag, operand_mode: next_arg}
-        cardinality: required_one
+        cardinality: required_many
 
   - id: null_delimited
     matcher:
@@ -119,7 +119,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: required_one
+        cardinality: required_many
 
   - id: replace_token_optional
     matcher: {kind: any_flag, flags: ["-i", "--replace"]}
@@ -129,7 +129,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: optional_inline_or_short_attached
-        cardinality: optional_one
+        cardinality: optional_many
 
   - id: max_args
     matcher:
@@ -144,7 +144,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: required_one
+        cardinality: required_many
 
   - id: max_lines
     matcher:
@@ -159,7 +159,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: required_one
+        cardinality: required_many
 
   - id: max_lines_optional
     matcher: {kind: any_flag, flags: ["-l"]}
@@ -169,7 +169,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: optional_inline_or_short_attached
-        cardinality: optional_one
+        cardinality: optional_many
 
   - id: delimiter
     matcher:
@@ -184,7 +184,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: required_one
+        cardinality: required_many
 
   - id: eof_marker_required
     matcher:
@@ -198,7 +198,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: next_arg
-        cardinality: required_one
+        cardinality: required_many
 
   - id: eof_marker_inline
     matcher:
@@ -213,7 +213,7 @@ modifiers:
         binding:
           kind: following_matched_flag
           operand_mode: optional_inline_or_short_attached
-        cardinality: optional_one
+        cardinality: optional_many
 
   - id: arg_file
     matcher:

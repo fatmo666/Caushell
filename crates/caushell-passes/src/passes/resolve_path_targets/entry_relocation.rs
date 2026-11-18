@@ -12,6 +12,7 @@ pub(super) fn close_families(
     resolver: &mut NamespaceResolver,
     view: Arc<dyn FilesystemView>,
     budget: &mut DirectoryReadBudget,
+    entry_directory: &str,
 ) -> Vec<DirectoryTreeEvidence> {
     let mut groups = BTreeMap::<String, Vec<usize>>::new();
     for (index, input) in inputs.iter().enumerate() {
@@ -68,7 +69,8 @@ pub(super) fn close_families(
         }
         let mut family = inputs[indices[0]].clone();
         family.fact.lexical = PathResolution::BoundedPathSet { roots: vec![root.clone()], may_escape: false };
-        let ((state, observations), proof) = directory_tree::resolve(&family, resolver, view.clone(), budget);
+        let ((state, observations), proof) =
+            directory_tree::resolve(&family, resolver, view.clone(), budget, entry_directory);
         let closed = proof.complete && matches!(state,
             SemanticResolution::Resolved { value: PathResolution::BoundedPathSet { may_escape: false, .. } })
             && (fixed_writes.is_empty() || proof.directories.iter().any(|dir| dir.path == root));

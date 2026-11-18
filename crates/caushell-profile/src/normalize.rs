@@ -434,6 +434,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 unmodeled_short_clusters: v.unmodeled_short_clusters,
                 operand_free_short_clusters: v.operand_free_short_clusters,
                 positional_boundary_words: v.positional_boundary_words,
+                rejects_positionals_after_action: v.rejects_positionals_after_action,
             });
     if let Some(vocabulary) = &argument_control_vocabulary {
         let declarations = crate::argument_regions::operand_declarations(&modifiers, &forms)
@@ -1356,6 +1357,7 @@ fn normalize_form(raw: RawForm) -> Result<Form, NormalizeError> {
             .transpose()?,
         stdout_scalar: raw.stdout_scalar,
         stdout_scalar_native_variant: raw.stdout_scalar_native_variant,
+        stdout_scalar_argv_grammar: raw.stdout_scalar_argv_grammar,
         stdout_scalar_inputs: raw
             .stdout_scalar_inputs
             .into_iter()
@@ -1396,6 +1398,13 @@ fn validate_stdout_scalars(forms: &[Form]) -> Result<(), NormalizeError> {
         {
             return Err(NormalizeError::InvalidStdoutScalar(
                 "arithmetic_text requires a data stdout contract".into(),
+            ));
+        }
+        if form.stdout_scalar_argv_grammar.is_some()
+            && form.stdout_scalar != Some(crate::StdoutScalarShape::ArithmeticText)
+        {
+            return Err(NormalizeError::InvalidStdoutScalar(
+                "stdout_scalar_argv_grammar requires an arithmetic_text stdout contract".into(),
             ));
         }
         if form
@@ -3178,6 +3187,11 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
                             || matches!(&target, EffectTarget::DerivedPath(path)
                             if path.rule == caushell_types::DerivedPathRule::SiblingFiles))
                 }
+                caushell_types::PathNamespaceEffect::ExistingFileMetadata => {
+                    kind == EffectKind::MetadataMutation
+                        && raw.path_list.is_some()
+                        && target == EffectTarget::ImplicitInput(ImplicitInputSource::StdinData)
+                }
             };
         if !valid {
             return Err(NormalizeError::InvalidPathAccess(
@@ -4541,6 +4555,7 @@ mod tests {
                 stdout_records: None,
                 stdout_scalar: None,
                 stdout_scalar_native_variant: None,
+                stdout_scalar_argv_grammar: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -4748,6 +4763,7 @@ mod tests {
                 stdout_records: None,
                 stdout_scalar: None,
                 stdout_scalar_native_variant: None,
+                stdout_scalar_argv_grammar: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -4877,6 +4893,7 @@ mod tests {
                 stdout_records: None,
                 stdout_scalar: None,
                 stdout_scalar_native_variant: None,
+                stdout_scalar_argv_grammar: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -4983,6 +5000,7 @@ mod tests {
                 stdout_records: None,
                 stdout_scalar: None,
                 stdout_scalar_native_variant: None,
+                stdout_scalar_argv_grammar: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -5080,6 +5098,7 @@ mod tests {
                 stdout_records: None,
                 stdout_scalar: None,
                 stdout_scalar_native_variant: None,
+                stdout_scalar_argv_grammar: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],
@@ -5254,6 +5273,7 @@ mod tests {
                 stdout_records: None,
                 stdout_scalar: None,
                 stdout_scalar_native_variant: None,
+                stdout_scalar_argv_grammar: None,
                 stdout_scalar_inputs: Vec::new(),
                 extensions: BTreeMap::new(),
             }],

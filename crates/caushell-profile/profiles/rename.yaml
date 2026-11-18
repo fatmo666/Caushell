@@ -20,6 +20,24 @@ platform:
   shell_families: []
   requires_features: []
 
+# The Perl implementation can load modules before consuming any filenames.
+environment_inputs:
+  - name: perl_startup_options
+    environment: {name: PERL5OPT, empty_is_unset: true}
+    semantic: {kind: plain_value}
+    structured_projection:
+      branches:
+        - matcher: {kind: regex_capture, pattern: '^([ \t]*-[wW]+[ \t]*)+$', group: 0}
+      fallback:
+        name: perl_startup_code
+        semantic: &perl_loader {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: perl_library_search
+    environment: {name: PERL5LIB, empty_is_unset: true}
+    semantic: *perl_loader
+  - name: perl_legacy_library_search
+    environment: {name: PERLLIB, empty_is_unset: true}
+    semantic: *perl_loader
+
 forms:
   - id: rename_paths
     parameters:

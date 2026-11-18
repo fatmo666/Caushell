@@ -7,11 +7,27 @@ use tree_sitter::{Node, Parser, Tree};
 
 use crate::ParseError;
 
+mod bare_dollar;
+
 fn escaped_blank(byte: u8) -> bool {
     matches!(byte, b' ' | b'\t' | b'\x0b' | b'\x0c' | b'\r')
 }
 
 pub(crate) fn parse(parser: &mut Parser, source: &[u8]) -> Result<Tree, ParseError> {
+    let tree = parse_escaped_blanks(parser, source)?;
+    bare_dollar::recover(parser, source, tree, false)
+}
+
+/// Backquote extraction normalizes greedy substitution extents before reading
+/// any facts. Only that entry may accept a tree that still needs this step.
+pub(crate) fn parse_for_backquotes(parser: &mut Parser, source: &[u8]) -> Result<Tree, ParseError> {
+    let tree = parse_escaped_blanks(parser, source)?;
+    bare_dollar::recover(parser, source, tree, true)
+}
+
+pub(crate) use bare_dollar::literal_punctuation;
+
+fn parse_escaped_blanks(parser: &mut Parser, source: &[u8]) -> Result<Tree, ParseError> {
     let mut tree = parser
         .parse(source, None)
         .ok_or(ParseError::ParseCancelled)?;

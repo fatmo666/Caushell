@@ -35,6 +35,7 @@ fn config(item_mode: I, dispatch_mode: D, run_if_empty: bool) -> XargsStaticExpa
         item_mode,
         dispatch_mode,
         run_if_empty,
+        decoding_proved: true,
         requires_confirmation: false,
         eof_marker: None,
         insert_batch_token: None,
@@ -88,6 +89,92 @@ fn partial_malformed_and_over_budget_records_are_not_empty_input() {
     assert_eq!(observed_xargs_groups(&p, &c).unwrap().len(), 6);
 }
 
+fn owned_config(text: &str) -> XargsStaticExpansionConfig {
+    use caushell_profile::{
+        InvocationRuntimeContext, ProfileRegistry, ResolveInvocationArtifactResult,
+        SessionBindings, resolve_invocation_artifact_with_bindings,
+    };
+    use std::sync::OnceLock;
+    static REGISTRY: OnceLock<ProfileRegistry> = OnceLock::new();
+    let parsed = caushell_parse::parse_command(text, ShellKind::Bash).unwrap();
+    let result = resolve_invocation_artifact_with_bindings(
+        REGISTRY.get_or_init(|| ProfileRegistry::built_in().unwrap()),
+        &parsed.commands[0],
+        InvocationRuntimeContext::new(),
+        &SessionBindings::new(),
+    );
+    let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
+        panic!("{text}: {result:#?}");
+    };
+    super::xargs_static_expansion_config(&resolved)
+}
+
+#[test]
+fn xargs_uses_the_last_owned_input_options() {
+    for (text, expected) in [
+        ("xargs -d '|' -0 printf %s", I::NullSeparated),
+        (
+            "xargs -0 -d '|' printf %s",
+            I::Delimited {
+                delimiter: "|".into(),
+            },
+        ),
+        (
+            "xargs -d ':' -d '|' printf %s -0",
+            I::Delimited {
+                delimiter: "|".into(),
+            },
+        ),
+        (
+            r"xargs -d '\x7c' printf %s",
+            I::Delimited {
+                delimiter: "|".into(),
+            },
+        ),
+        (
+            r"xargs -d '\174' printf %s",
+            I::Delimited {
+                delimiter: "|".into(),
+            },
+        ),
+    ] {
+        let c = owned_config(text);
+        assert!(c.decoding_proved, "{text}: {c:#?}");
+        assert_eq!(c.item_mode, expected, "{text}");
+    }
+    for (text, marker) in [
+        ("xargs -E STOP -E LATER printf %s", Some("LATER")),
+        ("xargs -E STOP -e printf %s", None),
+        (r"xargs -E '\n' printf %s", Some(r"\n")),
+    ] {
+        let c = owned_config(text);
+        assert!(c.decoding_proved, "{text}: {c:#?}");
+        assert_eq!(c.eof_marker.as_deref(), marker, "{text}");
+    }
+}
+
+#[test]
+fn xargs_lines_with_dialect_dependent_blanks_stay_unresolved() {
+    let c = config(
+        I::NewlineSeparated,
+        D::ReplaceToken { token: "@".into() },
+        false,
+    );
+    for payload in ["a  \n", "\t\n", "one \ntwo\n"] {
+        assert!(observed_xargs_groups(&output(&[payload], StreamRecordOrder::Exact), &c).is_err());
+    }
+    let p = output(&["a\\\n", "b\n"], StreamRecordOrder::Unspecified);
+    let groups = observed_xargs_groups(&p, &c).unwrap();
+    assert!(groups.contains(&vec!["a\nb".to_string()]), "{groups:?}");
+}
+
+#[test]
+fn xargs_undecoded_input_option_never_certifies_empty_input() {
+    let c = owned_config("xargs -I @ -d 'é' printf %s @");
+    assert!(!c.decoding_proved);
+    assert!(observed_xargs_groups(&output(&[], StreamRecordOrder::Exact), &c).is_err());
+}
+
 #[cfg(target_os = "linux")]
 #[test]
 fn isolated_native_xargs_confirms_decoder_grouping_and_empty_input() {
@@ -128,7 +215,7 @@ fn isolated_native_xargs_confirms_decoder_grouping_and_empty_input() {
             config(
                 I::NewlineSeparated,
                 D::ReplaceToken { token: "@".into() },
-                true,
+                false,
             ),
         ),
         (
@@ -147,7 +234,7 @@ fn isolated_native_xargs_confirms_decoder_grouping_and_empty_input() {
             config(
                 I::NewlineSeparated,
                 D::ReplaceToken { token: "@".into() },
-                true,
+                false,
             ),
         ),
     ];

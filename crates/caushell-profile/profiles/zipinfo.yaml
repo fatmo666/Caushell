@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: zipinfo, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+
+# Info-ZIP selects the listing persona from argv[0] before prepending defaults.
+# Default arguments can still supply a different archive path.
+environment_inputs:
+  - name: startup_options
+    environment: {name: ZIPINFO, empty_is_unset: true}
+    require_observation: true
+    semantic: &env_options {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: alternate_startup_options
+    environment: {name: ZIPINFOOPT, empty_is_unset: true}
+    require_observation: true
+    semantic: *env_options
+
+forms:
+  - id: list_members
+    selector: {kind: all, items: [{kind: no_dash_dash}, {kind: has_positional_at, index: 0}]}
+    parameters:
+      - name: archive_file
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        value_constraints:
+          - {kind: require_match, pattern: '^[^-*?\x5b\x5d\x5c][^*?\x5b\x5d\x5c]*$'}
+      - {name: member_patterns, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: archive_file}}
+      - kind: read_path
+        path_access: content_open
+        target: {kind: derived_path, source: {kind: slot, name: archive_file}, rule: {kind: append_suffix, suffix: '.zip'}, purpose: generic_operand}
+      - kind: read_path
+        path_access: content_open
+        target: {kind: derived_path, source: {kind: slot, name: archive_file}, rule: {kind: append_suffix, suffix: '.ZIP'}, purpose: generic_operand}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+modifiers:
+  - {id: listing_format, matcher: {kind: any_flag, flags: ['-1', '-2', -C, -h, -l, -m, -s, -t, -T, -v, -z]}}
+
+extensions:
+  caushell.profile/sources:
+    - https://sources.debian.org/src/unzip/6.0-28/man/zipinfo.1/
+    - https://sources.debian.org/src/unzip/6.0-28/zipinfo.c/
+    - https://sources.debian.org/src/unzip/6.0-28/process.c/
+  caushell.profile/review_scope:
+    - Listing uses the read-only ZipInfo parser. Its -T formats timestamps in the listing.
+    - With a literal archive operand, include both POSIX suffix fallbacks as possible content reads.
+    - Archive wildcard expansion, unsupported options and unproved startup options remain opaque. Member patterns name entries inside the archive.

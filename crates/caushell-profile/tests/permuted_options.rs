@@ -124,6 +124,7 @@ fn bounded_native_batches_keep_per_item_path_proof_without_claiming_scalar_arity
     tail.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
         roots: vec!["./input".into()],
         may_escape: false,
+        basename_suffix: None,
     });
     let shape = argument_structure(tail);
     assert_eq!(shape.fields, ArgumentFieldCount::ZeroOrMore);

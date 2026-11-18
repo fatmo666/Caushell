@@ -1,6 +1,23 @@
 //! Static checks only: no benchmark command or mutation is executed.
 use caushell_core::ShellQueryCore;
+use caushell_runner::FilesystemView;
 use caushell_types::*;
+use std::sync::Arc;
+
+enum WorkspaceView {
+    Present,
+    Missing,
+}
+
+impl FilesystemView for WorkspaceView {
+    fn entry(&self, path: &str) -> FilesystemEntry {
+        match path {
+            "/" | "/workspace" => FilesystemEntry::Directory,
+            "/workspace/project" if matches!(self, Self::Present) => FilesystemEntry::Directory,
+            _ => FilesystemEntry::Missing,
+        }
+    }
+}
 
 fn request(command: &str) -> CheckRequest {
     CheckRequest {
@@ -41,7 +58,15 @@ fn nul_path_records_keep_lexical_bounds_without_claiming_namespace_proof() {
         "find . -print0 | tee cache.paths | xargs -0 chmod 644",
         "find . -print0 2>/dev/null | xargs -0 chmod 644",
     ] {
-        expect(command, Decision::NeedApproval);
+        let response = ShellQueryCore::new()
+            .with_filesystem_view(Arc::new(WorkspaceView::Missing))
+            .check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            response.reasons
+        );
     }
 }
 
@@ -52,7 +77,8 @@ fn bounded_domain_remains_in_trace_without_approving_incomplete_inputs() {
         RuleId::OutsideWorkspaceMutation,
         RulePolicyEntry::new(RuleAction::Observe),
     );
-    let mut core = ShellQueryCore::with_policy(policy);
+    let mut core =
+        ShellQueryCore::with_policy(policy).with_filesystem_view(Arc::new(WorkspaceView::Missing));
     let response = core.check(request("find . -type f -print0 | xargs -0 chmod 644"));
     assert_eq!(response.decision, Decision::NeedApproval);
     assert!(
@@ -63,15 +89,30 @@ fn bounded_domain_remains_in_trace_without_approving_incomplete_inputs() {
             .any(|e| matches!(&e.kind,
         EvidenceKind::NativeInputDecode(d) if !d.complete && d.gap.is_some()))
     );
-    assert!(
-        response
-            .decision_trace
-            .path_targets
-            .iter()
-            .any(|fact| matches!(fact.resolution, SemanticResolution::Unresolved { .. }))
-    );
-    assert!(response.decision_trace.path_targets.iter().any(|fact| matches!(&fact.lexical,
-        PathResolution::BoundedPathSet { roots, may_escape: false } if roots == &vec!["/workspace/project".to_string()])), "{:#?}", response.decision_trace);
+    assert!(response.decision_trace.path_targets.iter().any(|fact| {
+        matches!(&fact.lexical,
+            PathResolution::BoundedPathSet { roots, may_escape: false } if roots == &["/workspace/project"])
+            && matches!(&fact.resolution, SemanticResolution::Unresolved { gap }
+                if gap.detail == "missing bounded target root lacks an observed execution directory")
+    }), "{:#?}", response.decision_trace);
+}
+
+#[test]
+fn a_missing_descendant_can_be_proved_in_an_observed_execution_directory() {
+    let response = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(WorkspaceView::Present))
+        .check(request("find ./src -type f -print0 | xargs -0 chmod 644"));
+    assert!(response.decision_trace.path_targets.iter().any(|fact| {
+        matches!(&fact.resolution,
+            SemanticResolution::Resolved { value: PathResolution::BoundedPathSet { roots, may_escape: false } }
+                if roots == &["/workspace/project/src"])
+            && fact.observations.iter().any(|o| {
+                o.path == "/workspace/project" && o.entry == FilesystemEntry::Directory
+            })
+            && fact.observations.iter().any(|o| {
+                o.path == "/workspace/project/src" && o.entry == FilesystemEntry::Missing
+            })
+    }), "{:#?}", response.decision_trace);
 }
 
 #[test]

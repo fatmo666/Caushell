@@ -63,7 +63,30 @@ pub fn refresh_payload_projections(bound: &mut BoundInvocation, complete_stdin: 
     if bound.payload_projections.is_empty() {
         return;
     }
-    bound.bound_parameters.retain(|p| !p.payload_generated);
+    // Only replace slots owned by these projections. Other runtime inputs
+    // (for example, native startup options) also use the generated marker.
+    bound.bound_parameters.retain(|parameter| {
+        !parameter.payload_generated || !bound.payload_projections.iter().any(|projection| {
+            [
+                Some(&projection.reads),
+                Some(&projection.writes),
+                Some(&projection.deletes),
+                projection.moves.as_ref(),
+                projection.executions.as_ref(),
+                projection.stdout_emissions.as_ref(),
+            ]
+            .into_iter()
+            .flatten()
+            .any(|slot| *slot == parameter.name)
+                || projection.executions.as_ref().is_some_and(|slot| {
+                    parameter
+                        .name
+                        .as_str()
+                        .strip_prefix(slot.as_str())
+                        .is_some_and(|suffix| suffix.starts_with(".shell."))
+                })
+        })
+    });
     let mut generated = Vec::new();
     for projection in &bound.payload_projections {
         if matches!(

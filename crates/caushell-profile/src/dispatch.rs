@@ -1169,6 +1169,7 @@ mod tests {
                         domain: Some(RuntimeArgumentDomain::PathSet {
                             roots: vec!["/tmp/root".to_string()],
                             may_escape: false,
+                            basename_suffix: None,
                         }),
                     })
                     .with_value(BoundValue::ImplicitInput {
@@ -1195,6 +1196,7 @@ mod tests {
             Some(RuntimeArgumentDomain::PathSet {
                 roots: vec!["/tmp/root".to_string()],
                 may_escape: false,
+                basename_suffix: None,
             })
         );
         assert_eq!(

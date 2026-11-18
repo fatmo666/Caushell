@@ -202,6 +202,7 @@ pub(crate) fn stdin_path_records(
                         may_escape: escape_modifiers
                             .iter()
                             .any(|m| resolved.bound.applied_modifiers.contains(m)),
+                        basename_suffix: None,
                     },
                     separator,
                 });
@@ -342,7 +343,8 @@ mod tests {
                     separator: StreamRecordSeparator::Nul,
                     domain: RuntimeArgumentDomain::PathSet {
                         roots: vec!["./src".into(), "/opt/shared".into()],
-                        may_escape: false
+                        may_escape: false,
+                        basename_suffix: None,
                     }
                 })
             );
@@ -351,7 +353,8 @@ mod tests {
             proof("arbitrary_paths | consumer", 8).unwrap().domain,
             RuntimeArgumentDomain::PathSet {
                 roots: vec![".".into()],
-                may_escape: false
+                may_escape: false,
+                basename_suffix: None,
             }
         );
     }
@@ -363,7 +366,8 @@ mod tests {
             record.domain,
             RuntimeArgumentDomain::PathSet {
                 roots: vec!["/home/alice/Library".into()],
-                may_escape: false
+                may_escape: false,
+                basename_suffix: None,
             }
         );
         let record = proof("arbitrary_paths '~/Library' | consumer", 8).unwrap();
@@ -371,7 +375,8 @@ mod tests {
             record.domain,
             RuntimeArgumentDomain::PathSet {
                 roots: vec!["~/Library".into()],
-                may_escape: false
+                may_escape: false,
+                basename_suffix: None,
             }
         );
         assert!(proof("arbitrary_paths ~/$UNKNOWN | consumer", 8).is_none());

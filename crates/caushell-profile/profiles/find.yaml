@@ -24,6 +24,9 @@ opaque_on_unresolved: true
 # Keep unmodeled expression controls/clusters opaque when a glob can generate
 # them; this is a grammar fact, not a risk allowlist.
 argument_control_vocabulary:
+  # GNU/BSD parse the expression before traversal; a plain pathname after
+  # an action terminator is an invalid expression, even if it exists.
+  rejects_positionals_after_action: true
   # -O / -- belong only to the leading-option grammar, already guarded by
   # the prefix proof. They cannot introduce an action inside an expression.
   unmodeled_words: ["-files0-from", "-f", "-printx", "-exit"]

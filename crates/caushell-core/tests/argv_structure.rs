@@ -355,3 +355,55 @@ fn closed_expression_grammar_preserves_live_risk_and_does_not_run_globs() {
         );
     }
 }
+
+#[test]
+fn fully_proven_numeric_stdout_bounds_split_fields_in_native_predicates() {
+    for command in [
+        r#"find /directory -newermt $(date +%Y-%m-%d -d '1 day ago') -type f -print"#,
+        r#"find . -newermt $(date +%Y-%m-%d) -print"#,
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+    }
+}
+
+#[test]
+fn numeric_stdout_facts_preserve_unresolved_controls_and_writes() {
+    for command in [
+        r#"find . -newermt $(date +%B) -type f -print"#,
+        r#"find . -newermt $(date +"%Y$format") -type f -print"#,
+        r#"find $(date +%Y) -type f -print"#,
+        r#"find . -newermt $(date +%Y) -fprint /outside/list"#,
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}: {:?}", response.reasons);
+    }
+}
+
+#[test]
+fn expression_stdout_and_literal_affixes_keep_native_field_character_bounds() {
+    for command in [
+        r"find . -atime +7 -o -size +`expr 10 \* 1024 \* 2` -print",
+        r"find . -size +$(expr 3 \* 4) -print",
+        r"find . -size $(expr 3 + 4) -print",
+        r"find . -size +$(date +%Y) -print",
+        r#"printf '%s' "$(find . -size +$(expr 3 + 4) -print)""#,
+        r#"for n in "$(find . -size +$(expr 3 + 4) -print)"; do printf '%s' "$n"; done"#,
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+    }
+}
+
+#[test]
+fn unchecked_argv_and_non_numeric_affixes_do_not_inherit_output_proofs() {
+    for command in [
+        r"find . -size +$(expr word : pattern) -print",
+        r"find . -size +$(expr 3 + 4)/suffix -print",
+        r"find . -size +$(expr 3 * 4) -print",
+        r"find . -size +$(expr 3 + 4) -fprint /outside/list",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}: {:?}", response.reasons);
+    }
+}

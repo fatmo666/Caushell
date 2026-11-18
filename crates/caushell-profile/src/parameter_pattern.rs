@@ -225,6 +225,7 @@ impl ParameterPattern {
             D::PathSet {
                 roots,
                 may_escape: false,
+                ..
             } if !roots.is_empty() && roots.len() <= 128 => {
                 if kind.prefix() {
                     let roots = roots
@@ -239,6 +240,7 @@ impl ParameterPattern {
                         D::PathSet {
                             roots,
                             may_escape: false,
+                            basename_suffix: None,
                         }
                         .substitute_into(template, marker),
                     );
@@ -263,6 +265,7 @@ impl ParameterPattern {
                 Some(D::PathSet {
                     roots: outputs,
                     may_escape: false,
+                    basename_suffix: None,
                 })
             }
             _ => None,

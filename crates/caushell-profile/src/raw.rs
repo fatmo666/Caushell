@@ -101,6 +101,7 @@ pub struct RawArgumentControlVocabulary {
     pub unmodeled_short_clusters: Vec<String>,
     pub operand_free_short_clusters: Vec<String>,
     pub positional_boundary_words: Vec<String>,
+    pub rejects_positionals_after_action: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
@@ -229,6 +230,7 @@ pub struct RawForm {
     pub stdout_records: Option<RawStdoutRecordContract>,
     pub stdout_scalar: Option<crate::StdoutScalarShape>,
     pub stdout_scalar_native_variant: Option<String>,
+    pub stdout_scalar_argv_grammar: Option<crate::StdoutScalarArgvGrammar>,
     pub stdout_scalar_inputs: Vec<String>,
     pub extensions: BTreeMap<String, JsonValue>,
 }

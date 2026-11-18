@@ -33,6 +33,12 @@ impl SessionTransformPass for ObserveStdoutRecordsPass {
             .filter_map(|e| match &e.kind {
                 EvidenceKind::NativeInputDecode(d)
                     if d.complete
+                        && ctx.execution_unit_resolve_records().iter().any(|record| {
+                            record.source_node_id.0 == d.node_id
+                                && matches!(&record.result, ResolveInvocationArtifactResult::Resolved(r)
+                                    if r.normalized_command_name == "xargs"
+                                        && r.bound.form_id.as_str() == "dispatch_from_stdin")
+                        })
                         && ctx
                             .execution_unit_resolve_records()
                             .iter()
@@ -117,12 +123,13 @@ pub(super) fn observe_outputs(
     deferred: &BTreeSet<String>,
     completed: &BTreeSet<String>,
     phase: ObservationPhase,
-) {
+) -> BTreeSet<String> {
+    let mut metadata_limited = BTreeSet::new();
     if !ctx.execution_unit_resolve_records().iter().any(|record| {
         matches!(&record.result,ResolveInvocationArtifactResult::Resolved(r)
                 if r.bound.stdout_records.as_ref().is_some_and(|c|c.native.is_some()))
     }) {
-        return;
+        return metadata_limited;
     }
     let snapshot = ctx.clone();
     let records = graph_backed_execution_resolve_records(&snapshot);
@@ -161,7 +168,11 @@ pub(super) fn observe_outputs(
                 deferred,
                 completed,
                 phase,
-            )
+            )?;
+            if plan.contains_metadata_test() {
+                metadata_limited.insert(output.producer_node_id.clone());
+            }
+            Ok(())
         });
         match result {
             Ok(()) => {
@@ -242,6 +253,7 @@ pub(super) fn observe_outputs(
             kind: EvidenceKind::StdoutRecords(output),
         });
     }
+    metadata_limited
 }
 
 fn observe(
@@ -273,15 +285,17 @@ fn observe(
     {
         return Err("producer stdout terminal mode is unobserved".into());
     }
-    if plan.needs_case_locale() {
+    let case_fold_proven = if plan.needs_case_locale() {
         let mut bindings = record.bindings().clone();
         for (name, value) in
             caushell_profile::materialize_prefix_environment(command, record.bindings())
         {
             bindings.set_child_environment_value(&name, value);
         }
-        observe_locale(&bindings, output)?;
-    }
+        observe_locale(&bindings, output).is_ok()
+    } else {
+        false
+    };
     if command.control_flow_span.is_some()
         || command.guarded
         || record.static_input_cwd_unproven()
@@ -473,7 +487,9 @@ fn observe(
         } else {
             spelling.rsplit('/').next().unwrap_or(&spelling)
         };
-        let evaluation = plan.evaluate(&spelling, &relative, name, kind, depth).map_err(String::from)?;
+        let evaluation = plan
+            .evaluate_with_case_fold(&spelling, &relative, name, kind, depth, case_fold_proven)
+            .map_err(String::from)?;
         if evaluation.emitted {
             path_bytes = path_bytes.checked_add(spelling.len())
                 .filter(|n|*n<=MAX_OBSERVED_STREAM_BYTES).ok_or("producer path byte budget exceeded")?;
@@ -595,12 +611,15 @@ fn namespace_changes(
                 };
                 // These plans depend on names and entry kinds, not regular-file
                 // bytes or metadata. Namespace/recursive writes remain separate.
+                let effect = &resolved.bound.effects[target.effect_index];
                 let preserves_entry = matches!(
                     target.operation,
                     E::ChangeMode | E::ChangeOwner | E::ChangeGroup
-                ) || target.operation == E::WritePath
-                    && resolved.bound.effects[target.effect_index].path_access
-                        == Some(PathAccessKind::ContentOpen);
+                ) || (target.operation == E::WritePath
+                    && effect.path_access == Some(PathAccessKind::ContentOpen))
+                    || (target.operation == E::MetadataMutation
+                        && effect.namespace_effect
+                            == Some(caushell_types::PathNamespaceEffect::ExistingFileMetadata));
                 if preserves_entry
                     && canonical
                         .is_some_and(|p| ctx.filesystem_view().entry(p) == FilesystemEntry::File)

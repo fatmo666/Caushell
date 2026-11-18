@@ -159,17 +159,33 @@ pub(crate) fn scan(
                 }
                 let Some(word) = argv_value(&projection.args[end]) else {
                     let structure = argument_structure(&projection.args[end]);
-                    // A bounded word may exclude every parent delimiter but
-                    // still disappear or widen inside the child's CLI. Until
-                    // child operand ownership is independently certified, keep
-                    // that uncertainty: a missing option value can swallow the
-                    // next path, and a legacy child Profile may not audit it.
-                    result.ownership_unresolved |= end == index + 1
-                        || structure.fields != ArgumentFieldCount::ExactlyOne
-                        || region
-                            .terminators
-                            .iter()
-                            .any(|t| structure.may_equal(&t.value));
+                    // A bounded word can still disappear or widen in the
+                    // child's CLI. Only one field has a stable successor.
+                    if end == index + 1 || structure.fields != ArgumentFieldCount::ExactlyOne {
+                        result.ownership_unresolved = true;
+                    } else if region.terminators.iter().any(|terminator| {
+                        structure.may_equal(&terminator.value)
+                            && terminator.preceding.as_ref().is_none_or(|preceding| {
+                                let previous = &projection.args[end - 1];
+                                // A nonexact previous word can disappear, so
+                                // the earlier native argv may still qualify.
+                                argv_value(previous).is_none_or(|value| value.as_ref() == preceding)
+                            })
+                    }) {
+                        // If this field actually terminates the action, its
+                        // successor is parsed as an expression primary. A
+                        // declared syntax error there prevents traversal and
+                        // dispatch. The surviving layout still owns this
+                        // field and audits it through the child profile.
+                        let rejects_early_end = vocabulary.is_some_and(|vocabulary| {
+                            vocabulary.rejects_positionals_after_action
+                                && end + 1 < scope.end_index
+                                && argv_value(&projection.args[end + 1]).is_some_and(|next| {
+                                    invalid_positional_primary(&next, &declarations, regions)
+                                })
+                        });
+                        result.ownership_unresolved |= !rejects_early_end;
+                    }
                     end += 1;
                     continue;
                 };
@@ -295,4 +311,16 @@ pub(crate) fn scan(
         }
     }
     result
+}
+
+fn invalid_positional_primary(
+    word: &str,
+    declarations: &BTreeMap<String, Option<FlagOperandMode>>,
+    regions: &[ArgumentRegion],
+) -> bool {
+    !word.is_empty()
+        && !word.starts_with('-')
+        && !matches!(word, "!" | "(" | ")" | "," | "+" | ";")
+        && !declarations.contains_key(word)
+        && !regions.iter().any(|region| region.start_flags.iter().any(|flag| flag == word))
 }

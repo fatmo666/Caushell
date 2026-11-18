@@ -197,11 +197,11 @@ fn declaration_works_without_any_find_command_name() {
 }
 
 #[test]
-fn unknown_argv_preserves_partial_children_but_is_never_complete_ownership() {
+fn unknown_argv_preserves_partial_children_when_a_viable_boundary_can_change() {
     for command in [
         "find $unknown -exec rm {} ';'",
         "find . -exec rm $unknown ';'",
-        "find . -exec sh -c \"$unknown\" _ {} ';'",
+        "find . -exec sh -c \"$unknown\" -name ';'",
     ] {
         let parsed = parse_command(command, ShellKind::Bash).unwrap();
         let projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
@@ -212,6 +212,23 @@ fn unknown_argv_preserves_partial_children_but_is_never_complete_ownership() {
         assert_eq!(bound.argument_regions.len(), 1);
         assert!(!values(&bound, "exec_command").is_empty());
     }
+}
+
+#[test]
+fn rejected_early_boundary_keeps_opaque_payload_owned_by_child() {
+    let command = r#"find . -exec sh -c "$unknown" _ {} ';'"#;
+    let profile = find_profile();
+    let bound = bind(&profile, command);
+    assert!(!bound.operation_semantics_unresolved);
+    assert_eq!(values(&bound, "exec_command"), ["sh"]);
+    assert_eq!(values(&bound, "exec_args"), ["-c", "$unknown", "_", "{}"]);
+    let mut conservative = profile;
+    conservative.argument_control_vocabulary.as_mut().unwrap()
+        .rejects_positionals_after_action = false;
+    let parsed = parse_command(command, ShellKind::Bash).unwrap();
+    let projection = project_invocation(&parsed.commands[0], InvocationRuntimeContext::new());
+    let selection = select_invocation(&conservative, &projection).unwrap();
+    assert!(bind_invocation(&conservative, &projection, &selection).operation_semantics_unresolved);
 }
 
 #[test]

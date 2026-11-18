@@ -76,6 +76,12 @@ impl NativePathOutputPlan {
         self.expression.needs_case_locale()
     }
 
+    /// A completed observation only short-circuited these metadata tests.
+    /// It did not establish the metadata needed for the producer's full domain.
+    pub fn contains_metadata_test(&self) -> bool {
+        self.expression.contains_metadata_test()
+    }
+
     /// One evaluation owns both predicate control flow and the bytes/actions it
     /// actually executes. Callers must not combine a flattened filter with an
     /// unconditional encoder.
@@ -87,10 +93,24 @@ impl NativePathOutputPlan {
         kind: DirectoryEntryKind,
         depth: usize,
     ) -> Result<NativeFindEvaluation, &'static str> {
+        self.evaluate_with_case_fold(path, relative, name, kind, depth, true)
+    }
+
+    /// A caller without a locale proof may still evaluate paths that never
+    /// reach a case-insensitive predicate.
+    pub fn evaluate_with_case_fold(
+        &self,
+        path: &str,
+        relative: &str,
+        name: &str,
+        kind: DirectoryEntryKind,
+        depth: usize,
+        case_fold_proven: bool,
+    ) -> Result<NativeFindEvaluation, &'static str> {
         let mut result = NativeFindEvaluation::default();
         if depth >= self.min_depth {
             self.expression
-                .evaluate(path, relative, name, kind, &mut result)?;
+                .evaluate(path, relative, name, kind, case_fold_proven, &mut result)?;
         }
         Ok(result)
     }

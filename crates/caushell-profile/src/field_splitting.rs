@@ -10,6 +10,24 @@ pub enum ShellFieldFragment {
     UnquotedExpansion(String),
 }
 
+/// Materialize expansion bytes without discarding their source quoting.
+pub fn materialize_shell_field_fragments(
+    parts: Vec<caushell_parse::ScalarArgumentPart>,
+    bindings: &SessionBindings,
+    mut substitution: impl FnMut(&str) -> Option<String>,
+) -> Option<Vec<ShellFieldFragment>> {
+    use caushell_parse::ScalarArgumentPart as Part;
+    use ShellFieldFragment::{Literal, QuotedExpansion, UnquotedExpansion};
+    let parameter = |s: &str| crate::materialize_shell_assignment_value(s, true, "string", bindings);
+    parts.into_iter().map(|part| Some(match part {
+        Part::Literal(value) => Literal(value),
+        Part::Parameter(source) => QuotedExpansion(parameter(&source)?),
+        Part::UnquotedParameter(source) => UnquotedExpansion(parameter(&source)?),
+        Part::CommandSubstitution(source) => QuotedExpansion(substitution(&source)?),
+        Part::UnquotedCommandSubstitution(source) => UnquotedExpansion(substitution(&source)?),
+    })).collect()
+}
+
 /// Unknown owning-shell state is not an observation of Bash's default IFS.
 pub fn observed_ifs_value(bindings: &SessionBindings) -> Option<String> {
     match bindings.variable_presence("IFS") {

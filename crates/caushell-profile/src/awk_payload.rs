@@ -316,6 +316,7 @@ impl Value {
                 parent.into()
             }],
             may_escape: false,
+            basename_suffix: None,
         })
     }
 }

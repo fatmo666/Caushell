@@ -270,3 +270,26 @@ fn oversized_lists_and_implicit_unknown_positionals_do_not_guess() {
         assert_eq!(check(&c).decision, Decision::NeedApproval, "{c}");
     }
 }
+
+#[test]
+fn for_list_substitutions_have_their_own_execution_units() {
+    for (command, expected) in [
+        (r#"for entry in "$(find . -type f -print)"; do printf '%s\n' "$entry"; done"#, 1),
+        (r#"for entry in "`find . -type f -print`"; do :; done"#, 1),
+        (r#"for entry in "$(find . -print)" "$(find . -print)"; do :; done"#, 2),
+        (r#"for entry in '$(find . -type f -print)'; do :; done"#, 0),
+        (r#"scan() { for entry in "$(find . -print)"; do :; done; }"#, 0),
+        (r#"scan() { for entry in "$(find . -print)"; do :; done; }; scan"#, 1),
+    ] {
+        let response = check(command);
+        let trace = &response.decision_trace;
+        assert_eq!(
+            trace.execution_semantics.iter()
+                .filter(|entry| entry.normalized_command_name == "find")
+                .count(),
+            expected,
+            "{command}: {:?}",
+            trace.execution_semantics,
+        );
+    }
+}

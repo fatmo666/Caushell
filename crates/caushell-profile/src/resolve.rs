@@ -61,7 +61,9 @@ impl ResolvedInvocationArtifact {
     }
     pub fn proven_stdout_scalar(&self) -> Option<crate::StdoutScalarShape> {
         self.proven_stream_contract()?;
-        self.bound.stdout_scalar
+        let shape = self.bound.stdout_scalar?;
+        (shape != crate::StdoutScalarShape::ArithmeticText || self.proven_arithmetic_stdout())
+            .then_some(shape)
     }
     /// Negative stream guarantees require a fully resolved invocation shape.
     /// A dynamic operand could become '-' or a mode-changing option at runtime.

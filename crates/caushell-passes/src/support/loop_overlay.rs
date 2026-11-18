@@ -170,6 +170,7 @@ pub(super) fn iteration_domain(
             let RuntimeArgumentDomain::PathSet {
                 roots: candidates,
                 may_escape: false,
+                ..
             } = domain
             else {
                 return None;
@@ -227,6 +228,7 @@ fn path_domain(mut roots: Vec<String>) -> Option<RuntimeArgumentDomain> {
     Some(RuntimeArgumentDomain::PathSet {
         roots,
         may_escape: false,
+        basename_suffix: None,
     })
 }
 
@@ -278,6 +280,7 @@ mod tests {
             RuntimeArgumentDomain::PathSet {
                 roots: vec!["123".into()],
                 may_escape: false,
+                basename_suffix: None,
             },
         );
         assert!(

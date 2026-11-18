@@ -426,6 +426,14 @@ pub enum StdoutScalarShape {
     ArithmeticText,
 }
 
+/// Restriction on the entire materialized argv before a scalar stdout
+/// contract applies. An argv shape certifies output characters, not success.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StdoutScalarArgvGrammar {
+    IntegerInfix,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum StdoutRecordProjection {
     /// Intact root-relative/absolute path spellings: each record is a declared
@@ -1166,6 +1174,7 @@ pub struct Form {
     pub stdout_records: Option<StdoutRecordContract>,
     pub stdout_scalar: Option<StdoutScalarShape>,
     pub stdout_scalar_native_variant: Option<String>,
+    pub stdout_scalar_argv_grammar: Option<StdoutScalarArgvGrammar>,
     pub stdout_scalar_inputs: Vec<SlotName>,
     pub extensions: ExtensionMap,
 }
@@ -1186,6 +1195,7 @@ impl Form {
             stdout_records: None,
             stdout_scalar: None,
             stdout_scalar_native_variant: None,
+            stdout_scalar_argv_grammar: None,
             stdout_scalar_inputs: Vec::new(),
             extensions: ExtensionMap::new(),
         }
@@ -2390,6 +2400,8 @@ pub struct ArgumentControlVocabulary {
     pub operand_free_short_clusters: Vec<String>,
     /// Recognized controls after which new positional words are invalid.
     pub positional_boundary_words: Vec<String>,
+    /// A plain positional directly after an action is rejected during parse.
+    pub rejects_positionals_after_action: bool,
 }
 
 impl CommandProfile {

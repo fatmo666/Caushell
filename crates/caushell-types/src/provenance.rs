@@ -177,6 +177,10 @@ pub enum RuntimeArgumentDomain {
     PathSet {
         roots: Vec<String>,
         may_escape: bool,
+        /// A literal suffix shared by the basenames of all emitted members.
+        /// This never narrows the directory anchors or certifies a path.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        basename_suffix: Option<String>,
     },
     /// One path-valued input surrounded by already-decoded argv bytes.
     /// Roots retain their producer spelling; affixes are not shell source.
@@ -224,7 +228,7 @@ impl RuntimeArgumentDomain {
                     suffix: format!("{inner_suffix}{suffix}"),
                 };
             }
-            Self::PathSet { roots, may_escape } => {
+            Self::PathSet { roots, may_escape, .. } => {
                 (roots, *may_escape, prefix.to_string(), suffix.to_string())
             }
             Self::PathTemplate {

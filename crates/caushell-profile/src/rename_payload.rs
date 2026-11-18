@@ -70,7 +70,7 @@ impl Arg {
                 true
             }
             None => {
-                matches!(&self.source, BoundValue::ImplicitInput { domain: Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape: false }), .. }
+                matches!(&self.source, BoundValue::ImplicitInput { domain: Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape: false, .. }), .. }
                 if !roots.is_empty() && roots.iter().all(|r| !r.is_empty() && !r.starts_with('-')))
             }
         }
@@ -230,6 +230,7 @@ enum Operation {
         replacement: Vec<Piece>,
         global: bool,
         bounded: bool,
+        literal_deletion: Option<LiteralEdgeDeletion>,
     },
     Transliterate {
         pairs: Vec<(char, char)>,
@@ -237,6 +238,55 @@ enum Operation {
     },
 }
 struct Program(Vec<Operation>);
+
+enum LiteralEdgeDeletion {
+    Prefix(String),
+    Suffix(String),
+}
+
+impl LiteralEdgeDeletion {
+    fn parse(pattern: &str) -> Option<Self> {
+        let (literal, prefix) = if let Some(literal) = pattern.strip_prefix('^') {
+            (literal, true)
+        } else {
+            (pattern.strip_suffix('$')?, false)
+        };
+        let mut bytes = literal.bytes();
+        let mut decoded = String::new();
+        while let Some(byte) = bytes.next() {
+            match byte {
+                b'\\' if bytes.next()? == b'.' => decoded.push('.'),
+                byte if byte.is_ascii_alphanumeric() || b"_-".contains(&byte) => {
+                    decoded.push(char::from(byte));
+                }
+                _ => return None,
+            }
+        }
+        if decoded.is_empty() {
+            return None;
+        }
+        Some(if prefix {
+            Self::Prefix(decoded)
+        } else {
+            Self::Suffix(decoded)
+        })
+    }
+
+    fn preserves_basename(&self, suffix: &str, roots: &[String], filename_only: bool) -> bool {
+        match self {
+            Self::Prefix(prefix) => {
+                // A matching prefix cannot consume the whole basename. For
+                // a full pathname it also cannot modify its directory prefix.
+                suffix.bytes().last().is_some_and(|b| b != b'.')
+                    && !prefix.ends_with(suffix)
+                    && (filename_only || roots.iter().all(|root| !root.starts_with(prefix)))
+            }
+            Self::Suffix(deleted) => suffix
+                .strip_suffix(deleted)
+                .is_some_and(|remaining| remaining.bytes().any(|b| b != b'.')),
+        }
+    }
+}
 
 fn delimited(text: &str, pos: &mut usize, delimiter: u8) -> Result<String> {
     let start = *pos;
@@ -505,11 +555,17 @@ impl Program {
                 }
                 let (regex, local) = pattern(&left, flags.contains('i'))?;
                 let (replacement, bounded) = replacement(&right, delimiter, regex.captures_len())?;
+                let literal_deletion = if local && flags.is_empty() && replacement.is_empty() {
+                    LiteralEdgeDeletion::parse(&left)
+                } else {
+                    None
+                };
                 ops.push(Operation::Substitute {
                     regex,
                     replacement,
                     global: flags.contains('g'),
                     bounded: local && bounded,
+                    literal_deletion,
                 });
             } else {
                 if !flags.is_empty() {
@@ -629,6 +685,15 @@ impl Program {
         }
         Ok(value)
     }
+    fn bounded_for(&self, suffix: Option<&str>, roots: &[String], filename_only: bool) -> bool {
+        self.bounded()
+            || suffix.is_some_and(|suffix| {
+                matches!(&self.0[..], [Operation::Substitute {
+                    literal_deletion: Some(deletion), ..
+                }] if deletion.preserves_basename(suffix, roots, filename_only))
+            })
+    }
+
     fn bounded(&self) -> bool {
         self.0.iter().all(|op| match op {
             Operation::Substitute { bounded, .. } | Operation::Transliterate { bounded, .. } => {
@@ -773,22 +838,23 @@ fn transformed_domain(
     limit: usize,
     work: &mut usize,
 ) -> Option<BoundValue> {
-    if !program.bounded() {
-        return None;
-    }
     let BoundValue::ImplicitInput {
         source,
         domain:
             Some(caushell_types::RuntimeArgumentDomain::PathSet {
                 roots,
                 may_escape: false,
+                basename_suffix,
             }),
         origin,
     } = source
     else {
         return None;
     };
-    if roots.is_empty() || roots.len() > 128 {
+    if roots.is_empty()
+        || roots.len() > 128
+        || !program.bounded_for(basename_suffix.as_deref(), roots, filename)
+    {
         return None;
     }
     let mut projected = roots.clone();
@@ -816,6 +882,7 @@ fn transformed_domain(
         domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
             roots: projected,
             may_escape: false,
+            basename_suffix: None,
         }),
         origin: origin.clone(),
     })
@@ -843,6 +910,7 @@ fn utility_transformed_domain(
             Some(caushell_types::RuntimeArgumentDomain::PathSet {
                 roots,
                 may_escape: false,
+                ..
             }),
         origin,
     } = source
@@ -868,6 +936,7 @@ fn utility_transformed_domain(
         domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
             roots: projected,
             may_escape: false,
+            basename_suffix: None,
         }),
         origin: origin.clone(),
     })
@@ -1179,12 +1248,13 @@ mod tests {
             domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
                 roots: vec!["./foo".into(), "/opt/foo".into()],
                 may_escape: false,
+                basename_suffix: None,
             }),
             origin: None,
         };
         let Some(BoundValue::ImplicitInput {
             source: input,
-            domain: Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape }),
+            domain: Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape, .. }),
             ..
         }) = utility_transformed_domain(&source, "foo", "bar", false, false, 4096, &mut 65536)
         else {
@@ -1217,6 +1287,7 @@ mod tests {
                 domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
                     roots: vec![root.into()],
                     may_escape: false,
+                    basename_suffix: None,
                 }),
                 origin: None,
             };
@@ -1371,6 +1442,7 @@ mod tests {
                 domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
                     roots: vec![root.into()],
                     may_escape: false,
+                    basename_suffix: None,
                 }),
                 origin: None,
             };

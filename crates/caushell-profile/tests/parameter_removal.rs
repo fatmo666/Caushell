@@ -196,6 +196,7 @@ fn paths(roots: &[&str]) -> RuntimeArgumentDomain {
     RuntimeArgumentDomain::PathSet {
         roots: roots.iter().map(|r| r.to_string()).collect(),
         may_escape: false,
+        basename_suffix: None,
     }
 }
 #[test]
@@ -212,7 +213,7 @@ fn bounded_suffix_changes_retain_roots_without_fabricating_a_filename() {
         .as_ref()
         .unwrap();
     assert!(
-        matches!(domain, RuntimeArgumentDomain::PathSet { roots, may_escape: false } if roots.contains(&"./".into())),
+        matches!(domain, RuntimeArgumentDomain::PathSet { roots, may_escape: false, .. } if roots.contains(&"./".into())),
         "{a:?}"
     );
     for command in [

@@ -1524,6 +1524,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/pdftotext.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "pdfunite",
+        content: include_str!("../profiles/pdfunite.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "alias",
         content: include_str!("../profiles/alias.yaml"),
     },
@@ -2066,6 +2070,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "unzip",
         content: include_str!("../profiles/unzip.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zipinfo",
+        content: include_str!("../profiles/zipinfo.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "vim",

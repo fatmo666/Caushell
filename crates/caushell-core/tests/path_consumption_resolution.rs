@@ -45,6 +45,14 @@ fn request(command: &str, sequence: u64) -> CheckRequest {
     }
 }
 
+fn request_without_bash_env(command: &str, sequence: u64) -> CheckRequest {
+    let mut req = request(command, sequence);
+    req.shell_state_before = req
+        .shell_state_before
+        .with_environment_observation("BASH_ENV", ShellEnvironmentValue::Absent);
+    req
+}
+
 fn uses(path: &str) -> [(String, PathTargetOperation, RuleId); 4] {
     [
         (
@@ -128,7 +136,7 @@ fn file_and_directory_links_share_physical_target_proofs() {
                 view.link(entry, &format!("{root}/{target}"));
                 let result = configured_core()
                     .with_filesystem_view(view)
-                    .check(request(&command, 1));
+                    .check(request_without_bash_env(&command, 1));
                 assert_eq!(result.decision, expected, "{command}: {result:#?}");
                 assert_eq!(
                     result
@@ -271,7 +279,7 @@ fn known_stream_channels_do_not_become_filesystem_grants() {
     for command in ["bash <(printf ':')", "bash /dev/fd/0 <<'EOF'\n:\nEOF"] {
         let result = configured_core()
             .with_filesystem_view(Arc::new(View::default()))
-            .check(request(command, 1));
+            .check(request_without_bash_env(command, 1));
         assert_eq!(result.decision, Decision::Allow, "{command}: {result:#?}");
         assert!(
             result
@@ -304,6 +312,7 @@ fn descriptor_file_inputs_follow_the_opening_path() {
 #[test]
 fn unknown_startup_environment_is_not_an_absent_configuration() {
     for state in [
+        ShellStateSnapshot::new("/workspace"),
         ShellStateSnapshot::new("/workspace").with_opaque_dynamic_variable(
             "BASH_ENV",
             "unknown-startup",
@@ -348,7 +357,8 @@ fn snapshots_retain_proofs_without_reusing_them_for_the_next_request() {
     let view = Arc::new(View::default());
     let mut core = configured_core().with_filesystem_view(view.clone());
     assert_eq!(
-        core.check(request("bash ./entry", 1)).decision,
+        core.check(request_without_bash_env("bash ./entry", 1))
+            .decision,
         Decision::Allow
     );
     let snapshot = core
@@ -359,8 +369,16 @@ fn snapshots_retain_proofs_without_reusing_them_for_the_next_request() {
         .to_snapshot();
     assert_eq!(restored, snapshot.graph);
     view.link("/workspace/entry", "/outside/entry");
-    assert_eq!(
-        core.check(request("bash ./entry", 2)).decision,
-        Decision::NeedApproval
+    let result = core.check(request_without_bash_env("bash ./entry", 2));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+    assert!(
+        result
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|proposal| {
+                proposal.rule_id == RuleId::OutsideWorkspaceScriptSource
+                    && proposal.decision == Decision::NeedApproval
+            })
     );
 }

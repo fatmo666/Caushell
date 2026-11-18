@@ -897,6 +897,7 @@ mod tests {
                 domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
                     roots: vec!["/dev".to_string()],
                     may_escape: false,
+                    basename_suffix: None,
                 }),
             }],
             ..stdin_data.clone()

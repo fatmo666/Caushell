@@ -244,11 +244,15 @@ pub struct ForLoopFact {
     pub items: Option<Vec<CommandToken>>,
     pub span: SourceSpan,
     pub body_span: SourceSpan,
+    pub top_level_span: SourceSpan,
     pub shell_scope_span: Option<SourceSpan>,
+    pub conditional_execution: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ShellEvaluationKind {
+    /// Command substitutions expanded before iterating an explicit word list.
+    ForListExpansion,
     /// Expansion performed by the shell while opening a redirection, even
     /// when the invoked command never reads from that descriptor.
     RedirectionExpansion {

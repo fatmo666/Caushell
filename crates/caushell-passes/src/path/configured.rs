@@ -535,6 +535,7 @@ modifiers:
             domain: Some(RuntimeArgumentDomain::PathSet {
                 roots: vec!["/work".into()],
                 may_escape: false,
+                basename_suffix: None,
             }),
         }];
         target.missing = ConfiguredPathMissing::IncidentalCache;

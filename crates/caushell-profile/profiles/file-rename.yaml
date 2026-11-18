@@ -5,6 +5,24 @@ option_matching: exact_names
 identity: {canonical_name: file-rename, aliases: [prename]}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+# The Perl implementation can load modules before consuming any filenames.
+environment_inputs:
+  - name: perl_startup_options
+    environment: {name: PERL5OPT, empty_is_unset: true}
+    semantic: {kind: plain_value}
+    structured_projection:
+      branches:
+        - matcher: {kind: regex_capture, pattern: '^([ \t]*-[wW]+[ \t]*)+$', group: 0}
+      fallback:
+        name: perl_startup_code
+        semantic: &perl_loader {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: perl_library_search
+    environment: {name: PERL5LIB, empty_is_unset: true}
+    semantic: *perl_loader
+  - name: perl_legacy_library_search
+    environment: {name: PERLLIB, empty_is_unset: true}
+    semantic: *perl_loader
+
 forms:
   - id: rename_paths
     parameters: [{name: argv, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
@@ -22,9 +40,9 @@ forms:
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
     effects:
       - {kind: read_path, target: {kind: slot, name: rename_reads}}
-      - {kind: write_path, target: {kind: slot, name: rename_destinations}}
+      - {kind: write_path, namespace_effect: entry_relocation, target: {kind: slot, name: rename_destinations}}
       - {kind: delete_path, target: {kind: slot, name: rename_deletes}}
-      - {kind: move_path, target: {kind: slot, name: rename_sources}, host_risk: {semantic_class: move_source_path}}
+      - {kind: move_path, namespace_effect: entry_relocation, target: {kind: slot, name: rename_sources}, host_risk: {semantic_class: move_source_path}}
       - {kind: execute_payload, target: {kind: slot, name: rename_executions}}
 extensions:
   caushell.profile/sources: [https://metacpan.org/pod/File::Rename, https://cpan.metacpan.org/authors/id/R/RM/RMBARKER/File-Rename-2.02.tar.gz]

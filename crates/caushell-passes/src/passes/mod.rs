@@ -5,7 +5,9 @@ pub use unbounded_file_write_guard::UnboundedFileWriteGuardPass;
 mod catastrophic_shell_effects;
 mod code_load_path_guard;
 mod compute_effective_cwd;
-pub(crate) use compute_effective_cwd::source_scope_execution_cwds;
+pub(crate) use compute_effective_cwd::{
+    command_may_change_current_shell_cwd, source_scope_execution_cwds,
+};
 mod cwd_workspace_boundary;
 mod database_operation_guard;
 mod decision_assembly;

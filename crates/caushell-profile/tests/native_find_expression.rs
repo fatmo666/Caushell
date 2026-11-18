@@ -129,6 +129,9 @@ fn expression_outputs_and_pruned_traversal_match_native_find() {
         ],
         vec!["input", "-iwholename", "*SUB*", "-print0"],
         vec!["input", "-wholename", "*skip*", "-prune", "-o", "-print0"],
+        vec!["input", "-prune", "-name", "never-matches", "-cmin", "+60"],
+        vec!["input", "-false", "-size", "+1M", "-print0"],
+        vec!["input", "-true", "-o", "-mtime", "+5", "-print0"],
     ]);
     for args in &cases {
         let plan =
@@ -179,4 +182,95 @@ fn expression_outputs_and_pruned_traversal_match_native_find() {
     }
     fs::remove_dir_all(&root).unwrap();
     println!("FIND_ORACLE_CASES {}", cases.len() + 3);
+}
+
+#[test]
+fn numeric_metadata_requires_observation_when_evaluated_and_valid_syntax_everywhere() {
+    fn plan(args: &[&str]) -> Result<NativePathOutputPlan, &'static str> {
+        NativePathOutputPlan::find(&args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>())
+    }
+    for args in [
+        &["-amin", "1"][..],
+        &["-atime", "+1"],
+        &["-cmin", "+60"],
+        &["-ctime", "-1"],
+        &["-mmin", "0"],
+        &["-mtime", "+5"],
+        &["-size", "+1M"],
+        &["-not", "-size", "-1k"],
+        &["-print0", "-mtime", "+5"],
+        &["-size", "1", "-false"],
+    ] {
+        let result = plan(args)
+            .unwrap()
+            .evaluate(".", "", ".", DirectoryEntryKind::Directory, 0);
+        assert_eq!(
+            result,
+            Err("native numeric metadata predicate is unobserved")
+        );
+    }
+    for args in [
+        &["-false", "-cmin"][..],
+        &["-false", "-cmin", "+1M"],
+        &["-false", "-mtime", "++1"],
+        &["-false", "-size", "+M"],
+        &["-false", "-size", "1MB"],
+        &["-false", "-size", "1b"],
+        &["-false", "-size", "1w"],
+        &["-false", "-size", "4294967296c"],
+        &["-false", "-size", "-print"],
+        &["-false", "-depth"],
+    ] {
+        assert!(plan(args).is_err(), "{args:?}");
+    }
+}
+
+#[test]
+fn unknown_case_folding_only_matters_when_a_test_is_reached() {
+    let plan = |args: &[&str]| {
+        caushell_profile::NativePathOutputPlan::find(
+            &args.iter().map(|arg| (*arg).to_owned()).collect::<Vec<_>>(),
+        )
+        .unwrap()
+    };
+    let skipped = plan(&["-type", "f", "-iname", "*.txt", "-print0"]);
+    assert!(
+        !skipped
+            .evaluate_with_case_fold(".", "", ".", DirectoryEntryKind::Directory, 0, false)
+            .unwrap()
+            .emitted
+    );
+    assert_eq!(
+        skipped.evaluate_with_case_fold(
+            "./A.TXT",
+            "A.TXT",
+            "A.TXT",
+            DirectoryEntryKind::File,
+            1,
+            false
+        ),
+        Err("native case folding locale is unobserved or unsupported"),
+    );
+    assert!(
+        skipped
+            .evaluate_with_case_fold(
+                "./A.TXT",
+                "A.TXT",
+                "A.TXT",
+                DirectoryEntryKind::File,
+                1,
+                true
+            )
+            .unwrap()
+            .emitted
+    );
+    let disjunction = plan(&[
+        "-type", "d", "-print0", "-o", "-ipath", "*/A.TXT", "-print0",
+    ]);
+    assert!(
+        disjunction
+            .evaluate_with_case_fold(".", "", ".", DirectoryEntryKind::Directory, 0, false)
+            .unwrap()
+            .emitted
+    );
 }

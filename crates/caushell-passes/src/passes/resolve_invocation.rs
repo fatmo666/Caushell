@@ -2063,6 +2063,7 @@ fn find_dispatch_candidates(
     let search_domain = caushell_types::RuntimeArgumentDomain::PathSet {
         may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
         roots: roots.clone(),
+        basename_suffix: None,
     };
     // Only a validated, static global minimum depth excludes the starting
     // points. Do not interpret arbitrary find predicates as scope proofs.
@@ -2108,6 +2109,7 @@ fn find_dispatch_candidates(
             vec![".".into()]
         },
         may_escape: roots_unknown,
+        basename_suffix: None,
     };
     let mut candidates = Vec::new();
     let mut unresolved = Vec::new();
@@ -2129,6 +2131,8 @@ fn find_dispatch_candidates(
         let end = region.end_index;
         let command_token = &tokens[command_index];
         let batch = decoded.get(end).and_then(|value| value.as_deref()) == Some("+");
+        let basename_suffix =
+            find_action_basename_suffix(resolved, &decoded, &root_values, region);
 
         let make_argument = |slot: &str,
                              token: &caushell_profile::ProjectedArg,
@@ -2139,12 +2143,20 @@ fn find_dispatch_candidates(
                 || value.is_some_and(|value| value.contains("{}") && value != "{}");
             let unknown = value.is_none();
             let domain = value.filter(|value| value.contains("{}")).map(|value| {
-                if execdir {
+                let mut domain = if execdir {
                     &execdir_domain
                 } else {
                     &search_domain
                 }
-                .substitute_into(value, "{}")
+                .substitute_into(value, "{}");
+                if is_placeholder
+                    && let caushell_types::RuntimeArgumentDomain::PathSet {
+                        basename_suffix: domain_suffix, ..
+                    } = &mut domain
+                {
+                    *domain_suffix = basename_suffix.clone();
+                }
+                domain
             });
             DispatchArgument {
                 slot: caushell_profile::SlotName::new(slot),
@@ -2276,6 +2288,67 @@ fn find_dispatch_candidates(
     }
 
     (candidates, unresolved)
+}
+
+/// Prove a filename constraint for an action reached through a simple
+/// positive conjunction. Never infer it from a flag in an OR/NOT branch, an
+/// operand carrying flag-like bytes, or a partial outer argv.
+fn find_action_basename_suffix(
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+    decoded: &[Option<String>],
+    roots: &[&BoundValue],
+    region: &caushell_profile::BoundArgumentRegion,
+) -> Option<String> {
+    let args = &resolved.materialized_projection.invocation.args;
+    if region.id != "exec"
+        || resolved.bound.operation_semantics_unresolved
+        || resolved.bound.argument_regions.len() != 1
+        || region.end_index.checked_add(1)? != args.len()
+        || roots.len() > region.start_index
+    {
+        return None;
+    }
+    for ((root, arg), value) in roots.iter().zip(args).zip(decoded) {
+        let value = value.as_deref()?;
+        if !matches!(root, BoundValue::Argument { span, .. } if *span == arg.span)
+            || value.is_empty()
+            || value.starts_with('-')
+            || matches!(value, "!" | "(" | ")" | ",")
+        {
+            return None;
+        }
+    }
+    let mut suffix: Option<&str> = None;
+    let mut predicates = decoded[roots.len()..region.start_index].chunks_exact(2);
+    for pair in &mut predicates {
+        let (Some(flag), Some(value)) = (pair[0].as_deref(), pair[1].as_deref()) else {
+            return None;
+        };
+        match flag {
+            "-name" => {
+                // This glob subset has literal ASCII bytes and only unescaped
+                // wildcards. No locale-sensitive ranges, case folding or
+                // decoding of shell source occurs at this stage.
+                if value.len() > 4096
+                    || !value.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric() || b"._-*?".contains(&byte)
+                    })
+                {
+                    return None;
+                }
+                let candidate = value.rsplit(['*', '?']).next().filter(|s| !s.is_empty());
+                if candidate.is_some_and(|s| suffix.is_none_or(|current| s.len() > current.len())) {
+                    suffix = candidate;
+                }
+            }
+            "-type" if value.len() == 1 && b"bcdflps".contains(&value.as_bytes()[0]) => {}
+            _ => return None,
+        }
+    }
+    if !predicates.remainder().is_empty() {
+        return None;
+    }
+    suffix.map(str::to_owned)
 }
 
 fn decoded_projected_argv_value(
@@ -3175,6 +3248,7 @@ fn refresh_execution_payload_projections(
     request: &CheckRequest,
     entry: &mut ExpandedFrontierEntry,
     max_nested_parse_depth: u8,
+    observed_stdin: Option<&str>,
 ) {
     let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
         return;
@@ -3189,6 +3263,15 @@ fn refresh_execution_payload_projections(
     else {
         return;
     };
+    if let Some(payload) = observed_stdin {
+        if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result {
+            caushell_profile::refresh_payload_projections(
+                &mut resolved.bound,
+                (payload.len() <= max_bytes).then_some(payload),
+            );
+        }
+        return;
+    }
     if entry.static_payload_scope.stdin_is_parent_output {
         if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result {
             caushell_profile::refresh_payload_projections(&mut resolved.bound, None);
@@ -3751,12 +3834,22 @@ fn collect_execution_unit_resolve_records(
             );
         }
 
+        let direct_input = observed.inputs.get(&entry.source_node_id).filter(|input| {
+            input.direct_stdin.is_some()
+                && !entry.static_payload_scope.stdin_is_parent_output
+                && !entry.inherited_scope.static_input_cwd_unproven
+                && entry.inherited_scope.native_template_input.is_none()
+                && input.scope == entry.static_payload_scope.parsed_scope
+                && input.bindings == entry.bindings
+        });
+        let observed_stdin = direct_input.and_then(|input| input.direct_stdin.as_deref());
         refresh_execution_payload_projections(
             registry,
             session,
             request,
             &mut entry,
             max_nested_parse_depth,
+            observed_stdin,
         );
         refresh_path_list_targets(
             registry,
@@ -3764,7 +3857,22 @@ fn collect_execution_unit_resolve_records(
             request,
             &mut entry,
             max_nested_parse_depth,
+            observed_stdin,
         );
+        if let Some(input) = direct_input {
+            observed.decoded.insert(
+                entry.source_node_id.clone(),
+                caushell_types::NativeInputDecodeEvidence {
+                    node_id: entry.source_node_id.0.clone(),
+                    producer_node_id: input.records.node_id.clone(),
+                    complete: true,
+                    // A direct stdin consumer has no derived argv jobs.
+                    alternative_groups: 0,
+                    gap: None,
+                    rejected_candidate_encoding: None,
+                },
+            );
+        }
 
         // Native list input is not proof of the launched program's FD 0.
         // Until that routing is declared, keep an inherited stdin consumer
@@ -4743,7 +4851,7 @@ fn refresh_substitution_shape_proofs(
     if !command
         .tokens
         .iter()
-        .any(|t| t.quoted && !t.command_substitutions.is_empty())
+        .any(|t| !t.runtime_data && !t.command_substitutions.is_empty())
     {
         return;
     }
@@ -5307,6 +5415,7 @@ fn expanded_shell_evaluation_children(
             site.kind,
             caushell_parse::ShellEvaluationKind::UnsetOperand { .. }
                 | caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. }
+                | caushell_parse::ShellEvaluationKind::ForListExpansion
         ) {
             for direct in &site.input.command_substitutions {
                 let owned = parsed
@@ -5324,6 +5433,12 @@ fn expanded_shell_evaluation_children(
                         .iter()
                         .flat_map(|r| r.target.iter().chain(r.content.iter()))
                         .flat_map(|v| &v.command_substitutions)
+                        .any(|s| s.span == direct.span)
+                    || parsed
+                        .for_loops
+                        .iter()
+                        .flat_map(|iteration| iteration.items.iter().flatten())
+                        .flat_map(|item| &item.command_substitutions)
                         .any(|s| s.span == direct.span);
                 if owned
                     && let Some(index) = evaluation
@@ -5343,6 +5458,7 @@ fn expanded_shell_evaluation_children(
             if matches!(
                 site.kind,
                 caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. }
+                    | caushell_parse::ShellEvaluationKind::ForListExpansion
             ) {
                 evaluation_start
             } else {
@@ -5355,13 +5471,14 @@ fn expanded_shell_evaluation_children(
                 body,
                 shell_kind,
                 unresolved || depth > max_depth,
-                if matches!(
-                    site.kind,
-                    caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. }
-                ) {
-                    "redirection command substitution"
-                } else {
-                    "shell arithmetic/index evaluation"
+                match site.kind {
+                    caushell_parse::ShellEvaluationKind::RedirectionExpansion { .. } => {
+                        "redirection command substitution"
+                    }
+                    caushell_parse::ShellEvaluationKind::ForListExpansion => {
+                        "for-list command substitution"
+                    }
+                    _ => "shell arithmetic/index evaluation",
                 },
             );
             if unresolved {
@@ -7229,6 +7346,7 @@ fn expanded_static_xargs_children(
     // A domain proof is useful even when none of the concrete input bytes are
     // known. Never reinterpret it as literal shell text or an exact argv list.
     let input_domain = (native.is_none()
+        && config.decoding_proved
         && !evidence.complete
         && !has_applied_modifier(&resolved.bound, "arg_file")
         && matches!(config.item_mode, XargsItemMode::NullSeparated))
@@ -7237,7 +7355,7 @@ fn expanded_static_xargs_children(
     // Partial fragments have no guaranteed offset: unknown bytes may precede
     // them, join their quoting, or shift every positional argument. Keep them
     // as advisory evidence, never as a proven argv prefix.
-    let payloads = if evidence.complete {
+    let payloads = if evidence.complete && config.decoding_proved {
         evidence.known_fragments.as_slice()
     } else {
         &[]
@@ -7245,7 +7363,7 @@ fn expanded_static_xargs_children(
     let decoded_items =
         xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref());
     // A failed native input decoder is not proof of an empty argv batch.
-    let input_complete = evidence.complete && decoded_items.is_some();
+    let input_complete = config.decoding_proved && evidence.complete && decoded_items.is_some();
     let items = decoded_items
         .unwrap_or_default()
         .into_iter()
@@ -7514,7 +7632,7 @@ fn expanded_static_xargs_children(
             &child_bindings,
             &forwarded_substitution_shapes(resolved, &command),
         );
-        if symbolic_input && !has_applied_modifier(&resolved.bound, "arg_file") {
+        if symbolic_input && config.decoding_proved && !has_applied_modifier(&resolved.bound, "arg_file") {
             super::native_effect_envelope::refine(
                 registry,
                 &command,
@@ -7655,6 +7773,7 @@ fn refresh_path_list_targets(
     request: &CheckRequest,
     entry: &mut ExpandedFrontierEntry,
     max_depth: u8,
+    observed_stdin: Option<&str>,
 ) {
     let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
         return;
@@ -7675,7 +7794,7 @@ fn refresh_path_list_targets(
     {
         return;
     }
-    let evidence = static_stdin_evidence_for_scoped_command(
+    let evidence = observed_stdin.map_or_else(|| static_stdin_evidence_for_scoped_command(
         caushell_query::QuerySession::from_session(&session),
         &scope.parsed_scope,
         scope.command_index,
@@ -7686,7 +7805,10 @@ fn refresh_path_list_targets(
         true,
         request.home.as_deref(),
         max_depth.saturating_sub(entry.depth),
-    );
+    ), |payload| StaticStreamEvidence {
+        known_fragments: vec![payload.to_owned()],
+        complete: true,
+    });
     let wants_nul = resolved
         .bound
         .effects
@@ -8327,6 +8449,7 @@ struct XargsStaticExpansionConfig {
     item_mode: XargsItemMode,
     dispatch_mode: XargsDispatchMode,
     run_if_empty: bool,
+    decoding_proved: bool,
     requires_confirmation: bool,
     eof_marker: Option<String>,
     insert_batch_token: Option<String>,
@@ -8351,127 +8474,107 @@ enum XargsDispatchMode {
 fn xargs_static_expansion_config(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
 ) -> XargsStaticExpansionConfig {
+    use caushell_profile::{ArgumentBindingSource, SemanticValueResolution, ValueProjection, project_value};
     let bound = &resolved.bound;
-    let dispatch_mode = xargs_dispatch_mode(resolved);
-    let mut item_mode = XargsItemMode::WhitespaceSeparated;
-    for modifier in &bound.applied_modifiers {
-        match modifier.as_str() {
-            "null_delimited" => item_mode = XargsItemMode::NullSeparated,
-            "delimiter" => {
-                if let Some(raw) = bound_argument_texts_for_slot(bound, "delimiter")
-                    .first()
-                    .copied()
-                    .and_then(decode_xargs_delimiter)
-                {
-                    item_mode = XargsItemMode::Delimited { delimiter: raw };
-                }
-            }
-            _ => {}
-        }
-    }
-    if matches!(dispatch_mode, XargsDispatchMode::ReplaceToken { .. })
-        && matches!(item_mode, XargsItemMode::WhitespaceSeparated)
-    {
-        item_mode = XargsItemMode::NewlineSeparated;
-    }
-
-    XargsStaticExpansionConfig {
-        item_mode,
-        dispatch_mode,
+    let mut config = XargsStaticExpansionConfig {
+        item_mode: XargsItemMode::WhitespaceSeparated,
+        dispatch_mode: XargsDispatchMode::AppendAll,
         run_if_empty: !has_applied_modifier(bound, "no_run_if_empty"),
+        decoding_proved: !bound.operation_semantics_unresolved && bound.residuals.is_empty(),
         requires_confirmation: has_applied_modifier(bound, "interactive_prompt"),
-        eof_marker: xargs_eof_marker(bound),
-        insert_batch_token: exact_bound_slot_values(bound, "insert_batch_token")
-            .and_then(|values| values.last().cloned())
-            .filter(|text| !text.is_empty()),
-    }
-}
-
-fn xargs_dispatch_mode(
-    resolved: &caushell_profile::ResolvedInvocationArtifact,
-) -> XargsDispatchMode {
-    use caushell_profile::ArgumentBindingSource;
-    let bound = &resolved.bound;
-    let mut mode = XargsDispatchMode::AppendAll;
-    // Profile declaration order is not argv order. Required/inline operands
-    // retain their owning flag's span; bare optional forms use their already
-    // validated leading-option word, never the child's argv.
-    let mut events = Vec::new();
-    for source in &bound.modifier_parameter_flags {
-        let ArgumentBindingSource::MatchedModifierFlag {
-            modifier_id,
-            flag_span,
-            ..
-        } = source
-        else {
+        eof_marker: None,
+        insert_batch_token: None,
+    };
+    // Use the native argv positions already owned by the profile binder. In
+    // particular, a flag-looking utility argument is not an xargs occurrence.
+    for flag in &bound.owned_option_flags {
+        let ArgumentBindingSource::FollowingFlag { flag_name, flag_span } = flag else {
             continue;
         };
-        let id = modifier_id.as_str();
+        let name = flag_name.as_str();
+        if matches!(name, "-0" | "--null") {
+            config.item_mode = XargsItemMode::NullSeparated;
+            continue;
+        }
         if !matches!(
-            id,
-            "replace_token"
-                | "replace_token_optional"
-                | "max_args"
-                | "max_lines"
-                | "max_lines_optional"
+            name,
+            "-d" | "--delimiter" | "-I" | "-i" | "--replace" | "-n" | "--max-args"
+                | "-L" | "--max-lines" | "-l" | "-E" | "-e" | "--eof" | "-J"
         ) {
             continue;
         }
-        let operand = bound
-            .bound_parameters
-            .iter()
-            .flat_map(|p| &p.values)
-            .find_map(|v| match v {
-                BoundValue::Argument {
-                    binding_source,
-                    text,
-                    ..
-                } if binding_source == source => Some(text.as_str()),
-                _ => None,
-            });
-        events.push((flag_span.start_byte, id, operand));
-    }
-    events.sort_unstable_by_key(|(position, _, _)| *position);
-    for (_, modifier, operand) in events {
-        match modifier {
-            "replace_token" | "replace_token_optional" => {
-                let token = operand.filter(|token| !token.is_empty()).unwrap_or("{}");
-                mode = XargsDispatchMode::ReplaceToken {
-                    token: token.to_string(),
-                };
+        let supplied = bound.bound_parameters.iter().flat_map(|p| &p.values).find(|value| {
+            matches!(value, BoundValue::Argument {
+                binding_source: ArgumentBindingSource::MatchedModifierFlag {
+                    flag_name: owner, flag_span: span, ..
+                }, ..
+            } if owner == flag_name && span == flag_span)
+        });
+        let operand = match supplied {
+            Some(value) => match project_value(&ValueProjection::Identity, value) {
+                Some(SemanticValueResolution::Known(text)) => text,
+                Some(SemanticValueResolution::Unknown(caushell_profile::ProjectionUnknownReason::EmptyValue)) => String::new(),
+                _ => {
+                    config.decoding_proved = false;
+                    continue;
+                }
+            },
+            None if matches!(name, "-i" | "--replace") => "{}".into(),
+            None if name == "-l" => "1".into(),
+            None if matches!(name, "-e" | "--eof") => String::new(),
+            None => {
+                config.decoding_proved = false;
+                continue;
             }
-            "max_args" => {
-                if let Some(raw) = operand.and_then(parse_positive_usize) {
-                    // GNU's documented exception: -n1 after -I does not
-                    // cancel replacement. Other conflicting options are last-wins.
-                    if raw != 1 || !matches!(mode, XargsDispatchMode::ReplaceToken { .. }) {
-                        mode = XargsDispatchMode::MaxArgs { max_args: raw };
-                    }
+        };
+        match name {
+            "-d" | "--delimiter" => {
+                if let Some(delimiter) = decode_xargs_delimiter(&operand) {
+                    config.item_mode = if delimiter == "\0" {
+                        XargsItemMode::NullSeparated
+                    } else {
+                        XargsItemMode::Delimited { delimiter }
+                    };
+                } else {
+                    config.decoding_proved = false;
                 }
             }
-            "max_lines" | "max_lines_optional" => {
-                let max_lines = operand.and_then(parse_positive_usize).unwrap_or(1);
-                mode = XargsDispatchMode::MaxLines { max_lines };
+            "-I" | "-i" | "--replace" if !operand.is_empty() => {
+                config.dispatch_mode = XargsDispatchMode::ReplaceToken { token: operand };
             }
-            _ => {}
+            "-E" | "-e" | "--eof" => {
+                // EOF is a literal argv word. C-style escapes belong only to -d.
+                config.eof_marker = (!operand.is_empty()).then_some(operand);
+            }
+            "-J" if !operand.is_empty() => config.insert_batch_token = Some(operand),
+            "-n" | "--max-args" | "-L" | "--max-lines" | "-l" => {
+                if let Some(limit) = parse_positive_usize(&operand) {
+                    if matches!(name, "-n" | "--max-args") {
+                        // GNU -n1 does not replace an already selected -I mode.
+                        if limit != 1 || !matches!(config.dispatch_mode, XargsDispatchMode::ReplaceToken { .. }) {
+                            config.dispatch_mode = XargsDispatchMode::MaxArgs { max_args: limit };
+                        }
+                    } else {
+                        config.dispatch_mode = XargsDispatchMode::MaxLines { max_lines: limit };
+                    }
+                } else {
+                    config.decoding_proved = false;
+                }
+            }
+            _ => config.decoding_proved = false,
         }
     }
-
-    mode
-}
-
-fn xargs_eof_marker(bound: &caushell_profile::BoundInvocation) -> Option<String> {
-    if !has_applied_modifier(bound, "eof_marker_required")
-        && !has_applied_modifier(bound, "eof_marker_inline")
-    {
-        return None;
+    if matches!(config.dispatch_mode, XargsDispatchMode::ReplaceToken { .. }) {
+        // A replacement job needs a record. GNU and BSD launch no replacement
+        // job on an empty stream, even without an explicit -r.
+        if config.decoding_proved {
+            config.run_if_empty = false;
+        }
+        if matches!(config.item_mode, XargsItemMode::WhitespaceSeparated) {
+            config.item_mode = XargsItemMode::NewlineSeparated;
+        }
     }
-
-    bound_argument_texts_for_slot(bound, "eof_marker")
-        .first()
-        .copied()
-        .map(decode_xargs_scalar_operand)
-        .filter(|marker| !marker.is_empty())
+    config
 }
 
 fn has_applied_modifier(bound: &caushell_profile::BoundInvocation, modifier_id: &str) -> bool {
@@ -8523,6 +8626,9 @@ fn observed_xargs_groups(
     config: &XargsStaticExpansionConfig,
 ) -> Result<Vec<Vec<String>>, String> {
     use std::collections::BTreeSet;
+    if !config.decoding_proved {
+        return Err("xargs input options are unresolved".into());
+    }
     let records = output.complete_records().ok_or_else(|| {
         output
             .gap
@@ -8579,14 +8685,13 @@ fn observed_xargs_groups(
         && blocks.iter().all(|b| match &config.item_mode {
             XargsItemMode::NullSeparated => b.ends_with('\0'),
             XargsItemMode::Delimited { delimiter } => b.ends_with(delimiter.as_str()),
-            _ => b.ends_with('\n'),
+            // A trailing escaped newline can join this block to the next.
+            // A block is independent only if the decoder resets at its end.
+            _ => b.ends_with('\n') && !b.ends_with("\\\n"),
         });
     if output.order == caushell_types::StreamRecordOrder::Exact || blocks.len() <= 1 {
         let mut groups = decode(&blocks)?;
-        if groups.is_empty()
-            && config.run_if_empty
-            && !matches!(config.dispatch_mode, XargsDispatchMode::ReplaceToken { .. })
-        {
+        if groups.is_empty() && config.run_if_empty {
             groups.push(Vec::new());
         }
         if groups.len() > 128 || groups.iter().map(Vec::len).sum::<usize>() > 4096 {
@@ -8633,10 +8738,7 @@ fn observed_xargs_groups(
         }
         orders(&mut blocks.clone(), 0, &mut |blocks| add(decode(blocks)?))?;
     }
-    if groups.is_empty()
-        && config.run_if_empty
-        && !matches!(config.dispatch_mode, XargsDispatchMode::ReplaceToken { .. })
-    {
+    if groups.is_empty() && config.run_if_empty {
         groups.insert(Vec::new());
     }
     Ok(groups.into_iter().collect())
@@ -8727,6 +8829,11 @@ fn parse_xargs_items(payloads: &[String], line_separated: bool) -> Option<Vec<St
     let mut state = XargsDefaultParseState::Normal;
 
     let payload = payloads.concat();
+    if line_separated
+        && payload.split_terminator('\n').any(|line| line.ends_with([' ', '\t']))
+    {
+        return None;
+    }
     for ch in payload.chars() {
         match state {
             XargsDefaultParseState::Normal => {
@@ -8793,31 +8900,29 @@ fn parse_xargs_items(payloads: &[String], line_separated: bool) -> Option<Vec<St
     Some(items)
 }
 
-fn decode_xargs_delimiter(raw: &str) -> Option<String> {
-    let decoded = decode_xargs_scalar_operand(raw);
-
-    (!decoded.is_empty()).then_some(decoded)
-}
-
-fn decode_xargs_scalar_operand(raw: &str) -> String {
-    let unquoted = raw
-        .strip_prefix('\'')
-        .and_then(|value| value.strip_suffix('\''))
-        .or_else(|| {
-            raw.strip_prefix('"')
-                .and_then(|value| value.strip_suffix('"'))
-        })
-        .unwrap_or(raw);
-
-    match unquoted {
-        r"\0" => "\0".to_string(),
-        r"\n" => "\n".to_string(),
-        r"\t" => "\t".to_string(),
-        r"\r" => "\r".to_string(),
-        r"\b" => "\u{0008}".to_string(),
-        r"\f" => "\u{000c}".to_string(),
-        _ => unquoted.to_string(),
-    }
+fn decode_xargs_delimiter(word: &str) -> Option<String> {
+    let byte = match word.as_bytes() {
+        [byte] if *byte != b'\\' => *byte,
+        [b'\\', b'a'] => 7,
+        [b'\\', b'b'] => 8,
+        [b'\\', b'f'] => 12,
+        [b'\\', b'n'] => b'\n',
+        [b'\\', b'r'] => b'\r',
+        [b'\\', b't'] => b'\t',
+        [b'\\', b'v'] => 11,
+        [b'\\', b'\\'] => b'\\',
+        _ => {
+            let digits = word.strip_prefix('\\')?;
+            if let Some(hex) = digits.strip_prefix('x').filter(|hex| hex.len() <= 2 && hex.bytes().all(|b| b.is_ascii_hexdigit())) {
+                u8::from_str_radix(hex, 16).ok()?
+            } else if digits.bytes().all(|b| matches!(b, b'0'..=b'7')) && digits.len() <= 3 {
+                u8::from_str_radix(digits, 8).ok()?
+            } else {
+                return None;
+            }
+        }
+    };
+    byte.is_ascii().then(|| char::from(byte).to_string())
 }
 
 fn static_substitution_argument_fields(
@@ -8831,8 +8936,7 @@ fn static_substitution_argument_fields(
     home: Option<&str>,
     remaining_depth: u8,
 ) -> Vec<caushell_profile::ArgumentFieldsProof> {
-    use caushell_parse::ScalarArgumentPart;
-    use caushell_profile::ShellFieldFragment::{Literal, QuotedExpansion, UnquotedExpansion};
+    use caushell_profile::ShellFieldFragment::UnquotedExpansion;
     if shell_kind != caushell_types::ShellKind::Bash || remaining_depth == 0 {
         return Vec::new();
     }
@@ -8864,24 +8968,9 @@ fn static_substitution_argument_fields(
                 )
             };
             let fragments = if let Some(parts) =
-                caushell_parse::scalar_argument_parts(&token.text, token.quoted, &token.node_kind)
+                caushell_parse::scalar_word_parts(&token.text, token.quoted, &token.node_kind, true)
             {
-                parts
-                    .into_iter()
-                    .map(|part| {
-                        Some(match part {
-                            ScalarArgumentPart::Literal(s) => Literal(s),
-                            ScalarArgumentPart::Parameter(s) => QuotedExpansion(
-                                caushell_profile::materialize_shell_assignment_value(
-                                    &s, true, "string", bindings,
-                                )?,
-                            ),
-                            ScalarArgumentPart::CommandSubstitution(s) => {
-                                QuotedExpansion(output(&s)?)
-                            }
-                        })
-                    })
-                    .collect::<Option<Vec<_>>>()?
+                caushell_profile::materialize_shell_field_fragments(parts, bindings, output)?
             } else if !token.quoted
                 && token.command_substitutions.len() == 1
                 && original == token.command_substitutions[0].text
@@ -11943,7 +12032,7 @@ modifiers:
             command.command_name.as_deref() == Some("touch")
                 && command.tokens.iter().any(|token| matches!(
                     &token.runtime_argument_domain,
-                    Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape: true }) if roots.is_empty()
+                    Some(caushell_types::RuntimeArgumentDomain::PathSet { roots, may_escape: true, .. }) if roots.is_empty()
                 ))
         }));
     }
@@ -11958,6 +12047,7 @@ modifiers:
         let expected = caushell_types::RuntimeArgumentDomain::PathSet {
             roots: roots.iter().map(|root| root.to_string()).collect(),
             may_escape: false,
+            basename_suffix: None,
         };
         command.command_name.as_deref() == Some(command_name)
             && command.tokens.get(argument_index).is_some_and(|token| {
@@ -11974,6 +12064,7 @@ modifiers:
         let expected = caushell_types::RuntimeArgumentDomain::PathSet {
             roots: roots.iter().map(|root| root.to_string()).collect(),
             may_escape: false,
+            basename_suffix: None,
         };
         matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
             if resolved.bound.bound_parameters.iter().flat_map(|parameter| &parameter.values)
@@ -13485,10 +13576,10 @@ modifiers:
         use super::{XargsItemMode, parse_xargs_default_items, xargs_items_from_payloads};
         for (payload, expected) in [
             ("'--flag=one two'\n", vec!["--flag=one two"]),
-            ("  one two  \nnext\n", vec!["one two  ", "next"]),
+            ("  one two\nnext\n", vec!["one two", "next"]),
             ("\"one\\two\"\n", vec!["one\\two"]),
             ("one\\\ntwo\n", vec!["one\ntwo"]),
-            ("\n \n\t\n", vec![]),
+            ("\n\n", vec![]),
         ] {
             let expected = Some(expected.into_iter().map(str::to_owned).collect::<Vec<_>>());
             assert_eq!(
@@ -13525,6 +13616,25 @@ modifiers:
     }
 
     #[test]
+    fn xargs_replacement_dispatch_distinguishes_empty_input_from_one_empty_record() {
+        let summary = SessionSummary::new();
+        for (source, expected) in [
+            (r#"printf '' | xargs -I @ printf '%s' @"#, 0),
+            (r#"printf '' | xargs -i printf '%s' '{}'"#, 0),
+            (r#"printf '' | xargs -I @ -n1 printf '%s' @"#, 0),
+            (r#"printf '' | xargs -I @ -L2 printf '%s' @"#, 1),
+            (r#"printf '\0' | xargs -0 -I @ printf '%s' @"#, 1),
+            (r#"cat unknown.txt | xargs -I @ printf '%s' @"#, 1),
+        ] {
+            let ctx = run_pass(&summary, ShellKind::Bash, source);
+            let children = ctx.execution_unit_resolve_records().iter()
+                .filter(|r| r.origin_kind == caushell_runner::ExecutionUnitOriginKind::StaticXargs)
+                .count();
+            assert_eq!(children, expected, "{source}");
+        }
+    }
+
+    #[test]
     fn native_scalar_numeric_forwarding_preserves_only_quoted_path_spelling_bounds() {
         let argv = caushell_parse::parse_command("worker placeholder", ShellKind::Bash).unwrap();
         let mut argument = caushell_profile::project_invocation(
@@ -13538,6 +13648,7 @@ modifiers:
         argument.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
             roots: vec!["./input".into()],
             may_escape: false,
+            basename_suffix: None,
         });
         argument.node_kind = "runtime_scalar".into();
         for (body, expected_fields, may_control) in [
@@ -13912,6 +14023,7 @@ modifiers:
             item_mode: XargsItemMode::NullSeparated,
             dispatch_mode: XargsDispatchMode::MaxArgs { max_args: 2 },
             run_if_empty: true,
+            decoding_proved: true,
             requires_confirmation: false,
             eof_marker: None,
             insert_batch_token: None,

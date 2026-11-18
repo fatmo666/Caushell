@@ -29,6 +29,8 @@ forms:
         binding:
           kind: remaining_args
         cardinality: optional_many
+    stdout_scalar: arithmetic_text
+    stdout_scalar_argv_grammar: integer_infix
     stream_contract:
       stdin_mode: ignored
       stdout_mode: data

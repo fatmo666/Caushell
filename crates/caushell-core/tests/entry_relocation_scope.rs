@@ -114,7 +114,13 @@ fn has_relocation_proof(r: &CheckResponse) -> bool {
 fn original_namespace_candidates_measure_actual_decisions() {
     let rows: serde_json::Value = serde_json::from_str(include_str!("fixtures/entry_relocation_requests.json")).unwrap();
     assert_eq!(rows.as_array().unwrap().len(), 105);
-    let expected = ["U03457", "U06457", "U06657", "U07041", "U07070", "U07076", "U08759", "U08760", "U09820", "U10093", "U10354"];
+    // Preserve the accepted outcomes from the paired-relocation fixes and
+    // the basename constraint case within the original fixture.
+    let expected = [
+        "U02308", "U02429", "U03139", "U03457", "U05189", "U05190", "U05197", "U05219",
+        "U06457", "U06657", "U06917", "U07041", "U07068", "U07070", "U07073", "U07076",
+        "U08759", "U08760", "U09564", "U09820", "U10029", "U10093", "U10354",
+    ];
     let mut failures = Vec::new();
     for row in rows.as_array().unwrap() {
         let id = row["id"].as_str().unwrap();
@@ -297,4 +303,44 @@ fn incomplete_or_changed_directory_reads_never_certify_a_family() {
         assert_ne!(r.decision, Decision::Allow, "{status:?}: {:?}", r.reasons);
         assert!(!has_relocation_proof(&r));
     }
+}
+
+#[test]
+fn find_name_constraints_bound_literal_filename_deletions() {
+    for command in [
+        r"find -name 'index-*.txt' -exec rename 's/^index-//' '{}' \;",
+        r"find . -name '*.txt.backup' -type f -exec rename 's/\.backup$//' '{}' \;",
+        r"find . -name '*.txt.backup' -exec file-rename 's/\.backup$//' '{}' +",
+    ] {
+        let view = Namespace::ordinary()
+            .set("/workspace/index-table.txt", FilesystemEntry::File)
+            .set("/workspace/list.txt.backup", FilesystemEntry::File);
+        let r = check(command, view);
+        assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+        assert!(has_relocation_proof(&r));
+    }
+}
+
+#[test]
+fn find_name_constraints_require_an_owned_positive_predicate_and_safe_result() {
+    for command in [
+        r"find . -type f -exec rename 's/\.backup$//' '{}' \;",
+        r"find . -name '*.backup' -exec rename 's/\.backup$//' '{}' \;",
+        r"find . -name '*.txt.backup' -o -exec rename 's/\.backup$//' '{}' \;",
+        r"find . ! -name '*.txt.backup' -exec rename 's/\.backup$//' '{}' \;",
+        r"find . -iname '*.txt.backup' -exec rename 's/\.backup$//' '{}' \;",
+        r"find . -name '*.txt.backup' -exec rename 's/\.backup$//' '{}' +",
+    ] {
+        let r = check(command, Namespace::ordinary());
+        assert_eq!(r.decision, Decision::NeedApproval, "{command}: {:?}", r.reasons);
+        assert!(!has_relocation_proof(&r));
+    }
+
+    let r = check(
+        r"find . -name '*.txt.backup' -exec rename 's/\.backup$//' '{}' \;",
+        Namespace::ordinary()
+            .set("/workspace/link", FilesystemEntry::Symlink { target: "/outside".into() }),
+    );
+    assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.reasons);
+    assert!(!has_relocation_proof(&r));
 }

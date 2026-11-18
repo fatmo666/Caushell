@@ -632,6 +632,7 @@ mod source_preservation_tests {
                 domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
                     roots: vec!["/workspace".into()],
                     may_escape: false,
+                    basename_suffix: None,
                 }),
                 origin: None,
             };

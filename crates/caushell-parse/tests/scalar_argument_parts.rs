@@ -91,3 +91,44 @@ fn scalar_parts_match_native_bash_quote_removal_without_reexpanding_values() {
         assert_eq!(native.stdout, [value.as_bytes(), &[0]].concat(), "{word}");
     }
 }
+
+#[test]
+fn expansion_parts_keep_splittable_and_quoted_fragments_separate() {
+    use caushell_parse::scalar_word_parts;
+    assert_eq!(
+        scalar_word_parts(
+            r#"head${PWD}/$(printf data)"$NAME"tail"#,
+            false,
+            "concatenation",
+            true
+        ),
+        Some(vec![
+            P::Literal("head".into()),
+            P::UnquotedParameter("${PWD}".into()),
+            P::Literal("/".into()),
+            P::UnquotedCommandSubstitution("$(printf data)".into()),
+            P::Parameter("$NAME".into()),
+            P::Literal("tail".into()),
+        ])
+    );
+    for word in [r#""$PWD"/$(printf data)*"#, r#"$(printf data)"$@""#] {
+        assert!(
+            scalar_word_parts(word, false, "concatenation", true).is_none(),
+            "{word}"
+        );
+    }
+}
+
+#[test]
+fn frame_planning_requests_ifs_for_unquoted_substitution_without_explicit_variables() {
+    for raw in ["find $(pwd)/ -type f", "find `pwd` -type f"] {
+        let names =
+            caushell_parse::observed_shell_variables(raw, caushell_types::ShellKind::Bash).unwrap();
+        assert!(names.contains("IFS"), "{raw}: {names:?}");
+    }
+    for raw in [r#"find "$(pwd)" -type f"#, r#"find '$(pwd)' -type f"#] {
+        let names =
+            caushell_parse::observed_shell_variables(raw, caushell_types::ShellKind::Bash).unwrap();
+        assert!(!names.contains("IFS"), "{raw}: {names:?}");
+    }
+}

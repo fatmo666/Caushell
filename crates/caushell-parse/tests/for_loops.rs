@@ -31,3 +31,23 @@ fn implicit_lists_and_nested_shells_are_distinct() {
     assert_eq!(p.for_loops.len(), 1);
     assert_eq!(p.for_loops[0].items, None);
 }
+
+#[test]
+fn executable_header_words_retain_syntax_and_owner_spans() {
+    use caushell_parse::ShellEvaluationKind::ForListExpansion;
+
+    let command = r#"for x in "$(find . -print)" "`find . -type f -print`" '$(find .)'; do :; done"#;
+    let parsed = parse_command(command, ShellKind::Bash).unwrap();
+    let sites: Vec<_> = parsed.shell_evaluations.iter()
+        .filter(|site| site.kind == ForListExpansion)
+        .collect();
+    assert_eq!(sites.len(), 2);
+    for (site, expected) in sites.iter().zip(["find . -print", "find . -type f -print"]) {
+        assert_eq!(site.top_level_span, parsed.for_loops[0].top_level_span);
+        assert!(site.input.span.end_byte < parsed.for_loops[0].body_span.start_byte);
+        let [substitution] = site.input.command_substitutions.as_slice() else {
+            panic!("one substitution must belong to the loop word");
+        };
+        assert_eq!(substitution.body_text, expected);
+    }
+}

@@ -463,6 +463,7 @@ mod tests {
         let domain = RuntimeArgumentDomain::PathSet {
             roots: vec!["./cache".into()],
             may_escape: false,
+            basename_suffix: None,
         };
         let identity =
             symbolic_job(&["echo {}".into()], false, false, ShellKind::Bash, &domain).unwrap();

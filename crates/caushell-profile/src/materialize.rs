@@ -2687,7 +2687,11 @@ pub(crate) fn materialize_projected_invocation_with_argument_fields(
                 arg_resolutions.push(ValueMaterialization::RequiresImplicitInput { source });
                 continue;
             }
-            for materialized in materialize_argument_fields(arg, bindings) {
+            for materialized in materialize_argument_fields(
+                arg,
+                bindings,
+                supports_region_alternatives && projection.shell_kind == caushell_types::ShellKind::Bash,
+            ) {
                 args.push(ProjectedArg {
                     word_context: arg.word_context,
                     text: materialized.text,
@@ -2785,7 +2789,8 @@ fn integer_argument_domain(
                     prefix.push_str(&value);
                 }
             }
-            caushell_parse::ScalarArgumentPart::Parameter(text) => {
+            caushell_parse::ScalarArgumentPart::Parameter(text)
+            | caushell_parse::ScalarArgumentPart::UnquotedParameter(text) => {
                 let ShellParameterReference::Variable(name) =
                     exact_shell_parameter_reference(&text)?
                 else {
@@ -3217,6 +3222,7 @@ pub(crate) struct MaterializedText {
 fn materialize_argument_fields(
     arg: &ProjectedArg,
     bindings: &SessionBindings,
+    exact_region_fields: bool,
 ) -> Vec<MaterializedText> {
     if let Some(source) = arg.implicit_input_source {
         return vec![MaterializedText {
@@ -3231,6 +3237,36 @@ fn materialize_argument_fields(
             text: arg.text.clone(),
             resolution: ValueMaterialization::Static,
         }];
+    }
+    if exact_region_fields
+        && arg.word_context == crate::WordContext::ShellArgument
+        && arg.text.contains('$')
+        && let Some(parts) = caushell_parse::scalar_word_parts(
+            &arg.text, arg.quoted, &arg.node_kind, true,
+        )
+    {
+        use caushell_parse::ScalarArgumentPart::{CommandSubstitution, Parameter, UnquotedCommandSubstitution, UnquotedParameter};
+        if parts.iter().any(|part| matches!(part, Parameter(_) | UnquotedParameter(_)))
+            && !parts.iter().any(|part| matches!(part, CommandSubstitution(_) | UnquotedCommandSubstitution(_)))
+        {
+            let has_unquoted = parts.iter().any(|part| matches!(part, UnquotedParameter(_)));
+            let exact = crate::materialize_shell_field_fragments(parts, bindings, |_| None)
+                .and_then(|fragments| crate::materialize_bash_field_fragments(&fragments, bindings));
+            if let Some(fields) = exact {
+                return fields.into_iter().map(|value| MaterializedText {
+                    text: value.clone(),
+                    resolution: ValueMaterialization::ResolvedShellWord { value },
+                }).collect();
+            }
+            if has_unquoted && crate::observed_ifs_value(bindings).is_some() {
+                // An observed splitter takes precedence over the legacy
+                // scalar fallback, including unsupported/native-glob cases.
+                return vec![MaterializedText {
+                    text: arg.text.clone(),
+                    resolution: ValueMaterialization::UnsupportedDynamicText { text: arg.text.clone() },
+                }];
+            }
+        }
     }
     if arg.word_context == crate::WordContext::ShellArgument
         && !matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string")

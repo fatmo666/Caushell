@@ -98,6 +98,7 @@ fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
         arg.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
             roots: roots.into_iter().map(String::from).collect(),
             may_escape: escape,
+            basename_suffix: None,
         });
         let facts = argument_structure(arg);
         assert_eq!(facts.static_prefix, prefix, "{arg:?}");
@@ -109,6 +110,7 @@ fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
     arg.runtime_argument_domain = Some(caushell_types::RuntimeArgumentDomain::PathSet {
         roots: vec![".".into()],
         may_escape: false,
+        basename_suffix: None,
     });
     assert_eq!(
         argument_structure(arg).fields,

@@ -1856,7 +1856,7 @@ fn current_shell_cwd_update_for_result(
     current: &CwdState,
     home: Option<&str>,
 ) -> Option<CwdUpdate> {
-    if !command_can_update_current_shell(command) {
+    if !command_may_change_current_shell_cwd(result, command) {
         return None;
     }
 
@@ -1864,10 +1864,6 @@ fn current_shell_cwd_update_for_result(
         return unresolved_cwd_command_updates_unknown(result, command)
             .map(|success| CwdUpdate { success });
     };
-
-    if has_applied_modifier(&resolved.bound, "no_cd") {
-        return None;
-    }
 
     let mut update = None;
     for effect in &resolved.bound.effects {
@@ -1885,6 +1881,22 @@ fn current_shell_cwd_update_for_result(
     }
 
     update
+}
+
+/// A shell-visible cwd effect can also update shell variables, even when its
+/// destination or success cannot be resolved.
+pub(crate) fn command_may_change_current_shell_cwd(
+    result: &ResolveInvocationArtifactResult,
+    command: &CommandFact,
+) -> bool {
+    command_can_update_current_shell(command)
+        && match result {
+            ResolveInvocationArtifactResult::Resolved(r) => {
+                !has_applied_modifier(&r.bound, "no_cd")
+                    && r.bound.effects.iter().any(|e| e.kind == EffectKind::SetCurrentWorkingDirectory)
+            }
+            _ => unresolved_cwd_command_updates_unknown(result, command).is_some(),
+        }
 }
 
 fn command_can_update_current_shell(command: &CommandFact) -> bool {

@@ -40,7 +40,7 @@ pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<Runt
                 root_membership: RootMembership::StrictDescendants,
             })
         }
-        RuntimeArgumentDomain::PathSet { roots, may_escape } => Some(RuntimePathBounds {
+        RuntimeArgumentDomain::PathSet { roots, may_escape, .. } => Some(RuntimePathBounds {
             roots: Cow::Borrowed(roots),
             may_escape: *may_escape,
             root_membership: RootMembership::Inclusive,
@@ -138,6 +138,7 @@ mod tests {
             let domain = RuntimeArgumentDomain::PathSet {
                 roots: vec![root.into()],
                 may_escape: false,
+                basename_suffix: None,
             };
             assert_eq!(
                 runtime_path_bounds(&domain).unwrap().root_membership,

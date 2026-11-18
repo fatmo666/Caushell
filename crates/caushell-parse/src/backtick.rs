@@ -12,7 +12,7 @@ pub(crate) struct BacktickTree {
 }
 
 pub(crate) fn project(parser: &mut Parser, source: &str) -> Result<BacktickTree, ParseError> {
-    let mut tree = crate::word_boundary::parse(parser, source.as_bytes())?;
+    let mut tree = crate::word_boundary::parse_for_backquotes(parser, source.as_bytes())?;
     let mut projected = None;
     let mut facts = Vec::new();
     if !source.contains('`') {
@@ -57,7 +57,7 @@ pub(crate) fn project(parser: &mut Parser, source: &str) -> Result<BacktickTree,
             bytes[start] = b'\'';
             bytes[end - 1] = b'\'';
         }
-        tree = crate::word_boundary::parse(parser, bytes.as_slice())?;
+        tree = crate::word_boundary::parse_for_backquotes(parser, bytes.as_slice())?;
     }
     unreachable!("bounded loop returns on completion or exhaustion")
 }
@@ -65,28 +65,31 @@ pub(crate) fn project(parser: &mut Parser, source: &str) -> Result<BacktickTree,
 fn collect_boundaries(node: Node<'_>, bytes: &[u8], ranges: &mut Vec<(usize, usize)>) {
     if node.kind() == "command_substitution" && bytes.get(node.start_byte()) == Some(&b'`') {
         let start = node.start_byte();
-        let mut index = start + 1;
-        while index < node.end_byte() {
-            match bytes[index] {
-                b'\\' => index += 2,
-                b'`' => {
-                    if index + 1 < node.end_byte() {
-                        ranges.push((start, index + 1));
-                    }
-                    // The body belongs to its own nested analysis. In
-                    // particular, escaped inner ticks are not siblings here.
-                    return;
-                }
-                _ => index += 1,
-            }
+        if let Some(close) = closing_backquote(bytes, start, node.end_byte())
+            && close + 1 < node.end_byte()
+        {
+            ranges.push((start, close + 1));
         }
-        // An incomplete opening retains the original parse diagnostics.
+        // The body belongs to its own nested analysis. An incomplete
+        // opening retains the original parse diagnostics.
         return;
     }
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         collect_boundaries(child, bytes, ranges);
     }
+}
+
+pub(crate) fn closing_backquote(bytes: &[u8], start: usize, end: usize) -> Option<usize> {
+    let mut index = start + 1;
+    while index < end {
+        match bytes[index] {
+            b'\\' => index += 2,
+            b'`' => return Some(index),
+            _ => index += 1,
+        }
+    }
+    None
 }
 
 /// Bash removes one old-style substitution escape layer BEFORE parsing the
@@ -184,15 +187,23 @@ pub(crate) fn restore(
         substitutions.extend(extra);
         substitutions.sort_by_key(|fact| fact.span.start_byte);
     };
-    for command in &mut artifact.commands {
-        for token in &mut command.tokens {
-            restore_value(
-                &token.span,
-                &mut token.node_kind,
-                &mut token.quoted,
-                &mut token.command_substitutions,
-            );
-        }
+    for token in artifact
+        .commands
+        .iter_mut()
+        .flat_map(|command| &mut command.tokens)
+        .chain(
+            artifact
+                .for_loops
+                .iter_mut()
+                .flat_map(|loop_fact| loop_fact.items.iter_mut().flatten()),
+        )
+    {
+        restore_value(
+            &token.span,
+            &mut token.node_kind,
+            &mut token.quoted,
+            &mut token.command_substitutions,
+        );
     }
     for site in &mut artifact.shell_evaluations {
         restore_value(

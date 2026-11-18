@@ -76,22 +76,25 @@ pub(crate) fn substitution_shapes(
         .tokens
         .iter()
         .filter_map(|token| {
-            // Quoting prevents field splitting and pathname expansion. Mixed
-            // words, multiple substitutions and unquoted output retain their
-            // ordinary unknown/lexical bounds.
-            if !token.quoted
-                || token.node_kind != "string"
-                || token.command_substitutions.len() != 1
-            {
+            if token.runtime_data || token.implicit_input_source.is_some() {
                 return None;
             }
-            let substitution = &token.command_substitutions[0];
-            let suffix = token.text.strip_prefix(&substitution.text)?;
-            let suffix = caushell_parse::decode_static_shell_argument(suffix, true, "string")?;
-            // The producer can fail with empty output: a suffix like -delete
-            // would then be a control word. Empty or slash-prefixed literal
-            // suffixes preserve the empty-or-absolute-path guarantee.
-            if !suffix.is_empty() && !suffix.starts_with('/') {
+            let [substitution] = token.command_substitutions.as_slice() else {
+                return None;
+            };
+            let quoted = token.quoted && token.node_kind == "string";
+            if quoted {
+                let suffix = token.text.strip_prefix(&substitution.text)?;
+                let suffix = caushell_parse::decode_static_shell_argument(suffix, true, "string")?;
+                // The producer may fail with empty output. Preserve the
+                // quoted absolute-path bound only with a compatible suffix.
+                if !suffix.is_empty() && !suffix.starts_with('/') {
+                    return None;
+                }
+            } else if token.quoted
+                || shell_kind != ShellKind::Bash
+                || !only_numeric_affixes(token, substitution)
+            {
                 return None;
             }
             let parsed = parse_command(&substitution.body_text, shell_kind).ok()?;
@@ -105,7 +108,10 @@ pub(crate) fn substitution_shapes(
             // A function/alias can replace the registered executable. Do not
             // borrow the executable's contract for a shadowing definition, even
             // if that definition would itself be statically analyzable.
-            if aliases.contains_key(name) || bindings.function_binding(&executable).is_some() {
+            if aliases.contains_key(name)
+                || bindings.function_binding(&executable).is_some()
+                || bindings.profile_has_alias_shadow(&executable)
+            {
                 return None;
             }
             let ResolveInvocationArtifactResult::Resolved(resolved) =
@@ -118,9 +124,33 @@ pub(crate) fn substitution_shapes(
             else {
                 return None;
             };
-            Some((token.span.clone(), resolved.proven_stdout_scalar()?))
+            let shape = resolved.proven_stdout_scalar()?;
+            // For an unquoted word, both the stream and any literal affixes
+            // must preserve the alphabet. Field splitting still applies.
+            (quoted || shape == StdoutScalarShape::ArithmeticText)
+                .then(|| (token.span.clone(), shape))
         })
         .collect()
+}
+
+/// Check literal bytes in the original token around the one expansion.
+fn only_numeric_affixes(
+    token: &caushell_parse::CommandToken,
+    substitution: &caushell_parse::CommandSubstitutionFact,
+) -> bool {
+    let base = token.span.start_byte;
+    let Some(start) = substitution.span.start_byte.checked_sub(base) else {
+        return false;
+    };
+    let Some(end) = substitution.span.end_byte.checked_sub(base) else {
+        return false;
+    };
+    token.span.end_byte.checked_sub(base) == Some(token.text.len())
+        && token.text.get(start..end) == Some(substitution.text.as_str())
+        && token.text.as_bytes()[..start]
+            .iter()
+            .chain(&token.text.as_bytes()[end..])
+            .all(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-'))
 }
 
 pub(super) fn plain_single_producer(parsed: &ParsedCommandArtifact) -> Option<&CommandFact> {

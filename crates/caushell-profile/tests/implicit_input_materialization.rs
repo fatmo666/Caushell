@@ -25,6 +25,7 @@ fn candidate(source: ImplicitInputSource) -> RecursivePayloadCandidate {
             domain: Some(RuntimeArgumentDomain::PathSet {
                 roots: vec!["/workspace".into()],
                 may_escape: false,
+                basename_suffix: None,
             }),
         },
     }
@@ -90,6 +91,7 @@ fn projected_unknown_arguments_are_not_misrepresented_as_static_empty_strings() 
         let domain = Some(RuntimeArgumentDomain::PathSet {
             roots: vec!["/workspace".into()],
             may_escape: false,
+            basename_suffix: None,
         });
         projection.args[0].text.clear();
         projection.args[0].implicit_input_source =

@@ -24,6 +24,7 @@ fn tail(root: &str) -> ProjectedArg {
     a.runtime_argument_domain = Some(RuntimeArgumentDomain::PathSet {
         roots: vec![root.into()],
         may_escape: false,
+        basename_suffix: None,
     });
     a
 }
