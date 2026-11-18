@@ -37,7 +37,11 @@ mod pathname;
 pub use observation_requirements::execution_frame_requirements;
 pub use pathname::{PathnameComponent, PathnamePattern};
 mod native_effect_envelope;
-pub use native_effect_envelope::{native_effect_contract_allows_effect, native_effect_contract_allows_parameter, native_effect_contract_is_closed, retain_symbolic_argv_stream_contract};
+pub use native_effect_envelope::{
+    native_effect_contract_allows_effect, native_effect_contract_allows_parameter,
+    native_effect_contract_is_closed, native_effect_contract_is_closed_in_domain,
+    retain_symbolic_argv_stream_contract,
+};
 pub use caushell_types::NativeArgvEffectEnvelope;
 mod native_operand;
 mod normalize;

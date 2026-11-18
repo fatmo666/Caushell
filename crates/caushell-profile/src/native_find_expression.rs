@@ -28,6 +28,35 @@ pub(crate) struct ParsedFind {
 }
 
 impl Expression {
+    /// A missing truth value stands for either result. Output remains visible
+    /// even when a later predicate makes the whole expression false.
+    pub(crate) fn output_reachability(&self) -> (Option<bool>, bool) {
+        match self {
+            Self::Test(NativePathPredicate::Constant(value)) => (Some(*value), false),
+            Self::Test(_) | Self::MetadataTest { .. } => (None, false),
+            Self::Output(_) => (Some(true), true),
+            Self::Prune => (Some(true), false),
+            Self::Not(inner) => {
+                let (truth, emits) = inner.output_reachability();
+                (truth.map(|value| !value), emits)
+            }
+            Self::And(left, right) | Self::Or(left, right) => {
+                let short_circuit = matches!(self, Self::Or(..));
+                let (left_truth, left_emits) = left.output_reachability();
+                if left_truth == Some(short_circuit) {
+                    return (left_truth, left_emits);
+                }
+                let (right_truth, right_emits) = right.output_reachability();
+                let truth = if left_truth.is_some() || right_truth == Some(short_circuit) {
+                    right_truth
+                } else {
+                    None
+                };
+                (truth, left_emits || right_emits)
+            }
+        }
+    }
+
     pub(crate) fn contains_metadata_test(&self) -> bool {
         match self {
             Self::MetadataTest { .. } => true,

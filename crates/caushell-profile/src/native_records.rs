@@ -72,6 +72,11 @@ impl NativePathOutputPlan {
         self.expression.record_encoding()
     }
 
+    /// Prove absence of output without assuming any directory contents.
+    pub fn output_is_unreachable(&self) -> bool {
+        !self.expression.output_reachability().1
+    }
+
     pub fn needs_case_locale(&self) -> bool {
         self.expression.needs_case_locale()
     }

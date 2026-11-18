@@ -1,6 +1,6 @@
 //! A metadata query is not a grant to read arbitrary file contents.
 use crate::{
-    CommandProfile, Effect, EffectKind, FilesystemNamespaceImpact, Parameter, PathRole,
+    CommandLookupDomain, CommandProfile, Effect, EffectKind, FilesystemNamespaceImpact, Parameter, PathRole,
     PathSemantic, SemanticType, StructuredValueContext,
 };
 use caushell_types::NativeArgvEffectEnvelope;
@@ -63,7 +63,17 @@ fn native_surface_is_direct(profile: &CommandProfile) -> bool {
 
 pub fn native_effect_contract_is_closed(
     profile: &CommandProfile,
-    contract: caushell_types::NativeArgvEffectEnvelope,
+    contract: NativeArgvEffectEnvelope,
+) -> bool {
+    native_effect_contract_is_closed_in_domain(profile, contract, &CommandLookupDomain::Unknown)
+}
+
+/// An externally dispatched utility cannot use an owning-shell variable
+/// write grammar. All other closure requirements are independent of lookup.
+pub fn native_effect_contract_is_closed_in_domain(
+    profile: &CommandProfile,
+    contract: NativeArgvEffectEnvelope,
+    lookup_domain: &CommandLookupDomain,
 ) -> bool {
     if profile.native_argv_effect_envelope == Some(contract) && !profile.read_only_control_surface {
         return false;
@@ -84,7 +94,8 @@ pub fn native_effect_contract_is_closed(
         return false;
     }
     if !native_surface_is_direct(profile)
-        || profile.native_variable_writes.is_some()
+        || (profile.native_variable_writes.is_some()
+            && !matches!(lookup_domain, CommandLookupDomain::External))
         || profile.forms.iter().any(|f| {
             f.operation_semantics_unresolved
                 || !f.payload_projections.is_empty()

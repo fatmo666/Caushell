@@ -15,18 +15,6 @@ pub(super) fn read_effect(effect: &Effect) -> bool {
     )
 }
 
-/// A flat native data reader, not a command-name allowlist. Every declared mode
-/// must remain read/data-only; filename-list reads retain their declared effects.
-/// Configuration, native argv-reparsing files and code projections need
-/// their own proofs. Strict rebinding accounts for ALL argv even for a legacy
-/// profile that does not escalate every residual in ordinary resolution.
-pub(super) fn reader_profile(profile: &CommandProfile) -> bool {
-    effect_profile(
-        profile,
-        caushell_types::NativeArgvEffectEnvelope::ContentRead,
-    )
-}
-
 pub(super) fn effect_profile(profile: &CommandProfile, contract: caushell_types::NativeArgvEffectEnvelope) -> bool {
     caushell_profile::native_effect_contract_is_closed(profile, contract)
 }
@@ -257,7 +245,7 @@ mod tests {
             .clone();
         query.identity.canonical_name = caushell_profile::CommandName::new("fixture_metadata");
         query.identity.aliases.clear();
-        assert!(!reader_profile(&query));
+        assert!(!effect_profile(&query, caushell_types::NativeArgvEffectEnvelope::ContentRead));
         assert!(effect_profile(&query, NativeArgvEffectEnvelope::MetadataQuery), "{query:#?}");
         profiles.push(query.clone());
         let registry = ProfileRegistry::from_profiles(profiles).unwrap();

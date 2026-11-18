@@ -102,7 +102,11 @@ fn has_closed_read_only_dispatch(
             && !records.iter().any(|record| record.parent_execution_node_id == child.source_node_id)
             && registry.lookup(&resolved.normalized_command_name).profile.is_some_and(|profile| {
                 profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
-                    && super::symbolic_native_inputs::reader_profile(profile)
+                    && caushell_profile::native_effect_contract_is_closed_in_domain(
+                        profile,
+                        caushell_types::NativeArgvEffectEnvelope::ContentRead,
+                        child.bindings.command_lookup_domain(),
+                    )
             })
     })
 }
@@ -147,7 +151,7 @@ pub(super) fn prepare(
             break;
         }
     }
-    let metadata_limited = super::observe_stdout_records::observe_outputs(
+    let limits = super::observe_stdout_records::observe_outputs(
         &mut provisional,
         &deferred,
         &BTreeSet::new(),
@@ -191,7 +195,7 @@ pub(super) fn prepare(
         };
         let limited_observation_gap = if !output.missing_starting_point_observations.is_empty() {
             Some("missing producer starting points do not close consumer effects")
-        } else if metadata_limited.contains(&output.producer_node_id) {
+        } else if limits.metadata_limited.contains(&output.producer_node_id) {
             Some("producer metadata tests do not close consumer effects")
         } else {
             None
@@ -215,8 +219,21 @@ pub(super) fn prepare(
             }
             continue;
         }
+        // A filesystem snapshot can narrow the observed argv without proving
+        // dispatch effects. An empty snapshot can omit children. A line
+        // stream can also lose filename boundaries when later input is split.
+        let limited_dispatch_gap = limited_observation_gap.or_else(|| {
+            if limits.output_unreachable.contains(&output.producer_node_id) {
+                return None;
+            }
+            if output.records.is_empty() {
+                return Some("empty producer snapshot does not close consumer effects");
+            }
+            (output.encoding == Some(caushell_types::StreamRecordEncoding::Lines))
+                .then_some("line-delimited path observations do not close consumer effects")
+        });
         if output.complete
-            && let Some(gap) = limited_observation_gap
+            && let Some(gap) = limited_dispatch_gap
             && !has_closed_read_only_dispatch(ctx, registry, consumer.source_node_id())
         {
             output.complete = false;

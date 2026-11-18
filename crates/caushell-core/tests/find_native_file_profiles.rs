@@ -135,3 +135,29 @@ fn zipinfo_keeps_unproved_archive_controls_in_approval() {
         );
     }
 }
+
+#[test]
+fn pdfgrep_searches_explicit_files_and_preserves_the_read_effect() {
+    let mut core = ShellQueryCore::new();
+    let result = check_with_core(&mut core, "pdfgrep -i keyword ./report.pdf", false);
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert_file_effect(&core, "/bench/workspace/report.pdf", ResolvedPathRole::Read);
+
+    let command = "find . -iname '*.pdf' -exec pdfgrep -i keyword {} +";
+    let result = check(command, false);
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+}
+
+#[test]
+fn pdfgrep_unmodeled_file_selection_and_cache_stay_guarded() {
+    for command in [
+        "pdfgrep --cache keyword ./report.pdf",
+        "pdfgrep -R keyword .",
+        "pdfgrep -f patterns.txt ./report.pdf",
+        "pdfgrep keyword",
+        "pdfgrep keyword ./report.pdf > /opt/shared/report",
+    ] {
+        let result = check(command, false);
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+}

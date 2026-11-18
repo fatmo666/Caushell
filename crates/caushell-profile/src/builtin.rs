@@ -1520,6 +1520,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/bc.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "pdfgrep",
+        content: include_str!("../profiles/pdfgrep.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "pdftotext",
         content: include_str!("../profiles/pdftotext.yaml"),
     },
@@ -2030,6 +2034,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "touch",
         content: include_str!("../profiles/touch.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tqdm",
+        content: include_str!("../profiles/tqdm.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "truncate",

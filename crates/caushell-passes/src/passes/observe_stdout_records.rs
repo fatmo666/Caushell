@@ -118,18 +118,24 @@ impl SessionTransformPass for ObserveStdoutRecordsPass {
     }
 }
 
+#[derive(Default)]
+pub(super) struct NativeOutputLimits {
+    pub metadata_limited: BTreeSet<String>,
+    pub output_unreachable: BTreeSet<String>,
+}
+
 pub(super) fn observe_outputs(
     ctx: &mut RunnerContext,
     deferred: &BTreeSet<String>,
     completed: &BTreeSet<String>,
     phase: ObservationPhase,
-) -> BTreeSet<String> {
-    let mut metadata_limited = BTreeSet::new();
+) -> NativeOutputLimits {
+    let mut limits = NativeOutputLimits::default();
     if !ctx.execution_unit_resolve_records().iter().any(|record| {
         matches!(&record.result,ResolveInvocationArtifactResult::Resolved(r)
                 if r.bound.stdout_records.as_ref().is_some_and(|c|c.native.is_some()))
     }) {
-        return metadata_limited;
+        return limits;
     }
     let snapshot = ctx.clone();
     let records = graph_backed_execution_resolve_records(&snapshot);
@@ -170,7 +176,10 @@ pub(super) fn observe_outputs(
                 phase,
             )?;
             if plan.contains_metadata_test() {
-                metadata_limited.insert(output.producer_node_id.clone());
+                limits.metadata_limited.insert(output.producer_node_id.clone());
+            }
+            if plan.output_is_unreachable() {
+                limits.output_unreachable.insert(output.producer_node_id.clone());
             }
             Ok(())
         });
@@ -253,7 +262,7 @@ pub(super) fn observe_outputs(
             kind: EvidenceKind::StdoutRecords(output),
         });
     }
-    metadata_limited
+    limits
 }
 
 fn observe(

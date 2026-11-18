@@ -274,3 +274,22 @@ fn unknown_case_folding_only_matters_when_a_test_is_reached() {
             .emitted
     );
 }
+
+#[test]
+fn output_reachability_respects_short_circuit_and_emitted_records() {
+    for (expression, unreachable) in [
+        ("-false -a -print0", true),
+        ("-true -o -print0", true),
+        ("-name '*.txt' -a -false -a -print0", true),
+        ("-false -o -print0", false),
+        ("-name '*.txt' -print0", false),
+        ("-print0 -a -false", false),
+        ("! -print0", false),
+        ("-false", true),
+    ] {
+        let mut argv = vec![".".to_owned()];
+        argv.extend(expression.split_whitespace().map(str::to_owned));
+        let plan = NativePathOutputPlan::find(&argv).unwrap();
+        assert_eq!(plan.output_is_unreachable(), unreachable, "{expression}");
+    }
+}

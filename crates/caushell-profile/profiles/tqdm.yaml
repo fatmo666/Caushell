@@ -1,0 +1,60 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: tqdm, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+forms:
+  - id: progress_filter
+    selector: {kind: all, items: [{kind: no_positional_args}, {kind: no_dash_dash}]}
+    implicit_inputs:
+      - {source: stdin_data, semantic: {kind: plain_value}}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract:
+      stdin_mode: data_optional
+      stdout_mode: data
+      stderr_mode: data
+      stdout_dependency: inputs
+      stderr_dependency: inputs
+
+# tqdm joins argv and scans it again. Only admit whole values whose bytes
+# cannot introduce another option in that scan.
+modifiers:
+  - id: unit
+    matcher: {kind: any_flag, flags: [--unit]}
+    parameters:
+      - name: unit
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        value_constraints:
+          - {kind: require_match, pattern: '\A[A-Za-z0-9_][A-Za-z0-9_.-]*\z'}
+  - id: unit_scale
+    matcher: {kind: any_flag, flags: [--unit_scale, --unit-scale]}
+    parameters:
+      - name: scale
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: optional_next_arg}
+        cardinality: optional_one
+        value_constraints:
+          - {kind: require_match, pattern: '\A(?:True|False|[0-9]+(?:\.[0-9]+)?)\z'}
+  - id: total
+    matcher: {kind: any_flag, flags: [--total]}
+    parameters:
+      - name: total
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        value_constraints:
+          - {kind: require_match, pattern: '\A[0-9]+\z'}
+
+extensions:
+  caushell.profile/sources:
+    - https://tqdm.github.io/docs/cli/
+    - https://github.com/tqdm/tqdm/blob/v4.70.1/tqdm/cli.py
+  caushell.profile/review_scope:
+    - Covers stream progress with proven display options. Resource installation modes require approval.
