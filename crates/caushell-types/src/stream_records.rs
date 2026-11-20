@@ -64,6 +64,10 @@ pub struct NativeInputDecodeEvidence {
     /// revalidation rejected it. The record bytes themselves are invalid.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected_candidate_encoding: Option<StreamRecordEncoding>,
+    /// A complete producer observation was empty, and the consumer owns its
+    /// NUL decoder. This describes the route, not the runtime record count.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub empty_nul_path_snapshot: bool,
 }
 
 /// A reviewed total native control contract, not an argument/output decoder.

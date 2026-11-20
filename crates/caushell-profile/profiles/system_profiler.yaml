@@ -1,0 +1,45 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: system_profiler, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: all_arguments
+opaque_on_unresolved: true
+
+forms:
+  - id: read_hardware_report
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 1}
+        - kind: has_argument_at_matching
+          index: 0
+          matcher: {kind: literal, value: SPHardwareDataType}
+    parameters:
+      - {name: data_type, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: required_one}
+    effects: &host_inspection
+      - kind: state_operation
+        state_operation: {domain: host_identity, operation: inspect}
+        target: {kind: none}
+    stream_contract: &report_stream
+      stdin_mode: ignored
+      stdout_mode: data
+      stdout_dependency: unknown
+      stderr_mode: opaque
+
+  - id: read_default_report
+    selector: {kind: no_arguments}
+    # The default report's data sources depend on the host and installed reporters.
+    operation_semantics_unresolved: true
+    effects: *host_inspection
+    stream_contract: *report_stream
+
+extensions:
+  caushell.profile/source_research:
+    - system_profiler(8)
+    - https://support.apple.com/guide/system-information/welcome/mac
+  caushell.profile/known_limitations:
+    - The hardware report is a host inspection. Its output may contain device identifiers and has no known data shape or input provenance.
+    - No arguments select the standard report. Its complete effects and data sources remain unresolved.
+    - Other data types, report options and extra operands remain unresolved.

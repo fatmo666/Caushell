@@ -1,0 +1,35 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pg_restore, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+selection_failure_effects:
+  - {kind: database_operation, database_operation: opaque, target: {kind: none}}
+forms:
+  # Older releases can emit SQL without output flags. Newer releases may exit
+  # before reading the archive. Neither case connects to a database.
+  - id: archive_to_stdout
+    selector: {kind: all, items: [{kind: no_dash_dash}, {kind: exact_positional_count, count: 1}]}
+    parameters:
+      - {name: archive, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one, value_constraints: [{kind: exclude_literal, value: '-'}]}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: archive}}
+      # A directory-format archive can open additional member files.
+      - {kind: read_path, target: {kind: configured_path, sources: [], missing: unknown}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: stdin_archive_to_stdout
+    selector: {kind: all, items: [{kind: no_dash_dash}, {kind: exact_positional_count, count: 0}]}
+    effects: [{kind: consume_stdin, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers: []
+extensions:
+  caushell.profile/source_research:
+    - https://www.postgresql.org/docs/18/app-pgrestore.html
+    - https://github.com/postgres/postgres/blob/REL_11_STABLE/src/bin/pg_dump/pg_restore.c
+    - https://github.com/postgres/postgres/blob/REL_11_STABLE/src/bin/pg_dump/pg_backup_archiver.c
+    - https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/pg_dump/pg_restore.c
+  caushell.profile/known_limitations:
+    - Only option-free invocations are modeled. Connection, output-file and other controls remain unresolved.
+    - The profile does not guarantee successful parsing or script output.

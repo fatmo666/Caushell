@@ -1,0 +1,47 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: /usr/libexec/PlistBuddy, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: print_plist_entry
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 1}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -c}}
+        - {kind: not, item: {kind: has_flag_at_least, flag: -c, count: 2}}
+        - kind: has_modifier_parameter_matching
+          modifier: command
+          parameter: operation
+          matcher: {kind: regex_pattern, pattern: '^(?i-u:print)(?:[ \t]+:[A-Za-z0-9_.-]+(?::[A-Za-z0-9_.-]+)*)?$'}
+    parameters:
+      - name: plist
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: positional_at, index: 0}
+        cardinality: required_one
+        value_constraints: [{kind: exclude_literal, value: '-'}, {kind: exclude_literal, value: ''}]
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: plist}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stdout_dependency: inputs, stderr_mode: opaque}
+
+modifiers:
+  - id: command
+    matcher: {kind: any_flag, flags: [-c]}
+    parameters:
+      - name: operation
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+extensions:
+  caushell.profile/source_research:
+    - PlistBuddy(8)
+  caushell.profile/known_limitations:
+    - Only the exact macOS system executable and a single literal Print command are profiled.
+    - Interactive operation, mutation, multiple command switches, other options and complex entry syntax remain unresolved.

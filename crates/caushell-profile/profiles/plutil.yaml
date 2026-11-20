@@ -1,0 +1,43 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: plutil, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: print_property_lists
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: '-p'}}
+        - {kind: not, item: {kind: has_flag_at_least, flag: '-p', count: 2}}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - name: stdin_markers
+        semantic: {kind: plain_value}
+        binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
+        cardinality: optional_many
+      - name: input_files
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+        value_constraints: [{kind: require_match, pattern: '^[^-][\s\S]*$'}]
+    remaining_selector: {kind: no_positional_args}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_files}}
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_markers}}
+    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+modifiers:
+  - {id: print, matcher: {kind: any_flag, flags: ['-p']}}
+
+extensions:
+  caushell.profile/source_research:
+    - plutil(1)
+  caushell.profile/known_limitations:
+    - Scope is the single explicit print mode with named plist inputs or the documented stdin sentinel. Other flags are not modeled.
+    - No output bytes or argv shape are certified. Unproved operand spelling cannot exclude another command option.

@@ -150,7 +150,10 @@ pub enum ImplicitInputSource {
     StdinData,
     InteractiveSession,
     DispatchOutput,
+    CommandSubstitution,
     InheritedEnvironment,
+    /// A tool-owned configuration source whose executable value is still unknown.
+    ToolConfiguration,
     /// A statically bounded member of a shell for-loop's evaluated word list.
     ShellIteration,
 }
@@ -162,6 +165,12 @@ pub enum RuntimeArgumentDomain {
     /// Prefix + a nonempty ASCII-alphanumeric run + suffix. No particular
     /// generated filename or filesystem object is asserted.
     GeneratedFileName {
+        prefix: String,
+        suffix: String,
+    },
+    /// One argv field enclosing arithmetic stdout, which may be empty.
+    /// The capture can contain decimal digits, signs and ASCII whitespace.
+    ArithmeticTemplate {
         prefix: String,
         suffix: String,
     },
@@ -181,6 +190,10 @@ pub enum RuntimeArgumentDomain {
         /// This never narrows the directory anchors or certifies a path.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         basename_suffix: Option<String>,
+        /// The producer guarantees that no emitted argument contains "//".
+        /// This is a spelling fact, independent of containment.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        no_adjacent_slashes: bool,
     },
     /// One path-valued input surrounded by already-decoded argv bytes.
     /// Roots retain their producer spelling; affixes are not shell source.
@@ -192,7 +205,14 @@ pub enum RuntimeArgumentDomain {
     },
 }
 
+/// Complete alphabet of the arithmetic stdout contract.
+pub const ARITHMETIC_STDOUT_CHARS: &str = "0123456789+- \t\n\r\x0b\x0c";
+
 impl RuntimeArgumentDomain {
+    pub fn is_spelling_template(&self) -> bool {
+        matches!(self, Self::TextTemplate { .. } | Self::ArithmeticTemplate { .. })
+    }
+
     pub fn unquoted_generated_field(&self) -> bool {
         matches!(self, Self::GeneratedFileName { prefix, suffix }
             if !prefix.chars().chain(suffix.chars()).any(|c| c.is_whitespace() || matches!(c, '*' | '?' | '[' | '\0')))
@@ -224,6 +244,18 @@ impl RuntimeArgumentDomain {
                     return Self::Unbounded;
                 }
                 return Self::GeneratedFileName {
+                    prefix: format!("{prefix}{inner_prefix}"),
+                    suffix: format!("{inner_suffix}{suffix}"),
+                };
+            }
+            Self::ArithmeticTemplate {
+                prefix: inner_prefix,
+                suffix: inner_suffix,
+            } => {
+                if prefix.len() + suffix.len() + inner_prefix.len() + inner_suffix.len() > 4096 {
+                    return Self::Unbounded;
+                }
+                return Self::ArithmeticTemplate {
                     prefix: format!("{prefix}{inner_prefix}"),
                     suffix: format!("{inner_suffix}{suffix}"),
                 };

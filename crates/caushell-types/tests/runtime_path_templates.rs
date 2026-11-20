@@ -5,6 +5,7 @@ fn paths() -> RuntimeArgumentDomain {
         roots: vec![".".into(), "src".into()],
         may_escape: true,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     }
 }
 
@@ -75,7 +76,30 @@ fn new_and_existing_domains_round_trip_through_snapshot_json() {
     let old_json = r#"{"kind":"path_set","roots":["."],"may_escape":false}"#;
     assert!(matches!(
         serde_json::from_str::<RuntimeArgumentDomain>(old_json).unwrap(),
-        RuntimeArgumentDomain::PathSet { .. }
+        RuntimeArgumentDomain::PathSet {
+            no_adjacent_slashes: false,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn path_spelling_proof_survives_only_unmodified_substitution() {
+    let domain = RuntimeArgumentDomain::PathSet {
+        roots: vec![".".into()],
+        may_escape: false,
+        basename_suffix: None,
+        no_adjacent_slashes: true,
+    };
+    let json = serde_json::to_string(&domain).unwrap();
+    assert_eq!(
+        serde_json::from_str::<RuntimeArgumentDomain>(&json).unwrap(),
+        domain
+    );
+    assert_eq!(domain.substitute_into("{}", "{}"), domain);
+    assert!(matches!(
+        domain.substitute_into("target//{}", "{}"),
+        RuntimeArgumentDomain::PathTemplate { .. }
     ));
 }
 

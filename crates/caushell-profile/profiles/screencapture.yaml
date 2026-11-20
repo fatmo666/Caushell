@@ -1,0 +1,45 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: screencapture, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: capture_to_file
+    selector:
+      kind: any
+      items:
+        - kind: all
+          items:
+            - {kind: exact_argument_count, count: 1}
+            - {kind: has_argument_at_matching, index: 0, matcher: &file {kind: regex_pattern, pattern: '^[^-]'}}
+        - kind: all
+          items:
+            - {kind: exact_argument_count, count: 2}
+            - {kind: has_modifier, modifier: silent}
+            - {kind: has_argument_at_matching, index: 1, matcher: *file}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - name: capture_file
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    # The file operand is known. The live screen contents and permission to
+    # collect them cannot be inferred from argv or filesystem ownership.
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: write_path, target: {kind: slot, name: capture_file}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+
+modifiers:
+  - {id: silent, matcher: {kind: any_flag, flags: [-x]}}
+
+extensions:
+  caushell.profile/source_research:
+    - screencapture(1)
+  caushell.profile/known_limitations:
+    - Covers one explicit file operand and the optional silent flag.
+    - Clipboard, interactive capture, video, UI or app destinations, and other forms remain unresolved.

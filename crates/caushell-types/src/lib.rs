@@ -119,6 +119,7 @@ pub use policy::{
     default_mutation_path_exemptions, default_sensitive_path_patterns,
 };
 pub use provenance::{
+    ARITHMETIC_STDOUT_CHARS,
     ImplicitInputSource, InlineShellContentCarrier, PackageLocatorKind, PackageManagerKind,
     ProvenanceArtifact, ProvenanceConsumeKind, ProvenanceDomainLabel, ProvenanceEdgeSemantics,
     ProvenanceEndpointKind, ProvenanceEndpointUsage, ProvenanceMaterializedValueState,

@@ -31,6 +31,12 @@ pub fn decode_static_shell_argument(text: &str, quoted: bool, node_kind: &str) -
         let mut chars = text.chars().peekable();
         while let Some(character) = chars.next() {
             match character {
+                '$' if chars
+                    .peek()
+                    .is_some_and(|&next| crate::word_boundary::is_literal_dollar_follower(next)) =>
+                {
+                    decoded.push('$');
+                }
                 '$' | '`' => return None,
                 '\\' => match chars.next()? {
                     escaped @ ('$' | '`' | '"' | '\\') => decoded.push(escaped),
@@ -57,7 +63,7 @@ pub fn decode_static_shell_argument(text: &str, quoted: bool, node_kind: &str) -
             '$' if node_kind == "word"
                 && chars
                     .peek()
-                    .is_some_and(|&next| crate::word_boundary::literal_punctuation(next)) =>
+                    .is_some_and(|&next| crate::word_boundary::is_literal_dollar_follower(next)) =>
             {
                 decoded.push('$');
             }
@@ -176,36 +182,7 @@ fn decode_static_word_node(node: Node<'_>, source: &[u8]) -> Option<String> {
             decode_static_shell_argument(text, false, node.kind())
         }
         "raw_string" => extract_token_text(node, source).map(|(text, _)| text),
-        "ansi_c_string" => {
-            // The existing standalone decoder supports a wider byte language.
-            // For a new exact concatenation proof, admit only complete ASCII
-            // escapes with unambiguous Rust-string/native-argv correspondence.
-            let text = node.utf8_text(source).ok()?;
-            let inner = text.strip_prefix("$'")?.strip_suffix('\'')?;
-            let mut chars = inner.chars();
-            while let Some(ch) = chars.next() {
-                if ch == '\\'
-                    && !matches!(
-                        chars.next()?,
-                        'a' | 'b'
-                            | 'e'
-                            | 'E'
-                            | 'f'
-                            | 'n'
-                            | 'r'
-                            | 't'
-                            | 'v'
-                            | '\\'
-                            | '\''
-                            | '"'
-                            | '?'
-                    )
-                {
-                    return None;
-                }
-            }
-            Some(decode_ansi_c_string(text.to_string()))
-        }
+        "ansi_c_string" => decode_exact_ansi_c_fragment(node.utf8_text(source).ok()?),
         "string" => {
             let text = extract_interpolated_string(node, source);
             decode_static_shell_argument(&text, true, "string")
@@ -456,7 +433,8 @@ pub fn scalar_word_parts(
                 }
             }
             "string" => {
-                let mut cursor = node.start_byte() + 1;
+                let mut literal_start = node.start_byte() + 1;
+                let mut cursor = literal_start;
                 let end = node.end_byte().checked_sub(1)?;
                 let start_parts = out.len();
                 for i in 0..node.named_child_count() {
@@ -465,28 +443,32 @@ pub fn scalar_word_parts(
                     if child.start_byte() < cursor || child.end_byte() > end {
                         return None;
                     }
-                    let gap = std::str::from_utf8(source.get(cursor..child.start_byte())?).ok()?;
-                    if !gap.is_empty() {
-                        out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
-                            gap, true, "string",
-                        )?));
-                    }
+                    cursor = child.end_byte();
                     let text = child.utf8_text(source).ok()?;
-                    out.push(match child.kind() {
+                    let part = match child.kind() {
+                        "string_content" | "escape_sequence" => continue,
                         "command_substitution" => {
                             ScalarArgumentPart::CommandSubstitution(text.into())
                         }
                         "simple_expansion" | "expansion" if parameter(text) => {
                             ScalarArgumentPart::Parameter(text.into())
                         }
-                        "string_content" | "escape_sequence" => ScalarArgumentPart::Literal(
-                            decode_static_shell_argument(text, true, "string")?,
-                        ),
                         _ => return None,
-                    });
-                    cursor = child.end_byte();
+                    };
+                    // Literal bytes may span anonymous and named nodes.
+                    // Decode the whole run so a dollar retains its following
+                    // punctuation, and stop at each real expansion.
+                    let literal =
+                        std::str::from_utf8(source.get(literal_start..child.start_byte())?).ok()?;
+                    if !literal.is_empty() {
+                        out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
+                            literal, true, "string",
+                        )?));
+                    }
+                    out.push(part);
+                    literal_start = cursor;
                 }
-                let tail = std::str::from_utf8(source.get(cursor..end)?).ok()?;
+                let tail = std::str::from_utf8(source.get(literal_start..end)?).ok()?;
                 if !tail.is_empty() || out.len() == start_parts {
                     out.push(ScalarArgumentPart::Literal(decode_static_shell_argument(
                         tail, true, "string",
@@ -500,11 +482,11 @@ pub fn scalar_word_parts(
                     node.utf8_text(source).ok()?.into(),
                 ));
             }
-            "command_substitution" if allow_unquoted_expansions => out.push(
-                ScalarArgumentPart::UnquotedCommandSubstitution(
+            "command_substitution" if allow_unquoted_expansions => {
+                out.push(ScalarArgumentPart::UnquotedCommandSubstitution(
                     node.utf8_text(source).ok()?.into(),
-                ),
-            ),
+                ))
+            }
             _ => out.push(ScalarArgumentPart::Literal(decode_static_word_node(
                 node, source,
             )?)),
@@ -518,7 +500,10 @@ pub fn scalar_word_parts(
         format!("\"{text}\"")
     } else if matches!(node_kind, "concatenation" | "word")
         || allow_unquoted_expansions
-            && matches!(node_kind, "simple_expansion" | "expansion" | "command_substitution")
+            && matches!(
+                node_kind,
+                "simple_expansion" | "expansion" | "command_substitution"
+            )
     {
         text.to_owned()
     } else {
@@ -557,6 +542,24 @@ pub fn parse_command(
     );
 
     if artifact.status == ParseStatus::Partial {
+        if shell_kind == ShellKind::Bash
+            && let Some(repair) = compound_condition_separator_projection(root, source)
+        {
+            let repaired = parse_with_descriptor_ownership(&mut parser, &repair, &[])?;
+            let candidate = artifact_from_tree(
+                raw_command,
+                shell_kind,
+                repaired.tree.root_node(),
+                source,
+                &repaired.descriptors,
+                &repaired.here_strings,
+                &repaired.backticks,
+                &repaired.heredocs,
+            );
+            if candidate.status == ParseStatus::Complete {
+                return Ok(candidate);
+            }
+        }
         if let Some(repair) = read_write_redirection_repair(raw_command, &artifact.diagnostics) {
             let repaired_tree = parse_with_descriptor_ownership(&mut parser, repair.as_str(), &[])?;
             let repaired_artifact = artifact_from_tree(
@@ -650,7 +653,9 @@ fn planned_shell_variables(
         if include_writes
             && shell == ShellKind::Bash
             && node.kind() == "command_substitution"
-            && node.parent().is_some_and(|parent| parent.kind() != "string")
+            && node
+                .parent()
+                .is_some_and(|parent| parent.kind() != "string")
         {
             // Field splitting consumes the owning shell's IFS even when no
             // parameter is explicitly referenced in the substitution body.
@@ -710,6 +715,11 @@ fn malformed_here_string_prefix(node: Node<'_>, bytes: &[u8]) -> Option<SourceSp
             node.end_byte(),
         )
     })
+}
+
+fn is_signed_decimal_word(bytes: &[u8]) -> bool {
+    matches!(bytes, [b'-' | b'+', digits @ ..] if !digits.is_empty()
+        && digits.iter().all(u8::is_ascii_digit))
 }
 
 /// The grammar sometimes puts an IO number in argv (notably `0<&2`) or fails
@@ -779,10 +789,7 @@ fn parse_with_descriptor_ownership(
         // still reads the original bytes and source coordinates.
         if node.kind() == "file_descriptor" {
             let text = &bytes[node.start_byte()..node.end_byte()];
-            if matches!(text.first(), Some(b'-' | b'+'))
-                && text.len() > 1
-                && text[1..].iter().all(u8::is_ascii_digit)
-            {
+            if is_signed_decimal_word(text) {
                 repaired_source.get_or_insert_with(|| bytes.to_vec())[node.start_byte()] = b'x';
                 return;
             }
@@ -941,12 +948,12 @@ fn artifact_from_tree(
     backticks: &[CommandSubstitutionFact],
     heredocs: &[heredoc_pipeline::Projection],
 ) -> ParsedCommandArtifact {
-    let (diagnostics, verified_arithmetic_word_gap) =
-        collect_diagnostics_with_word_coverage(root, source, shell_kind == ShellKind::Bash);
+    let (diagnostics, verified_grammar_gap) =
+        collect_diagnostics_with_bash_coverage(root, source, shell_kind == ShellKind::Bash);
     // A raw grammar error remains incomplete unless independently accounted
     // for below. Every other ERROR, missing delimiter and boundary still has a
-    // diagnostic, even when a neighbouring arithmetic word was proved.
-    let status = if !diagnostics.is_empty() || (root.has_error() && !verified_arithmetic_word_gap) {
+    // diagnostic, even when a neighbouring grammar gap was proved.
+    let status = if !diagnostics.is_empty() || (root.has_error() && !verified_grammar_gap) {
         ParseStatus::Partial
     } else {
         ParseStatus::Complete
@@ -1590,17 +1597,18 @@ fn source_position_for_offset(source: &str, offset: usize) -> (usize, usize) {
 
 fn collect_diagnostics(root: Node<'_>, source: &[u8]) -> Vec<ParseDiagnostic> {
     // Structural projection checks still require the raw grammar diagnostics.
-    collect_diagnostics_with_word_coverage(root, source, false).0
+    collect_diagnostics_with_bash_coverage(root, source, false).0
 }
 
-fn collect_diagnostics_with_word_coverage(
+fn collect_diagnostics_with_bash_coverage(
     root: Node<'_>,
     source: &[u8],
-    allow_arithmetic_word_coverage: bool,
+    allow_bash_coverage: bool,
 ) -> (Vec<ParseDiagnostic>, bool) {
     let mut diagnostics = Vec::new();
+    let mut verified_grammar_gap = false;
     // Only Bash has the matching expanded-arithmetic-word semantic analysis.
-    let arithmetic_word_gaps = if allow_arithmetic_word_coverage && root.has_error() {
+    let arithmetic_word_gaps = if allow_bash_coverage && root.has_error() {
         validated_arithmetic_word_gaps(root, source)
     } else {
         std::collections::BTreeSet::new()
@@ -1616,9 +1624,14 @@ fn collect_diagnostics_with_word_coverage(
         };
 
         if let Some(kind) = kind {
-            if (node.is_error() || (node.is_missing() && node.kind() == ","))
-                && arithmetic_word_gaps.contains(&(node.start_byte(), node.end_byte()))
+            let arithmetic_gap = (node.is_error() || (node.is_missing() && node.kind() == ","))
+                && arithmetic_word_gaps.contains(&(node.start_byte(), node.end_byte()));
+            if arithmetic_gap
+                || (allow_bash_coverage
+                    && (omitted_subshell_terminator(node, source)
+                        || omitted_loop_compound_terminator(node, source)))
             {
+                verified_grammar_gap = true;
                 return;
             }
             diagnostics.push(ParseDiagnostic {
@@ -1642,7 +1655,172 @@ fn collect_diagnostics_with_word_coverage(
             span: source_span_for_offsets(original, index, index + 1),
         });
     }
-    (diagnostics, !arithmetic_word_gaps.is_empty())
+    (diagnostics, verified_grammar_gap)
+}
+
+/// Bash permits a complete subshell immediately before the brace that ends
+/// its enclosing command group. The grammar inserts a missing semicolon here.
+/// Keep the original tree: in particular, a trailing redirection or pipeline
+/// is a different statement, and a missing parenthesis is still an error.
+fn omitted_subshell_terminator(node: Node<'_>, source: &[u8]) -> bool {
+    if !node.is_missing() || node.kind() != ";" {
+        return false;
+    }
+    let (Some(group), Some(subshell), Some(close)) =
+        (node.parent(), node.prev_sibling(), node.next_sibling())
+    else {
+        return false;
+    };
+    group.kind() == "compound_statement"
+        && group
+            .child(0)
+            .is_some_and(|open| source.get(open.byte_range()) == Some(b"{"))
+        && subshell.kind() == "subshell"
+        && !subshell.has_error()
+        && source.get(subshell.start_byte()) == Some(&b'(')
+        && source.get(subshell.end_byte().saturating_sub(1)) == Some(&b')')
+        && close.kind() == "}"
+        && !close.is_missing()
+        && close.next_sibling().is_none()
+        && source.get(close.byte_range()) == Some(b"}")
+        && source
+            .get(subshell.end_byte()..close.start_byte())
+            .is_some_and(|gap| gap.iter().all(|byte| matches!(byte, b' ' | b'\t')))
+}
+
+/// Bash accepts a complete, self-delimiting compound at the end of a loop
+/// body. The grammar can emit a missing semicolon or wrap just that command
+/// in an ERROR node. Both shapes leave the complete command available for
+/// normal effect extraction.
+fn omitted_loop_compound_terminator(node: Node<'_>, source: &[u8]) -> bool {
+    let (Some(group), Some(done)) = (node.parent(), node.next_sibling()) else {
+        return false;
+    };
+    if group.kind() != "do_group"
+        || group
+            .child(0)
+            .and_then(|open| source.get(open.byte_range()))
+            != Some(b"do")
+        || done.kind() != "done"
+        || done.is_missing()
+        || done.next_sibling().is_some()
+        || source.get(done.byte_range()) != Some(b"done")
+    {
+        return false;
+    }
+
+    let statement = if node.is_missing() && node.kind() == ";" {
+        node.prev_sibling()
+    } else if node.is_error() && node.child_count() == 1 {
+        node.child(0)
+            .filter(|child| child.byte_range() == node.byte_range())
+    } else {
+        None
+    };
+    let Some(statement) = statement else {
+        return false;
+    };
+    is_closed_bash_compound(statement, source) && has_horizontal_gap(source, statement, done)
+}
+
+fn is_closed_bash_compound(statement: Node<'_>, source: &[u8]) -> bool {
+    if statement.has_error() {
+        return false;
+    }
+    let Some(open) = statement
+        .child(0)
+        .and_then(|open| source.get(open.byte_range()))
+    else {
+        return false;
+    };
+    let (end_owner, close): (Node<'_>, &[u8]) = match (statement.kind(), open) {
+        ("if_statement", b"if") => (statement, b"fi"),
+        ("case_statement", b"case") => (statement, b"esac"),
+        ("subshell", b"(") => (statement, b")"),
+        ("compound_statement", b"{") => (statement, b"}"),
+        ("while_statement", b"while" | b"until") => {
+            let Some(body) = statement.child_by_field_name("body") else {
+                return false;
+            };
+            (body, b"done")
+        }
+        _ => return false,
+    };
+    end_owner
+        .child(end_owner.child_count().saturating_sub(1) as u32)
+        .is_some_and(|end| !end.is_missing() && source.get(end.byte_range()) == Some(close))
+}
+
+fn has_horizontal_gap(source: &[u8], left: Node<'_>, right: Node<'_>) -> bool {
+    source
+        .get(left.end_byte()..right.start_byte())
+        .is_some_and(|gap| !gap.is_empty() && gap.iter().all(|b| matches!(b, b' ' | b'\t')))
+}
+
+/// A compound condition ends at its own closing token. Add the delimiter
+/// required by the pinned grammar only in a parsing view, then require the
+/// entire reparsed artifact to be complete before using its topology.
+fn compound_condition_separator_projection(root: Node<'_>, source: &[u8]) -> Option<String> {
+    if !root.has_error() || source.len() > 65_536 {
+        return None;
+    }
+    let mut separators = Vec::new();
+    walk(root, &mut |node| {
+        if (node.is_error() || node.is_missing())
+            && let Some((statement, keyword)) = compound_condition_boundary(node, source)
+            && is_closed_bash_compound(statement, source)
+            && has_horizontal_gap(source, statement, keyword)
+        {
+            separators.push(statement.end_byte());
+        }
+    });
+    if separators.is_empty() || separators.len() > 128 {
+        return None;
+    }
+    let mut projected = source.to_vec();
+    for index in separators {
+        projected[index] = b';';
+    }
+    String::from_utf8(projected).ok()
+}
+
+fn compound_condition_boundary<'tree>(
+    node: Node<'tree>,
+    source: &[u8],
+) -> Option<(Node<'tree>, Node<'tree>)> {
+    let parent = node.parent()?;
+    if parent.is_error() && node.is_error() && node.child_count() == 2 {
+        let opener = node.prev_sibling()?;
+        let keyword = node.child(1)?;
+        if matches!(
+            (opener.kind(), keyword.kind()),
+            ("if" | "elif", "then") | ("while" | "until", "do")
+        ) && source.get(opener.byte_range()) == Some(opener.kind().as_bytes())
+            && source.get(keyword.byte_range()) == Some(keyword.kind().as_bytes())
+        {
+            return Some((node.child(0)?, keyword));
+        }
+        return None;
+    }
+
+    let next = node.next_sibling()?;
+    let keyword = match (parent.kind(), next.kind()) {
+        ("if_statement" | "elif_clause", "then") => next,
+        ("while_statement", "do_group") => next.child(0).filter(|child| child.kind() == "do")?,
+        _ => return None,
+    };
+    if source.get(keyword.byte_range()) != Some(keyword.kind().as_bytes()) {
+        return None;
+    }
+    let statement = if node.is_missing() && node.kind() == ";" {
+        node.prev_sibling()?
+    } else if node.is_error() && node.child_count() == 1 {
+        node.child(0)
+            .filter(|child| child.byte_range() == node.byte_range())?
+    } else {
+        return None;
+    };
+    Some((statement, keyword))
 }
 
 /// The arithmetic grammar cannot concatenate expansion operands, although
@@ -2406,6 +2584,71 @@ fn extract_shell_evaluations(
     });
     sites.sort_by_key(|s| s.input.span.start_byte);
     sites
+}
+
+/// Evaluate the bounded, decimal integer subset common to supported Bash
+/// implementations. Return no value for state-dependent or unsupported syntax.
+pub fn constant_arithmetic_word(text: &str) -> Option<i32> {
+    if text.len() > 1024 || !text.starts_with("$((") || !text.ends_with("))") {
+        return None;
+    }
+    fn value(node: Node<'_>, source: &[u8], depth: u8) -> Option<i32> {
+        let depth = depth.checked_sub(1)?;
+        let only_child = || {
+            (node.named_child_count() == 1)
+                .then(|| node.named_child(0))
+                .flatten()
+        };
+        match node.kind() {
+            "arithmetic_expansion" | "parenthesized_expression" => value(only_child()?, source, depth),
+            "number" => {
+                let literal = node.utf8_text(source).ok()?;
+                if (literal.len() > 1 && literal.starts_with('0'))
+                    || !literal.bytes().all(|byte| byte.is_ascii_digit())
+                {
+                    return None;
+                }
+                literal.parse().ok()
+            }
+            "unary_expression" => {
+                let operand = value(only_child()?, source, depth)?;
+                match node.child_by_field_name("operator")?.kind() {
+                    "+" => Some(operand),
+                    "-" => operand.checked_neg(),
+                    _ => None,
+                }
+            }
+            "binary_expression" => {
+                let left = value(node.child_by_field_name("left")?, source, depth)?;
+                let right = value(node.child_by_field_name("right")?, source, depth)?;
+                match node.child_by_field_name("operator")?.kind() {
+                    "+" => left.checked_add(right),
+                    "-" => left.checked_sub(right),
+                    "*" => left.checked_mul(right),
+                    "/" => left.checked_div(right),
+                    "%" => left.checked_rem(right),
+                    _ => None,
+                }
+            }
+            _ => None,
+        }
+    }
+    let body = &text[3..text.len() - 2];
+    if !body.bytes().all(|byte| {
+        byte.is_ascii_digit()
+            || matches!(
+                byte,
+                b' ' | b'\t' | b'\n' | b'(' | b')' | b'+' | b'-' | b'*' | b'/' | b'%'
+            )
+    }) {
+        return None;
+    }
+    with_single_argument(text, |node, source| {
+        if node.kind() != "arithmetic_expansion" {
+            return None;
+        }
+        value(node, source, 32)
+    })
 }
 
 /// Parse expression structure without evaluating its variables or commands.
@@ -4408,6 +4651,59 @@ fn strip_wrapping_quotes(text: String) -> String {
     text
 }
 
+fn simple_ansi_c_escape(escape: char) -> Option<char> {
+    Some(match escape {
+        'a' => '\u{0007}',
+        'b' => '\u{0008}',
+        'e' | 'E' => '\u{001b}',
+        'f' => '\u{000c}',
+        'n' => '\n',
+        'r' => '\r',
+        't' => '\t',
+        'v' => '\u{000b}',
+        '\\' | '\'' | '"' | '?' => escape,
+        _ => return None,
+    })
+}
+
+/// Decode the bytes that admit an exact native argv string. A NUL or an
+/// uninterpreted byte above ASCII cannot be certified as Rust string data.
+fn decode_exact_ansi_c_fragment(text: &str) -> Option<String> {
+    let inner = text.strip_prefix("$'")?.strip_suffix('\'')?;
+    let mut chars = inner.chars().peekable();
+    let mut decoded = String::with_capacity(inner.len());
+    while let Some(ch) = chars.next() {
+        if ch != '\\' {
+            if ch == '\0' {
+                return None;
+            }
+            decoded.push(ch);
+            continue;
+        }
+        let escape = chars.next()?;
+        if let Some(value) = simple_ansi_c_escape(escape) {
+            decoded.push(value);
+            continue;
+        }
+        let byte = match escape {
+            '0'..='7' => consume_octal_escape(escape, &mut chars),
+            'x' => consume_hex_escape(&mut chars, 2)?,
+            punctuation if punctuation.is_ascii_punctuation() => {
+                // Bash retains the backslash for unrecognized punctuation.
+                decoded.push('\\');
+                decoded.push(punctuation);
+                continue;
+            }
+            _ => return None,
+        };
+        if byte == 0 || !byte.is_ascii() {
+            return None;
+        }
+        decoded.push(char::from(byte));
+    }
+    Some(decoded)
+}
+
 fn decode_ansi_c_string(text: String) -> String {
     let inner = text
         .strip_prefix("$'")
@@ -4428,19 +4724,11 @@ fn decode_ansi_c_string(text: String) -> String {
             break;
         };
 
+        if let Some(decoded_escape) = simple_ansi_c_escape(escape) {
+            decoded.push(decoded_escape);
+            continue;
+        }
         match escape {
-            'a' => decoded.push('\u{0007}'),
-            'b' => decoded.push('\u{0008}'),
-            'e' | 'E' => decoded.push('\u{001b}'),
-            'f' => decoded.push('\u{000c}'),
-            'n' => decoded.push('\n'),
-            'r' => decoded.push('\r'),
-            't' => decoded.push('\t'),
-            'v' => decoded.push('\u{000b}'),
-            '\\' => decoded.push('\\'),
-            '\'' => decoded.push('\''),
-            '"' => decoded.push('"'),
-            '?' => decoded.push('?'),
             'x' => {
                 if let Some(value) = consume_hex_escape(&mut chars, 2) {
                     push_u8_char(&mut decoded, value);

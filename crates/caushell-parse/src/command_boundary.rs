@@ -7,6 +7,7 @@ use tree_sitter::{InputEdit, Node, Point, Tree};
 
 pub(crate) fn separators(root: Node<'_>, source: &[u8]) -> Vec<usize> {
     fn visit(node: Node<'_>, source: &[u8], result: &mut Vec<usize>) {
+        let mut boundary = None;
         if matches!(
             node.kind(),
             "command"
@@ -38,7 +39,7 @@ pub(crate) fn separators(root: Node<'_>, source: &[u8]) -> Vec<usize> {
                 let Some(gap) = source.get(start..end) else {
                     continue;
                 };
-                let mut found = Vec::new();
+                let mut first_break = None;
                 let mut index = 0;
                 while index < gap.len() {
                     match gap[index] {
@@ -52,23 +53,32 @@ pub(crate) fn separators(root: Node<'_>, source: &[u8]) -> Vec<usize> {
                                 .take_while(|&&b| b == b'\\')
                                 .count();
                             if backslashes % 2 == 0 {
-                                found.push(absolute);
+                                first_break.get_or_insert(absolute);
                             }
                             index += 1;
                         }
                         // Do not interpret arbitrary source or comment text
                         // in an AST gap with a second shell lexer.
                         _ => {
-                            found.clear();
+                            first_break = None;
                             break;
                         }
                     }
                 }
-                result.extend(found);
+                // Beyond this separator the current node no longer owns the
+                // words or their gaps. Reparse before classifying that source.
+                if let Some(first) = first_break {
+                    result.push(first);
+                    boundary = Some(first);
+                    break;
+                }
             }
         }
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
+            if boundary.is_some_and(|at| child.end_byte() > at) {
+                break;
+            }
             visit(child, source, result);
         }
     }

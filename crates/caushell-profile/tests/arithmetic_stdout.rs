@@ -3,6 +3,35 @@ use caushell_profile::*;
 use caushell_types::ShellKind;
 
 #[test]
+fn plain_process_queries_prove_only_default_pid_output() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    for (command, numeric) in [
+        ("pidof fixture", true),
+        ("pidof fixture other", true),
+        ("pidof", false),
+        ("pidof --help", false),
+        ("pidof -V fixture", false),
+        ("pidof -S marker fixture", false),
+        ("pidof --separator=marker fixture", false),
+        ("pidof -d marker fixture", false),
+        ("pidof \"$MODE\" fixture", false),
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let result = resolve_invocation_artifact_with_bindings(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::default().with_shell_kind(ShellKind::Bash),
+            &SessionBindings::new(),
+        );
+        assert_eq!(
+            matches!(&result, ResolveInvocationArtifactResult::Resolved(r) if r.proven_arithmetic_stdout()),
+            numeric,
+            "{command}: {result:#?}"
+        );
+    }
+}
+
+#[test]
 fn numeric_output_is_a_positive_contract_not_an_executable_name_rule() {
     let registry = ProfileRegistry::built_in().unwrap();
     for text in [

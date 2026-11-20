@@ -159,6 +159,7 @@ fn native_batch_domains_survive_the_unknown_name_fallback() {
         roots: vec!["./input".into()],
         may_escape: false,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     };
     arg.runtime_argument_domain = Some(domain.clone());
     let p = profile();

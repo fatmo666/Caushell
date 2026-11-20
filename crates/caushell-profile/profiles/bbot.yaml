@@ -8,7 +8,10 @@ opaque_on_unresolved: true
 forms:
   - id: custom_yara_rules
     selector: {kind: has_modifier, modifier: custom_yara_rules}
-    effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: custom_rules_file}}]
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: custom_rules_file}}
+      # Scan preparation writes state under the effective scan output directory.
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
 modifiers:
   - id: custom_yara_rules
@@ -23,8 +26,10 @@ extensions:
   caushell.profile/source_research:
     - https://gtfobins.org/gtfobins/bbot/
     - https://github.com/blacklanternsecurity/bbot/blob/stable/bbot/scanner/preset/args.py
+    - https://github.com/blacklanternsecurity/bbot/blob/stable/bbot/cli.py
+    - https://github.com/blacklanternsecurity/bbot/blob/stable/bbot/scanner/scanner.py
     - https://github.com/blacklanternsecurity/bbot/blob/stable/docs/scanning/advanced.md
   caushell.profile/known_limitations:
     - The compact -cy spelling is the single --custom-yara-rules option. Its operand is a YARA rules file; -c config overrides and -y confirmation are separate options.
-    - The YARA rules file is parsed as rules and can influence scan results. This profile records the file source and debug output flow, but does not claim to model BBOT's modules, targets, network traffic, or output files.
+    - The YARA rules file influences scan results. This form records the rules input, debug output flow, and an unresolved scan-state write target. Module selection, scan targets, network traffic, and the exact write paths remain unmodeled.
     - The source command supplies no explicit target; whether the installed BBOT version accepts or starts a scan without one remains runtime/version dependent.

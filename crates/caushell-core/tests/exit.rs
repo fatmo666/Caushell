@@ -80,6 +80,42 @@ fn ambiguous_argument_forms_use_existing_approval() {
         check(c, Decision::NeedApproval);
     }
 }
+
+#[test]
+fn exit_status_has_ordinary_builtin_effects_with_unknown_field_count() {
+    for spelling in ["$?", "${?}", "\"$?\"", "\"${?}\""] {
+        let with_following_statement =
+            format!("IFS=0; exit {spelling}; printf 'continued\\n'");
+        check(&with_following_statement, Decision::Allow);
+        let ctx = inspect(&with_following_statement);
+        assert!(!ctx.root_shell_terminates(), "{spelling}");
+        assert!(ctx.pending_mutations().iter().any(|m| matches!(m,
+            PendingMutation::AddExecutionSemantics { semantics, .. }
+            if semantics.terminates_current_shell && semantics.mutates_current_shell
+                && !semantics.controls_process)));
+    }
+}
+
+#[test]
+fn only_the_whole_status_parameter_is_numeric_exit_data() {
+    for (c, shell_kind) in [
+        ("exit $? 0", ShellKind::Bash),
+        ("exit \"${status}\"", ShellKind::Bash),
+        ("exit \"$?$suffix\"", ShellKind::Bash),
+        ("exit $?", ShellKind::Sh),
+    ] {
+        let mut req = request(1, c);
+        req.shell_kind = shell_kind;
+        req.shell_state_before.observability.variables = ShellStateKnowledge::Unknown;
+        assert_eq!(
+            ShellQueryCore::new().check(req).decision,
+            Decision::NeedApproval,
+            "{c}"
+        );
+    }
+    check("command /usr/bin/exit $?", Decision::NeedApproval);
+}
+
 #[test]
 fn state_stops_but_risk_audit_does_not_prune_commands() {
     check(

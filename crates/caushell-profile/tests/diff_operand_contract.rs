@@ -68,3 +68,19 @@ fn missing_operands_unknown_modes_and_pagination_do_not_gain_authority() {
         assert!(!matches!(r, ResolveInvocationArtifactResult::Resolved(ref r) if !r.bound.operation_semantics_unresolved), "{text}: {r:#?}");
     }
 }
+
+#[test]
+fn brief_pagination_preserves_source_argv_and_content_reads() {
+    let result = resolved("diff -rqyl left right --exclude=ignored");
+    let source = &result.materialized_projection.invocation.args;
+    assert_eq!(argument_structure(&source[0]).exact_value(), Some("-rqyl"));
+    assert_eq!(result.bound.form_id.as_str(), "compare_paths");
+    assert_eq!(values(&result, "input_paths"), ["left", "right"]);
+    assert!(result.bound.effects.iter().any(|effect| {
+        effect.kind == EffectKind::ReadPath
+            && effect.path_access == Some(PathAccessKind::ContentOpen)
+    }));
+    assert!(result.bound.effects.iter().all(|effect| {
+        native_effect_contract_allows_effect(NativeArgvEffectEnvelope::ContentRead, effect)
+    }));
+}

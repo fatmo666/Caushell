@@ -190,6 +190,21 @@ modifiers:
           name: program_file_paths
       - {kind: execute_payload, target: {kind: slot, name: program_files}}
 
+  - {id: numeric_input_mode, matcher: {kind: any_flag, flags: [-n, --non-decimal-data]}}
+
+  # GNU -i reads AWK library source in addition to the main program.
+  # A bare operand can resolve through AWKPATH. Keep the source reference
+  # opaque and do not assign it a path in the current directory.
+  - id: include_program
+    matcher: {kind: any_flag, flags: [-i, --include]}
+    parameters:
+      - name: include_sources
+        semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+    effects:
+      - {kind: execute_payload, target: {kind: slot, name: include_sources}}
+
   - id: assign_variable
     matcher:
       kind: any_flag
@@ -226,4 +241,5 @@ subcommands: null
 extensions:
   caushell.profile/known_limitations:
     - Inline programs use the bounded AWK effect decoder. External -f program contents, unsupported extensions and command execution remain unresolved executable boundaries; AWK is never parsed as Bash.
+    - GNU -i/--include source selection and contents are opaque. No AWKPATH resolution is assumed.
     - Named input files do not prove stdin is unused by arbitrary programs containing getline or command pipes.

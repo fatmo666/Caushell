@@ -104,3 +104,42 @@ fn projection_is_not_an_evaluator_or_a_source_of_known_payload_bytes() {
         );
     }
 }
+
+#[test]
+fn quoted_literal_substring_reaches_a_nested_format_argument() {
+    let benign = r#"
+        render() {
+            local part=$1
+            local result=$(printf "%.0s$part" {1..10000})
+            echo "$result"
+        }
+        select_prefix() {
+            local word=$1
+            render "${word:0:1}"
+        }
+        select_prefix lemon
+    "#;
+    let response = ShellQueryCore::new().check(request(benign));
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    let writes = ShellQueryCore::new().check(request(
+        r#"word='%.0s%n!'; printf "${word:0:7}" {1..10000}"#,
+    ));
+    assert_ne!(writes.decision, Decision::Allow);
+    assert!(
+        writes
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|entry| entry.normalized_command_name == "printf" && entry.mutates_current_shell),
+        "{:?}",
+        writes.reasons,
+    );
+    for command in [
+        r#"word=lemon; printf "${word:$offset:1}" {1..10000}"#,
+        r#"word=éx; printf "${word:0:1}" {1..10000}"#,
+        r#"word=lemon; printf ${word:0:1} {1..10000}"#,
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_ne!(response.decision, Decision::Allow, "{command}");
+    }
+}

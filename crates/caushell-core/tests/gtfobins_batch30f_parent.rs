@@ -2,8 +2,9 @@
 use caushell_core::ShellQueryCore;
 use caushell_graph::{GraphNode, NodeKind, SessionGraph, SessionRead};
 use caushell_passes::{
-    ComputeEffectiveCwdPass, ExtractExecutionSemanticsPass, ExtractPathFactsPass,
-    ExtractPipelineFlowPass, ParseCommandPass, ProjectTopLevelCommandsPass, ResolveInvocationPass,
+    ComputeEffectiveCwdPass, ExtractEndpointProvenancePass, ExtractExecutionSemanticsPass,
+    ExtractPathFactsPass, ExtractPipelineFlowPass, ParseCommandPass, ProjectTopLevelCommandsPass,
+    ResolveInvocationPass,
 };
 use caushell_profile::ProfileRegistry;
 use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
@@ -38,6 +39,7 @@ fn graph(command: &str) -> Vec<GraphNode> {
     runner.register_session_transform_pass(ComputeEffectiveCwdPass);
     runner.register_session_transform_pass(ExtractPipelineFlowPass);
     runner.register_session_transform_pass(ExtractPathFactsPass);
+    runner.register_session_transform_pass(ExtractEndpointProvenancePass);
     runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
     let base = SessionGraph::new();
     let summary = SessionSummary::new();
@@ -287,6 +289,53 @@ fn capture_and_scan_outputs_have_real_targets_and_stdout_is_not_a_file() {
         "/tmp/project/G=/opt/shared/scan.txt",
         ResolvedPathRole::Write
     ));
+}
+
+#[test]
+fn nmap_scan_targets_are_distinct_from_options_and_report_paths() {
+    fn endpoints(command: &str) -> Vec<Option<String>> {
+        let mut endpoints: Vec<_> = graph(command)
+            .into_iter()
+            .filter_map(|node| match node.kind {
+                NodeKind::ProvenanceArtifact {
+                    artifact: ProvenanceArtifact::NetworkEndpoint {
+                        endpoint, endpoint_kind, usage,
+                    },
+                } => {
+                    assert_eq!(endpoint_kind, ProvenanceEndpointKind::HostPort);
+                    assert_eq!(usage, ProvenanceEndpointUsage::TransportTarget);
+                    Some(endpoint)
+                }
+                _ => None,
+            })
+            .collect();
+        endpoints.sort();
+        endpoints
+    }
+
+    let target = Some("host.example.test".to_string());
+    for command in [
+        "nmap -p 443 -oG=./report.txt host.example.test",
+        "nmap -oN ./report.txt host.example.test",
+        "nmap -oX - host.example.test",
+        "nmap --script=./fixture.lua host.example.test",
+    ] {
+        assert_eq!(endpoints(command), [target.clone()], "{command}");
+    }
+    assert_eq!(
+        endpoints("nmap host.example.test 192.0.2.1"),
+        [Some("192.0.2.1".to_string()), target]
+    );
+    assert_eq!(endpoints("nmap fixture"), [Some("fixture".to_string())]);
+    for command in [
+        "nmap 192.0.2.0/24",
+        "nmap 192.0.2.1-9",
+        "nmap \"$target\"",
+    ] {
+        assert_eq!(endpoints(command), [None], "{command}");
+    }
+    assert!(endpoints("nmap --version").is_empty());
+    assert!(endpoints("nmap -iL ./hosts.txt").is_empty());
 }
 
 #[test]

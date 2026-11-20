@@ -88,6 +88,37 @@ fn request(command: &str) -> CheckRequest {
     }
 }
 
+#[test]
+fn pidof_stdout_shape_reaches_the_native_operand_without_certifying_its_width() {
+    for (command, numeric) in [
+        ("top -b -p `pidof fixture`", true),
+        ("top -b -p $(pidof --help)", false),
+        ("top -b -p $(pidof -S marker fixture)", false),
+    ] {
+        decision(command, Decision::NeedApproval);
+        let ctx = context(command, ProfileRegistry::built_in().unwrap());
+        let top = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .find_map(|record| match &record.result {
+                ResolveInvocationArtifactResult::Resolved(invocation)
+                    if invocation.normalized_command_name == "top" =>
+                {
+                    Some(invocation)
+                }
+                _ => None,
+            })
+            .expect("top retains a resolved form and an unresolved option operand");
+        assert_eq!(
+            top.materialized_projection.invocation.args.iter().any(|arg| {
+                arg.substitution_shape == Some(StdoutScalarShape::ArithmeticText)
+            }),
+            numeric,
+            "{command}"
+        );
+    }
+}
+
 fn context(command: &str, registry: ProfileRegistry) -> RunnerContext {
     let mut runner = PassRunner::new();
     runner.register_request_transform_pass(ParseCommandPass);

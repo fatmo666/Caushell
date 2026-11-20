@@ -26,9 +26,11 @@ option_scope: leading_options
 forms:
   - id: command_string
     selector:
-      kind: has_flag
-      flag: "-c"
-    parameters:
+      kind: all
+      items:
+        - &command_string_flag {kind: has_flag, flag: "-c"}
+        - {kind: not, item: &startup_shopt {kind: has_modifier, modifier: startup_shopt}}
+    parameters: &command_string_parameters
       - name: payload
         semantic:
           kind: payload
@@ -39,11 +41,27 @@ forms:
           kind: next_positional
         cardinality: required_one
       - {name: script_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
-    effects:
+    effects: &command_string_effects
       - kind: execute_payload
         target:
           kind: slot
           name: payload
+
+  - id: command_string_with_startup_shopt
+    selector:
+      kind: all
+      items:
+        - *command_string_flag
+        - *startup_shopt
+        - kind: has_modifier_parameter_matching
+          modifier: startup_shopt
+          parameter: startup_shopt_name
+          matcher: {kind: literal, value: nocasematch}
+    # Matching and parameter replacement inside the child can depend on this
+    # setting. Keep the approval floor while analyzing the owned command text.
+    operation_semantics_unresolved: true
+    parameters: *command_string_parameters
+    effects: *command_string_effects
 
   - id: script_file
     selector:
@@ -213,6 +231,16 @@ forms:
 
 modifiers:
   - {id: command_string_mode, matcher: {kind: any_flag, flags: ['-c']}}
+  - id: startup_shopt
+    matcher: {kind: any_flag, flags: ["-O"]}
+    constraints: [{kind: requires_flag, flag: "-c"}]
+    parameters:
+      - name: startup_shopt_name
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        value_constraints: [{kind: require_match, pattern: '^nocasematch$'}]
+
   - id: rcfile
     matcher:
       kind: any_flag

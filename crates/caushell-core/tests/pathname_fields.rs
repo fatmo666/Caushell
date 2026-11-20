@@ -693,3 +693,62 @@ fn no_match_joins_the_same_operands_across_layouts() {
     );
     assert_ne!(outside.decision, Decision::Allow, "{:?}", outside.reasons);
 }
+
+#[test]
+fn whole_arithmetic_expansions_are_not_pathname_patterns() {
+    for command in ["echo $[6+7]", "echo $((values[1]+2))"] {
+        let response = check(request(command), Files::new(&["$6", "value"]));
+        assert!(
+            proofs(&response).is_empty(),
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
+}
+
+#[test]
+fn exit_status_expansions_do_not_glob_the_question_mark() {
+    for command in ["echo $?", "echo ${?}"] {
+        let response = check(request(command), Files::new(&["$6"]));
+        assert!(
+            proofs(&response).is_empty(),
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
+    let response = check(request(r"echo \$?"), Files::new(&["$6", "x"]));
+    let observed = proofs(&response);
+    assert_eq!(observed.len(), 1);
+    assert!(observed[0].complete);
+    assert_eq!(observed[0].fields, ["$6"]);
+}
+
+#[test]
+fn arithmetic_uncertainty_and_real_wildcard_words_remain_independent() {
+    let response = check(request("echo $((values[$index]))"), Files::new(&[]));
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(
+        response
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("arithmetic")),
+        "{:?}",
+        response.reasons
+    );
+
+    let response = check(
+        request("echo file[ab]"),
+        Files::new(&["filea", "fileb", "filex"]),
+    );
+    let observed = proofs(&response);
+    assert_eq!(observed.len(), 1);
+    assert!(observed[0].complete);
+    assert_eq!(observed[0].fields, ["filea", "fileb"]);
+
+    let response = check(request("echo file$[1+2]*"), Files::new(&["file3a"]));
+    assert!(
+        proofs(&response)
+            .iter()
+            .any(|proof| proof.source_word == "file$[1+2]*")
+    );
+}

@@ -130,7 +130,10 @@ pub enum ProcessSubstitutionOuterRelation {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub enum ProcessSubstitutionLocationKind {
+    /// An index into bound parameters, followed by an index into their values.
     Argument,
+    /// An index into the original command's shell tokens.
+    ArgumentWord,
     Redirection,
 }
 

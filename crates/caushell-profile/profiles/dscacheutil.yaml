@@ -1,0 +1,54 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: dscacheutil, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: query_group_directory
+    selector:
+      kind: all
+      items:
+        - &exact_query
+          kind: all
+          items:
+            - {kind: no_dash_dash}
+            - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -q}}
+            - {kind: not, item: {kind: has_argument_at_matching, index: 2, matcher: {kind: regex_pattern, pattern: '[\s\S]*'}}}
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: group}}
+    parameters: &category
+      - {name: category, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    remaining_selector: &no_more_arguments {kind: no_positional_args}
+    effects: &identity_inspection
+      - kind: state_operation
+        state_operation: {domain: host_identity, operation: inspect}
+        target: {kind: none}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stdout_dependency: unknown, stderr_mode: opaque}
+
+  - id: query_user_directory
+    selector:
+      kind: all
+      items:
+        - *exact_query
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: user}}
+    parameters: *category
+    remaining_selector: *no_more_arguments
+    effects: *identity_inspection
+    # The account lookup API can return password fields for legacy records.
+    # The installed directory backend and its output are unobserved.
+    operation_semantics_unresolved: true
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stdout_dependency: unknown, stderr_mode: opaque}
+
+modifiers:
+  - {id: query, matcher: {kind: any_flag, flags: [-q]}}
+
+extensions:
+  caushell.profile/source_research:
+    - macOS dscacheutil(1), getpwent(3), and the installed command's symbols and help
+  caushell.profile/known_limitations:
+    - Enumeration can populate the Directory Service cache on a miss. The backend search path and output shape are unobserved.
+    - Unfiltered user enumeration retains account inspection and requires approval when account output is unproved.
+    - Filtering, other query categories, cache administration and all extra operands remain unresolved.

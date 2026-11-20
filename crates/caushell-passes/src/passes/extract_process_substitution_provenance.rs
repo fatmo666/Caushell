@@ -395,6 +395,41 @@ fn process_substitution_descriptor_from_parent(
                 derived_command_node_ids: Vec::new(),
             })
         }
+        ProcessSubstitutionLocationKind::ArgumentWord => {
+            let parsed = &parent_record.parsed_scope;
+            let word = parsed
+                .commands
+                .get(parent_record.command_ref.command_index)?
+                .tokens
+                .get(outer_index)?;
+            let text = parsed
+                .raw_command
+                .get(word.span.start_byte..word.span.end_byte)?;
+            let substitution = caushell_parse::parse_argument_process_substitutions(
+                text,
+                parent_record.shell_kind,
+            )
+            .ok()?
+            .into_iter()
+            .nth(substitution_index)?;
+            Some(ProcessSubstitutionProvenanceRecord {
+                artifact_key: ProcessSubstitutionArtifactKey::BodyLocator {
+                    parent_node_id: parent_record.source_node_id.clone(),
+                    location_kind,
+                    outer_index,
+                    location_subindex,
+                    substitution_index,
+                },
+                expression_text: substitution.text,
+                body_text: substitution.body_text,
+                operator: substitution.operator,
+                parent_execution_node_id: parent_record.source_node_id.clone(),
+                // Shell syntax proves the channel opens. Native use of the
+                // resulting path still requires an exact, bound operand.
+                outer_relation: None,
+                derived_command_node_ids: Vec::new(),
+            })
+        }
         ProcessSubstitutionLocationKind::Redirection => {
             let parsed_scope = &parent_record.parsed_scope;
             let redirection = parsed_scope.redirections.get(outer_index)?;
@@ -514,6 +549,7 @@ fn process_substitution_channel_artifact_node_id(
             parent_node_id.0,
             match location_kind {
                 ProcessSubstitutionLocationKind::Argument => "arg",
+                ProcessSubstitutionLocationKind::ArgumentWord => "arg-token",
                 ProcessSubstitutionLocationKind::Redirection => "redir",
             },
             outer_index,
@@ -838,5 +874,58 @@ mod tests {
                     },
                 })
         );
+    }
+
+    #[test]
+    fn attached_process_substitution_keeps_its_own_channel_without_guessing_a_consumer() {
+        for (command, expression, body) in [
+            (
+                "wc -l --files0-from=<(printf '%s\\0' ./note)",
+                "<(printf '%s\\0' ./note)",
+                "printf '%s\\0' ./note",
+            ),
+            (
+                "printf '%s' prefix<(printf '%s' data)suffix",
+                "<(printf '%s' data)",
+                "printf '%s' data",
+            ),
+        ] {
+            let ctx = run_pass(command);
+            let producers: Vec<_> = ctx
+                .pending_mutations()
+                .iter()
+                .filter_map(|mutation| match mutation {
+                    PendingMutation::AddProvenanceArtifact {
+                        source_node_id,
+                        node_id,
+                        artifact:
+                            ProvenanceArtifact::ProcessSubstitutionChannel {
+                                expression: found_expression,
+                                body_text,
+                                ..
+                            },
+                        relation: EdgeKind::Produces,
+                        ..
+                    } if found_expression == expression && body_text == body => {
+                        assert!(source_node_id.0.starts_with("expanded-procsub-body:"));
+                        Some(node_id)
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            assert_eq!(producers.len(), 1, "{command}");
+            assert!(
+                !ctx.pending_mutations().iter().any(|mutation| matches!(
+                    mutation,
+                    PendingMutation::AddProvenanceArtifact {
+                        node_id,
+                        relation: EdgeKind::Consumes,
+                        ..
+                    } if node_id == producers[0]
+                )),
+                "{command}"
+            );
+        }
     }
 }

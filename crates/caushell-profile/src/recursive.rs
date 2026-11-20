@@ -208,7 +208,15 @@ pub fn parse_recursive_payload_candidate(
     // This opt-in boundary is about unsupported executable semantics, not
     // merely unknown bytes. Even a locally sourced stdin program is opaque;
     // it must not be delegated to provenance-only runtime-input handling.
-    if candidate.language.requires_opaque_execution_boundary() {
+    if candidate.language.requires_opaque_execution_boundary()
+        && !matches!(
+            candidate.input,
+            RecursivePayloadInput::ImplicitInput {
+                source: ImplicitInputSource::ToolConfiguration,
+                ..
+            }
+        )
+    {
         return RecursivePayloadParseResult::UnsupportedLanguage {
             candidate: candidate.clone(),
         };

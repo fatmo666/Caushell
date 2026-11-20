@@ -44,6 +44,20 @@ pub fn declared_options(
 }
 
 impl ScopedOptions {
+    pub(crate) fn ownership_is_leading(&self) -> bool {
+        let first_positional = self
+            .positionals
+            .as_ref()
+            .and_then(|indices| indices.first())
+            .into_iter()
+            .chain(&self.additional_positionals)
+            .copied()
+            .min()
+            .unwrap_or(self.scope.end_index);
+        self.flags.iter().all(|(index, _)| *index < first_positional)
+            && self.terminator.is_none_or(|index| index < first_positional)
+    }
+
     pub(crate) fn is_positional(&self, index: usize) -> bool {
         index >= self.scope.end_index
             || self
@@ -211,6 +225,124 @@ fn trailing_option_candidate(token: &str, words: &[FlagName], declarations: &Dec
     })
 }
 
+/// Does this original word already prove the control bytes and one argv
+/// field? Keep value-dependent operations and possible empty short operands
+/// on the ordinary conservative path.
+fn fixed_temporal_attachment(
+    token: &str,
+    structure: &crate::ArgumentStructure,
+    declarations: &Declarations,
+    modifiers: &[Modifier],
+    forms: &[Form],
+    matching: OptionMatchingPolicy,
+    exact_option_words: &[FlagName],
+) -> bool {
+    if structure.fields != crate::ArgumentFieldCount::ExactlyOne {
+        return false;
+    }
+    let flag = if token.starts_with("--") {
+        let Some((flag, _)) = token.split_once('=') else {
+            return false;
+        };
+        if !structure
+            .static_prefix
+            .strip_prefix(flag)
+            .is_some_and(|tail| tail.starts_with('='))
+        {
+            return false;
+        }
+        flag
+    } else {
+        if matching != OptionMatchingPolicy::ShortClusters || !exact_option_words.is_empty() {
+            return false;
+        }
+        let Some(flag) = token
+            .get(..2)
+            .filter(|flag| flag.starts_with('-') && flag.as_bytes()[1].is_ascii_alphabetic())
+        else {
+            return false;
+        };
+        if token.len() == 2
+            || !structure.static_prefix.starts_with(flag)
+            || structure.may_equal(flag)
+        {
+            return false;
+        }
+        flag
+    };
+    declarations.get(flag) == Some(&Some(FlagOperandMode::NextArg))
+        && temporal_option_is_value_only(flag, modifiers, forms)
+}
+
+pub(crate) fn temporal_option_is_value_only(
+    flag: &str,
+    modifiers: &[Modifier],
+    forms: &[Form],
+) -> bool {
+    use crate::{SelectorExpr, SelectorPredicate, SemanticType, StructuredValueContext};
+
+    // A time expression is data in one already-owned slot. Keep the proof
+    // limited to declarations with no effects or constraints based on that
+    // slot's runtime value. Other option data needs a separate value proof.
+    let mut owners = modifiers.iter().filter(|m| {
+        m.matcher
+            .flag_names()
+            .iter()
+            .any(|name| name.as_str() == flag)
+    });
+    let Some(owner) = owners.next() else {
+        return false;
+    };
+    if owners.next().is_some()
+        || owner.ends_option_scope
+        || !owner.constraints.is_empty()
+        || !owner.effects.is_empty()
+    {
+        return false;
+    }
+    let [parameter] = owner.parameters.as_slice() else {
+        return false;
+    };
+    if !matches!(
+        parameter.semantic,
+        SemanticType::StructuredValue(value)
+            if value.context == StructuredValueContext::DateExpression
+    ) || !matches!(
+        parameter.binding,
+        BindingSpec::FollowingMatchedFlag {
+            operand_mode: FlagOperandMode::NextArg
+        }
+    ) || !parameter.value_constraints.is_empty()
+        || parameter.value_projection.is_some()
+        || parameter.structured_projection.is_some()
+    {
+        return false;
+    }
+    fn tests_modifier_value(selector: &SelectorExpr) -> bool {
+        match selector {
+            SelectorExpr::All(items) | SelectorExpr::Any(items) => {
+                items.iter().any(tests_modifier_value)
+            }
+            SelectorExpr::Not(item) => tests_modifier_value(item),
+            SelectorExpr::Predicate(SelectorPredicate::HasModifierParameterMatching(..)) => true,
+            SelectorExpr::Predicate(_) => false,
+        }
+    }
+    !modifiers.iter().any(|m| {
+        m.effects_when.as_ref().is_some_and(|c| {
+            c.last_option_not_matching.is_some() || c.last_parameter_not_matching.is_some()
+        })
+    }) && !forms.iter().any(|form| {
+        tests_modifier_value(&form.selector)
+            || tests_modifier_value(&form.remaining_selector)
+            || form.parameters.iter().any(|p| {
+                matches!(&p.binding,
+                    BindingSpec::FollowingFlag { flag_name, .. } if flag_name.as_str() == flag
+                )
+            })
+    })
+}
+
 pub(crate) fn scan_leading_options(
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
@@ -258,8 +390,25 @@ pub(crate) fn scan_leading_options(
             // Keep known effects, but do not bless a tail that may introduce
             // another option or a terminator. A proven data prefix is distinct
             // from an unbounded runtime list.
-            result.ownership_unresolved |= structure.may_start_with("-")
+            let may_be_an_option = structure.may_start_with("-")
                 || prefixes == OptionPrefixPolicy::DashAndPlus && structure.may_start_with("+");
+            if may_be_an_option
+                && !(permuted
+                    && !trailing
+                    && positional_prefix.is_none()
+                    && operand_matcher.is_none()
+                    && fixed_temporal_attachment(
+                        &projection.args[index].text,
+                        &structure,
+                        &declarations,
+                        modifiers,
+                        forms,
+                        matching,
+                        exact_option_words,
+                    ))
+            {
+                result.ownership_unresolved = true;
+            }
             // A non-option batch can end the leading option phase without
             // knowing its length. Its disappearance matters only if later
             // words could then become options/terminators instead of data.

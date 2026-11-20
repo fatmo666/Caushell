@@ -3,7 +3,7 @@ kind: command_profile
 
 identity:
   canonical_name: tar
-  aliases: []
+  aliases: [gnutar, gtar]
 
 trust:
   tier: tier_a
@@ -117,7 +117,19 @@ forms:
     remaining_selector: *running
     selector:
       kind: all
-      items: [{kind: has_modifier, modifier: create}, {kind: has_modifier, modifier: archive_option}, {kind: any, items: [{kind: has_positional_at, index: 0}, {kind: has_modifier, modifier: files_from}]}]
+      items:
+        - {kind: has_modifier, modifier: create}
+        - {kind: has_modifier, modifier: archive_option}
+        - kind: any
+          items:
+            - {kind: has_positional_at, index: 0}
+            - {kind: has_modifier, modifier: files_from}
+            # An explicit stdout target is a create invocation even with no members.
+            # It does not imply reading archive member names from stdin.
+            - kind: all
+              items:
+                - {kind: no_positional_args}
+                - {kind: has_modifier_parameter_matching, modifier: archive_option, parameter: archive_operand, matcher: {kind: literal, value: '-'}}
     parameters:
       - name: input_paths
         semantic:
@@ -152,7 +164,14 @@ forms:
       kind: all
       items:
         - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[vphOPzjJS]*c[vphOPzjJS]*f[vphOPzjJS]*$'}}
-        - {kind: any, items: [{kind: has_positional_at, index: 2}, {kind: has_modifier, modifier: files_from}]}
+        - kind: any
+          items:
+            - {kind: has_positional_at, index: 2}
+            - {kind: has_modifier, modifier: files_from}
+            - kind: all
+              items:
+                - {kind: exact_positional_count, count: 2}
+                - {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: '-'}}
     parameters:
       - &old_options
         name: old_style_options

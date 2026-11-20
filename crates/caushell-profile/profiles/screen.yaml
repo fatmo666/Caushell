@@ -28,7 +28,25 @@ forms:
               items:
                 - {kind: not, item: {kind: has_modifier, modifier: window}}
                 - {kind: has_modifier_parameter_matching, modifier: window, parameter: window, matcher: *fixed_token}
-        - &no_unsafe {kind: not, item: &unsafe {kind: any, items: [{kind: has_modifier, modifier: create_mode}, {kind: has_modifier, modifier: create_named}, {kind: has_modifier, modifier: attach_mode}, {kind: has_modifier, modifier: detach_mode}, {kind: has_modifier, modifier: control_mode}, {kind: has_modifier, modifier: configuration}, {kind: has_modifier, modifier: logging}, {kind: has_modifier, modifier: logfile}, {kind: has_modifier, modifier: launch_values}, {kind: has_modifier, modifier: launch_switches}]}}
+        - &no_unsafe
+          kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_modifier, modifier: create_mode}
+              - {kind: has_modifier, modifier: create_named}
+              - &attach_modes
+                kind: any
+                items:
+                  - {kind: has_modifier, modifier: attach_mode}
+                  - {kind: has_modifier, modifier: multiattach}
+              - {kind: has_modifier, modifier: detach_mode}
+              - {kind: has_modifier, modifier: control_mode}
+              - {kind: has_modifier, modifier: configuration}
+              - {kind: has_modifier, modifier: logging}
+              - {kind: has_modifier, modifier: logfile}
+              - {kind: has_modifier, modifier: launch_values}
+              - {kind: has_modifier, modifier: launch_switches}
         - {kind: not, item: {kind: any, items: [{kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: query}]}}
     parameters: &arguments [{name: arguments, semantic: &plain {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
     effects: [&inspect {kind: terminal_session_operation, terminal_session_operation: inspect, target: {kind: none}}]
@@ -65,10 +83,28 @@ forms:
       items:
         - {kind: not, item: &inspect_form {kind: any, items: [*version, *list, *query]}}
         - {kind: not, item: &query_modes {kind: any, items: [{kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: query}]}}
-        - {kind: any, items: [{kind: has_modifier, modifier: control_mode}, {kind: all, items: [{kind: has_modifier, modifier: detach_mode}, {kind: not, item: {kind: has_modifier, modifier: attach_mode}}, {kind: not, item: &create_modes {kind: any, items: [{kind: has_modifier, modifier: create_mode}, {kind: has_modifier, modifier: create_named}]}}]}]}
+        # Screen consumes a following session name for -x only while no
+        # other session selector has chosen one. Do not classify the optional
+        # operand's control effects when several selectors can claim it.
+        - &unambiguous_multiattach
+          kind: not
+          item:
+            kind: all
+            items:
+              - {kind: has_modifier, modifier: multiattach}
+              - kind: any
+                items:
+                  - {kind: has_flag_at_least, flag: -x, count: 2}
+                  - {kind: has_modifier, modifier: session_name}
+                  - {kind: has_modifier, modifier: create_named}
+                  - {kind: has_modifier, modifier: attach_mode}
+                  - {kind: has_modifier, modifier: detach_mode}
+                  - {kind: has_flag, flag: -wipe}
+        - {kind: any, items: [{kind: has_modifier, modifier: control_mode}, {kind: all, items: [{kind: has_modifier, modifier: detach_mode}, {kind: not, item: *attach_modes}, {kind: not, item: &create_modes {kind: any, items: [{kind: has_modifier, modifier: create_mode}, {kind: has_modifier, modifier: create_named}]}}]}]}
     parameters: *arguments
     effects: [{kind: terminal_session_operation, terminal_session_operation: control, target: {kind: none}}]
     stream_contract: *streams
+    extensions: &require_option_ownership {caushell.form/require_proven_option_ownership: true}
   - id: attach_session
     selector: &attach
       kind: all
@@ -76,10 +112,12 @@ forms:
         - {kind: not, item: *inspect_form}
         - {kind: not, item: *query_modes}
         - {kind: not, item: *control}
-        - {kind: has_modifier, modifier: attach_mode}
+        - *unambiguous_multiattach
+        - *attach_modes
     parameters: *arguments
     effects: [{kind: terminal_session_operation, terminal_session_operation: attach, target: {kind: none}}]
     stream_contract: *streams
+    extensions: *require_option_ownership
   - id: create_session_or_window
     selector: &create
       kind: all
@@ -88,6 +126,7 @@ forms:
         - {kind: not, item: *query_modes}
         - {kind: not, item: *control}
         - {kind: not, item: *attach}
+        - *unambiguous_multiattach
     parameters: *arguments
     effects:
       - {kind: terminal_session_operation, terminal_session_operation: create, target: {kind: none}}
@@ -117,7 +156,10 @@ modifiers:
   - id: create_named
     matcher: {kind: any_flag, flags: [-dmS, -DmS]}
     parameters: [{name: session_name, semantic: *plain, binding: *operand, cardinality: required_many}]
-  - {id: attach_mode, matcher: {kind: any_flag, flags: [-r, -R, -RR, -Rd, -x, -xr, -xR, -xRR, -dr, -dR, -dRR, -Dr, -DR, -DRR]}}
+  - {id: attach_mode, matcher: {kind: any_flag, flags: [-r, -R, -RR, -Rd, -xr, -xR, -xRR, -dr, -dR, -dRR, -Dr, -DR, -DRR]}}
+  - id: multiattach
+    matcher: {kind: any_flag, flags: [-x]}
+    parameters: [{name: attach_session_name, semantic: *plain, binding: {kind: following_matched_flag, operand_mode: optional_next_arg}, cardinality: optional_many}]
   - {id: detach_mode, matcher: {kind: any_flag, flags: [-d, -D]}}
   - {id: control_mode, matcher: {kind: any_flag, flags: [-X, -wipe]}}
   - id: configuration
@@ -138,10 +180,12 @@ extensions:
     - https://www.gnu.org/software/screen/manual/html_node/Startup-Files.html
     - https://www.gnu.org/software/screen/manual/html_node/Paste.html
     - https://ftp.gnu.org/gnu/screen/screen-5.0.1.tar.gz
+    - https://raw.githubusercontent.com/gnu-mirror-unofficial/screen/master/src/screen.c
   caushell.profile/known_limitations:
     - Explicit version/list/query forms inspect state; creation, attachment, control and unknown syntax request approval. Query admission is not a whole-program zero-side-effect guarantee for runtime socket-registry bookkeeping.
     - Query subcommands are case-sensitive and argumentless; title/number with values, select, echo and arbitrary query commands remain opaque.
     - Option spellings and common native clusters are declared explicitly. Other clusters, abbreviations, option arity gaps and mixed query/control modes remain opaque instead of being guessed safe.
+    - Standalone -x can consume a following session name before option scanning continues. Competing session selectors and unresolved operand ownership retain conservative operation semantics. Other attach spellings retain their existing analysis.
     - Listing admits zero or one trailing pattern. Mixed flag-shaped list patterns and options after a pattern are conservatively opaque; no optional-operand scanner extension is introduced.
     - Inspect admission requires simple fixed session/window/list operands. Dynamic references, glob expressions, whitespace-containing or repeated -S/-p operands remain opaque rather than certifying runtime argument cardinality.
     - Create denotes a potential session or window launch, including STY-based launches. No child shell state, actual server liveness or definite configuration loading is certified.

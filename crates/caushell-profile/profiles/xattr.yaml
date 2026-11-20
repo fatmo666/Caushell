@@ -1,0 +1,70 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: xattr, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+# POSIXLY_CORRECT can disable the native permutation of options and files.
+# Own only the option prefix and require the remaining words to be non-options.
+option_scope: leading_options
+opaque_on_unresolved: true
+
+forms:
+  - id: list_attributes
+    selector:
+      kind: all
+      items:
+        - &no_terminator {kind: no_dash_dash}
+        - &list {kind: not, item: {kind: has_modifier, modifier: print}}
+        - &has_path {kind: has_positional_at, index: 0}
+        - {kind: not, item: &recursive {kind: has_modifier, modifier: recursive}}
+    parameters: &paths
+      - &input_paths
+        name: input_paths
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: '^[^-][\s\S]*$'}]
+    remaining_selector: &end {kind: no_positional_args}
+    effects: &reads
+      - {kind: read_path, target: {kind: slot, name: input_paths}}
+    stream_contract: &streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+
+  - id: list_attributes_recursively
+    selector: {kind: all, items: [*no_terminator, *list, *has_path, *recursive]}
+    parameters: *paths
+    remaining_selector: *end
+    # The named roots do not prove which descendants the utility will read.
+    operation_semantics_unresolved: true
+    effects: *reads
+    stream_contract: *streams
+
+  - id: print_attribute
+    selector:
+      kind: all
+      items:
+        - *no_terminator
+        - {kind: has_modifier, modifier: print}
+        - {kind: not, item: *recursive}
+        - {kind: not, item: {kind: has_flag_at_least, flag: '-p', count: 2}}
+        - {kind: has_positional_at, index: 1}
+    parameters:
+      - name: attribute
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        value_constraints: [{kind: require_match, pattern: '^[^-][\s\S]*$'}]
+      - *input_paths
+    remaining_selector: *end
+    effects: *reads
+    stream_contract: *streams
+
+modifiers:
+  - {id: display, matcher: {kind: any_flag, flags: [-l, -v, -x]}}
+  - {id: recursive, matcher: {kind: any_flag, flags: [-r]}}
+  - {id: print, matcher: {kind: any_flag, flags: [-p]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/apple-oss-distributions/file_cmds/blob/main/xattr/xattr.c
+    - https://github.com/apple-oss-distributions/file_cmds/blob/main/xattr/xattr.1
+    - https://github.com/apple-oss-distributions/Libc/blob/main/stdlib/FreeBSD/getopt_long.c

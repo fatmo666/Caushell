@@ -319,6 +319,9 @@ pub enum RawSelectorExpr {
     HasPositionalAt {
         index: usize,
     },
+    ExactArgumentCount {
+        count: usize,
+    },
     ExactPositionalCount {
         count: usize,
     },
@@ -346,6 +349,7 @@ pub enum RawSelectorExpr {
     LastPositionalMatches {
         matcher: RawValueMatcher,
     },
+    OptionsBeforePositionals,
     NoPositionalArgs,
     NoArguments,
     HasDashDash,
@@ -1095,6 +1099,9 @@ pub struct RawInteractiveEscapeSurface {
     pub kind: RawInteractiveEscapeSurfaceKind,
     #[serde(default)]
     pub requires_tty: bool,
+    /// The native program starts this surface only when fd 1 is a terminal.
+    #[serde(default)]
+    pub requires_stdout_tty: bool,
     #[serde(default)]
     pub capabilities: Vec<RawInteractiveEscapeCapability>,
 }

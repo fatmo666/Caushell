@@ -99,37 +99,70 @@ forms:
           requires_tty: true
           capabilities: [spawn_shell, run_command]
 
+  # BSD script may exec a positional command following the recording file.
+  # Retain terminal approval and only project the direct argv interpretation.
+  - id: record_positional_command
+    selector:
+      kind: all
+      items:
+        - &no_command_string {kind: not, item: {kind: has_modifier, modifier: command}}
+        - {kind: not, item: *information}
+        - &positional_command
+          kind: has_positional_at_matching
+          index: 1
+          matcher: {kind: regex_pattern, pattern: '^[^-]'}
+    parameters:
+      - name: output_path
+        semantic: &recording_path {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: child_command
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: next_positional}
+        cardinality: required_one
+      - name: child_arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - &write_recording
+        kind: write_path
+        path_access: content_open
+        target: {kind: slot, name: output_path}
+      - kind: open_interactive_escape_surface
+        target: {kind: none}
+        surface:
+          kind: terminal_ui
+          requires_tty: true
+          capabilities: [run_command]
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: child_command
+          lookup_domain: external
+          argv: [child_arguments]
+          unknown_environment_names: [SCRIPT]
+
   - id: record_shell
     selector:
       kind: all
       items:
-        - kind: not
-          item:
-            kind: has_modifier
-            modifier: command
+        - *no_command_string
         - {kind: not, item: *information}
+        - {kind: not, item: *positional_command}
     parameters:
       - name: output_path
-        semantic:
-          kind: path
-          role: write
-          purpose: generic_operand
-        binding:
-          kind: next_positional
+        semantic: *recording_path
+        binding: {kind: next_positional}
         cardinality: optional_one
     effects:
-      - kind: write_path
-        path_access: content_open
-        target: {kind: slot, name: output_path}
+      - *write_recording
       - kind: open_interactive_escape_surface
-        target:
-          kind: none
+        target: {kind: none}
         surface:
           kind: terminal_ui
           requires_tty: true
-          capabilities:
-            - spawn_shell
-            - run_command
+          capabilities: [spawn_shell, run_command]
 
 modifiers:
   - id: command

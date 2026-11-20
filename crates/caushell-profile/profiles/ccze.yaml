@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ccze, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: colorize_stdin
+    selector: {kind: all, items: [{kind: no_dash_dash}, {kind: no_positional_args}]}
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: consume_stdin, target: {kind: none}}
+      - {kind: transform_data, target: {kind: none}}
+      # Both display modes consult configuration and load plugins. The
+      # installed and user plugin inventory is not derived from argv.
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: load_in_process_code, target: {kind: none}}
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+
+modifiers:
+  - {id: raw_ansi, matcher: {kind: any_flag, flags: [-A, --raw-ansi]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://manpages.debian.org/testing/ccze/ccze.1.en.html
+    - https://sources.debian.org/src/ccze/0.2.1-8/src/ccze.c
+    - https://sources.debian.org/src/ccze/0.2.1-8/src/ccze-plugin.c
+  caushell.profile/known_limitations:
+    - Models the default and raw ANSI display forms with no positional operands.
+    - Configuration, plugin selection and the resulting output remain unresolved.

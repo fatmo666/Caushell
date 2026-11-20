@@ -87,6 +87,50 @@ fn clean() -> Files {
     Files::default().config("/workspace/.git/config", "")
 }
 #[test]
+fn missing_git_configuration_is_an_input_gap_and_still_requires_approval() {
+    let mut files = clean();
+    files.unavailable = true;
+    let response = check("git ls-files -z", files, Decision::NeedApproval);
+    let trace = serde_json::to_value(&response.decision_trace).unwrap();
+    let evidence = trace["evidence"].as_array().unwrap();
+    let config = evidence
+        .iter()
+        .find(|item| item["kind"]["kind"] == "tool_config_parse")
+        .expect("Git configuration evidence");
+    assert_eq!(config["kind"]["complete"], false);
+    assert_eq!(config["summary"], "Git execution sources are incomplete at the canonical invocation");
+    let gap = evidence
+        .iter()
+        .find(|item| item["kind"]["context"]["origin"]["task_name"] == "git-config:core.fsmonitor")
+        .expect("configured filesystem monitor evidence");
+    assert_eq!(
+        gap["kind"]["reason"],
+        serde_json::json!({"kind": "requires_implicit_input", "source": "tool_configuration"})
+    );
+    assert_eq!(gap["kind"]["context"]["input"]["kind"], "implicit_input");
+    assert_eq!(gap["kind"]["context"]["input"]["source"], "tool_configuration");
+    assert_eq!(gap["kind"]["unresolved_execution_payload_subtype"], "opaque_non_shell");
+    assert!(response.reasons.iter().any(|reason| reason.contains("requires tool configuration evidence")));
+    assert!(response.reasons.iter().all(|reason| !reason.contains("unsupported payload language")));
+
+    let mut files = clean();
+    files.unavailable = true;
+    let repeated = check(
+        "git ls-files -z; git ls-files -z",
+        files,
+        Decision::NeedApproval,
+    );
+    assert_eq!(
+        repeated
+            .reasons
+            .iter()
+            .filter(|reason| reason.contains("requires tool configuration evidence"))
+            .count(),
+        2
+    );
+}
+
+#[test]
 fn command_line_configuration_enters_shared_dispatch_not_read_only_allow() {
     for command in [
         "git -c 'core.fsmonitor=rm -rf /' ls-files",
@@ -120,6 +164,7 @@ fn command_line_configuration_enters_shared_dispatch_not_read_only_allow() {
 fn disabled_and_absent_modes_do_not_invent_executions() {
     for command in [
         "git ls-files",
+        "git ls-files -z",
         "git -c core.fsmonitor=false ls-files",
         "git -c core.fsmonitor=0 ls-files",
         "git -c core.fsmonitor= ls-files",
@@ -129,6 +174,42 @@ fn disabled_and_absent_modes_do_not_invent_executions() {
     }
     check(
         "git -c core.fsmonitor=true ls-files",
+        clean(),
+        Decision::NeedApproval,
+    );
+}
+
+#[test]
+fn nul_terminated_ls_files_still_checks_the_effective_fsmonitor() {
+    let command = "git ls-files -z";
+    let response = check(
+        command,
+        clean().config("/workspace/.git/config", "[core]\nfsmonitor = printf SAFE\n"),
+        Decision::Allow,
+    );
+    assert!(
+        response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|entry| entry.normalized_command_name == "printf")
+    );
+    let unavailable = Files {
+        unavailable: true,
+        ..clean()
+    };
+    let response = check(command, unavailable, Decision::NeedApproval);
+    assert!(
+        response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|entry| entry.normalized_command_name == "git"
+                && entry.form_id == "list_index_paths"
+                && !entry.operation_semantics_unresolved)
+    );
+    check(
+        "git ls-files -z --unknown-option",
         clean(),
         Decision::NeedApproval,
     );
@@ -378,4 +459,126 @@ fn system_configuration_location_requires_native_selector_evidence() {
         clean().config("/workspace/system", "[core]\nfsmonitor=rm -rf /\n"),
         Decision::Deny,
     );
+}
+
+#[test]
+fn modified_listing_retains_worktree_and_filter_uncertainty() {
+    for command in [
+        "git ls-files -m",
+        "git ls-files --modified -- ./tracked.txt",
+        "git ls-files -mz",
+    ] {
+        let files = clean().config(
+            "/workspace/.git/config",
+            "[filter \"fixture\"]\nclean = cat\n",
+        );
+        let response = check(command, files, Decision::NeedApproval);
+        let invocation = response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .find(|fact| fact.normalized_command_name == "git")
+            .expect("git invocation");
+        assert_eq!(
+            invocation.form_id, "list_modified_worktree_paths",
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(invocation.executes_config_defined_task && invocation.executes_payload);
+        assert!(response.decision_trace.nested_payloads.iter().any(|record| {
+            matches!(
+                &record.origin,
+                NestedPayloadOrigin::ConfigDefinedTask { config_path, .. }
+                    if config_path == "<Git attribute-selected conversion filter>"
+            )
+        }));
+    }
+}
+
+#[test]
+fn modified_listing_does_not_suppress_existing_configured_dispatch() {
+    let response = check(
+        "git ls-files --modified -z",
+        clean().config(
+            "/workspace/.git/config",
+            "[core]\nfsmonitor = printf SAFE\n",
+        ),
+        Decision::Allow,
+    );
+    assert!(
+        response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|fact| { fact.normalized_command_name == "printf" })
+    );
+    let both = check(
+        "git ls-files -m",
+        clean().config(
+            "/workspace/.git/config",
+            "[core]\nfsmonitor = printf SAFE\n[filter \"fixture\"]\nclean = cat\n",
+        ),
+        Decision::NeedApproval,
+    );
+    assert!(
+        both.decision_trace
+            .execution_semantics
+            .iter()
+            .any(|fact| fact.normalized_command_name == "printf")
+    );
+    let ordinary = check("git ls-files -z", clean(), Decision::Allow);
+    assert!(
+        ordinary
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|fact| {
+                fact.normalized_command_name == "git" && fact.form_id == "list_index_paths"
+            })
+    );
+    check("git ls-files -m", clean(), Decision::Allow);
+    check(
+        "git ls-files -m",
+        Files {
+            unavailable: true,
+            ..clean()
+        },
+        Decision::NeedApproval,
+    );
+}
+
+#[test]
+fn only_the_modified_listing_has_the_additional_worktree_read() {
+    use caushell_parse::parse_command;
+    use caushell_profile::{
+        EffectKind, EffectTarget, InvocationRuntimeContext, ProfileRegistry,
+        ResolveInvocationArtifactResult, SessionBindings,
+        resolve_invocation_artifact_with_bindings,
+    };
+    let registry = ProfileRegistry::built_in().unwrap();
+    for (command, reads_worktree) in [
+        ("git ls-files -m", true),
+        ("git ls-files -z", false),
+        ("git ls-files -- -m", false),
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let ResolveInvocationArtifactResult::Resolved(resolved) =
+            resolve_invocation_artifact_with_bindings(
+                &registry,
+                &parsed.commands[0],
+                InvocationRuntimeContext::new().with_shell_kind(ShellKind::Bash),
+                &SessionBindings::new(),
+            )
+        else {
+            panic!("{command}: expected bound ls-files form");
+        };
+        assert_eq!(
+            resolved.bound.effects.iter().any(|effect| {
+                effect.kind == EffectKind::ReadPath
+                    && matches!(&effect.target, EffectTarget::ConfiguredPath(_))
+            }),
+            reads_worktree,
+            "{command}"
+        );
+    }
 }

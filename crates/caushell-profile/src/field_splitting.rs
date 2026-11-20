@@ -42,6 +42,28 @@ pub fn observed_ifs_value(bindings: &SessionBindings) -> Option<String> {
     }
 }
 
+/// Enumerate IFS layouts for one known, nonnegative decimal expansion. Only
+/// the digits present in the value can affect splitting. This is a union of
+/// possible layouts, with no claim about the actual IFS or argv.
+pub(crate) fn decimal_field_layouts(value: u32) -> Option<std::collections::BTreeSet<Vec<String>>> {
+    let value = value.to_string();
+    let mut digits = value.as_bytes().to_vec();
+    digits.sort_unstable();
+    digits.dedup();
+    let fragments = [ShellFieldFragment::UnquotedExpansion(value)];
+    let mut layouts = std::collections::BTreeSet::new();
+    let mut bindings = SessionBindings::new();
+    for mask in 0..(1u16 << digits.len()) {
+        let ifs: String = digits.iter().enumerate()
+            .filter(|(index, _)| mask & (1 << index) != 0)
+            .map(|(_, byte)| char::from(*byte))
+            .collect();
+        bindings.insert_exact_scalar("IFS", ifs);
+        layouts.insert(materialize_bash_field_fragments(&fragments, &bindings)?);
+    }
+    Some(layouts)
+}
+
 /// For a whole, unquoted expansion whose proven output is one ASCII byte
 /// without glob syntax, splitting can only preserve, empty or remove the
 /// field. Keeping all three covers IFS whitespace and dialect variation.

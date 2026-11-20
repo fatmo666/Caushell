@@ -1,0 +1,59 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: jar, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+environment_inputs:
+  - name: java_tool_options
+    environment: {name: JAVA_TOOL_OPTIONS, empty_is_unset: true}
+    require_observation: true
+    semantic: &startup_options {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: hotspot_java_options
+    environment: {name: _JAVA_OPTIONS, empty_is_unset: true}
+    require_observation: true
+    semantic: *startup_options
+
+forms:
+  - id: list_archive_members
+    selector:
+      kind: all
+      items:
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '\A-tv?f\z'}}
+        - {kind: no_dash_dash}
+        # The launcher takes -J words even here. The tool expands @ files
+        # before consuming the archive operand.
+        - kind: not
+          item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '\A(?:@|-J)'}}
+        - kind: not
+          item: {kind: has_argument_at_matching, index: 2, matcher: {kind: regex_pattern, pattern: '(?s)\A.*\z'}}
+    remaining_selector: {kind: no_positional_args}
+    # The table action reads a ZIP central directory. Starting the selected
+    # JVM can still read an installation- or build-dependent options source.
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: archive}}
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+
+modifiers:
+  - id: list_file
+    matcher: {kind: any_flag, flags: [-tf, -tvf]}
+    parameters:
+      - name: archive
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+extensions:
+  caushell.profile/source_research:
+    - https://docs.oracle.com/en/java/javase/21/docs/specs/man/jar.html
+    - https://github.com/openjdk/jdk/blob/jdk-21%2B35/src/jdk.jartool/share/classes/sun/tools/jar/Main.java
+    - https://github.com/openjdk/jdk/blob/jdk-21%2B35/src/java.base/share/native/libjli/java.c
+    - https://github.com/openjdk/jdk/blob/jdk-21%2B35/src/hotspot/share/runtime/arguments.cpp
+  caushell.profile/known_limitations:
+    - Covers legacy list mode with one named archive. Argument-file expansion, launcher flags, extra arguments and write modes remain unresolved.
+    - The listing does not execute archive members or modify the archive. The JVM can still use environment or build-dependent startup settings, so the complete effects and output are unproved.

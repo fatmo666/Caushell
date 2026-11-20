@@ -21,18 +21,18 @@ fn request(command: &str) -> CheckRequest {
 }
 
 #[test]
-fn eight_original_requests_are_resolved_but_pagination_stays_guarded() {
-    let mut allowed = 0;
-    for (id, r) in original_requests() {
+fn all_nine_original_requests_resolve_their_proved_comparison_mode() {
+    let originals = original_requests();
+    assert_eq!(originals.len(), 9);
+    for (id, r) in originals {
         let result = ShellQueryCore::new().check(r);
-        let expected = if id == "U05867" { Decision::NeedApproval } else { allowed += 1; Decision::Allow };
-        assert_eq!(result.decision, expected, "{id}: {result:#?}");
-        if expected == Decision::Allow {
-            assert!(!result.decision_trace.execution_semantics.iter().any(|s|
-                s.normalized_command_name == "diff" && s.operation_semantics_unresolved), "{id}: {result:#?}");
-        }
+        assert_eq!(result.decision, Decision::Allow, "{id}: {result:#?}");
+        assert!(
+            !result.decision_trace.execution_semantics.iter().any(|s|
+                s.normalized_command_name == "diff" && s.operation_semantics_unresolved),
+            "{id}: {result:#?}"
+        );
     }
-    assert_eq!(allowed, 8);
 }
 
 #[test]
@@ -60,4 +60,46 @@ fn independent_writes_code_and_unknown_modes_remain_guarded() {
         assert_ne!(r.decision, Decision::Allow, "{text}: {r:#?}");
     }
     assert_eq!(ShellQueryCore::new().check(request("diff -X patterns left right; rm -rf /")).decision, Decision::Deny);
+}
+
+#[test]
+fn brief_pagination_preserves_both_read_operands() {
+    for command in [
+        "diff -rqyl left right --exclude=ignored",
+        "diff --paginate --brief -y left right",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(response.decision_trace.execution_semantics.iter().any(|item| {
+            item.normalized_command_name == "diff"
+                && !item.operation_semantics_unresolved
+                && !item.dispatches_child_command
+        }));
+    }
+}
+
+#[test]
+fn brief_pagination_does_not_cover_other_formats_or_unresolved_words() {
+    for command in [
+        "diff -rl left right",
+        "diff -rql left right",
+        "diff -ryl left right",
+        "diff -qyl --normal left right",
+        "diff -qyl \"$one\" right",
+        "diff -qyl left right > /outside/fixture",
+        "diff -qyl left right --exclude-from=patterns",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_ne!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
 }

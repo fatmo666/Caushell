@@ -325,3 +325,158 @@ fn a_symlink_in_the_write_family_keeps_the_original_namespace_gap() {
                 && matches!(f.resolution, SemanticResolution::Unresolved { .. }))
     );
 }
+
+#[test]
+fn empty_nul_path_snapshot_retains_bounded_metadata_effects() {
+    let command = "find . -type f -name '*.fixture' -print0 | xargs -0 chmod 640";
+    let result = check(command, Namespace::ordinary());
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    let proofs = proofs(&result);
+    let [proof] = proofs.as_slice() else {
+        panic!("expected one bounded child effect proof");
+    };
+    assert!(!proof.bound_effects.as_ref().unwrap().path_targets.is_empty());
+    assert!(result.decision_trace.evidence.iter().any(|e| {
+        matches!(&e.kind, EvidenceKind::NativeInputDecode(g)
+            if g.node_id == proof.node_id && !g.complete && g.empty_nul_path_snapshot
+                && g.rejected_candidate_encoding.is_none())
+    }));
+}
+
+#[test]
+fn empty_path_snapshot_keeps_unproved_routes_and_targets_conservative() {
+    for command in [
+        "find . -name '*.fixture' -print | xargs -0 chmod 640",
+        "find . -name '*.fixture' -print0 | xargs chmod 640",
+        "find ./missing -name '*.fixture' -print0 | xargs -0 chmod 640",
+        "find /outside -name '*.fixture' -print0 | xargs -0 chmod 640",
+    ] {
+        let result = check(command, Namespace::ordinary());
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+    let view = Namespace::ordinary().set(
+        "/workspace/src/link",
+        FilesystemEntry::Symlink { target: "/outside/secret".into() },
+    );
+    let result = check("find . -name '*.fixture' -print0 | xargs -0 chmod 640", view);
+    assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    assert!(proofs(&result).is_empty());
+
+    let unavailable = Namespace::ordinary().set(
+        "/workspace/src",
+        FilesystemEntry::Unavailable { reason: "fixture observation unavailable".into() },
+    );
+    let result = check("find ./src -name '*.fixture' -print0 | xargs -0 chmod 640", unavailable);
+    assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    assert!(proofs(&result).is_empty());
+}
+
+#[test]
+fn split_explicit_prefix_is_a_write_family() {
+    for (command, directory, prefix) in [
+        ("split -d -l 2 - parts", "/workspace", "parts"),
+        ("split -l 2 input cache/parts", "/workspace/cache", "parts"),
+        ("split -l 2 input cache/", "/workspace/cache", ""),
+        ("split -l 2 input ''", "/workspace", ""),
+        ("split -l 2 input .", "/workspace", "."),
+        ("split -l 2 input -", "/workspace", "-"),
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {response:#?}"
+        );
+        let writes: Vec<_> = response
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|t| t.operation == PathTargetOperation::Write)
+            .collect();
+        assert_eq!(writes.len(), 1, "{command}: {writes:#?}");
+        assert!(
+            matches!(&writes[0].lexical, PathResolution::FileNamePrefix { directory: actual_dir, prefix: actual_prefix }
+                if actual_dir == directory && actual_prefix == prefix),
+            "{command}: {writes:#?}"
+        );
+    }
+}
+
+#[test]
+fn split_output_modes_keep_existing_guards() {
+    for command in [
+        "split --filter=cat input /opt/shared/parts",
+        "split -n 1/3 input /opt/shared/parts",
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {response:#?}"
+        );
+        assert!(
+            !response
+                .decision_trace
+                .path_targets
+                .iter()
+                .any(|t| t.operation == PathTargetOperation::Write),
+            "{command}: {response:#?}"
+        );
+    }
+    for command in [
+        "split -d -l 2 - /opt/shared/parts",
+        "split --additional-suffix=/outside input parts",
+        "split -l 2 input \"$prefix\"",
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {response:#?}"
+        );
+    }
+}
+
+#[test]
+fn split_explicit_prefix_requires_observed_namespace() {
+    let command = "split -d -l 2 - src/parts";
+    let ordinary = Namespace::ordinary();
+    let result = check(command, ordinary);
+    assert_eq!(result.decision, Decision::Allow, "{result:#?}");
+
+    let unobserved = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem))
+        .check(request(command));
+    assert_eq!(
+        unobserved.decision,
+        Decision::NeedApproval,
+        "{unobserved:#?}"
+    );
+}
+
+#[test]
+fn split_filter_does_not_write_the_named_prefix_itself() {
+    for command in [
+        "split --filter='cat' input /opt/shared/chunk",
+        "split --filter='cat > cache/output' input",
+        "split -n 1/3 input /opt/shared/chunk",
+        "split -d -b 1000 - cache/chunk",
+        "split --help",
+        "split --numeric-suffixes=1 --additional-suffix=.csv -l100 data.csv data_",
+        "split -b 10 input -",
+        "split --filter=cat - -",
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_eq!(response.decision, Decision::Allow, "{command}: {response:#?}");
+    }
+    for command in [
+        "split -b 1000 input /opt/shared/chunk",
+        "split --additional-suffix=/../../bad input cache/chunk",
+        "split --unmodeled input",
+        "split --filter='echo ok' --additional-suffix=../bad input",
+        "split --additional-suffix=\"$suffix\" input cache/chunk",
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}: {response:#?}");
+    }
+}

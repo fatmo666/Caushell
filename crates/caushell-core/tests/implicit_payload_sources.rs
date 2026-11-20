@@ -155,6 +155,67 @@ fn runtime_stdin_evidence_keeps_original_type_and_policy() {
 }
 
 #[test]
+fn dc_without_program_arguments_uses_explicit_stdin_as_opaque_program() {
+    for command in [
+        "printf '%s\\n' '1 2 + p' | dc",
+        "dc <<'MATH'\n1 2 + p\nMATH",
+        "dc < arithmetic.dc",
+        "printf '%s\\n' '1 2 + p' | dc < arithmetic.dc",
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}");
+        assert!(
+            result.decision_trace.execution_semantics.iter().any(|item| {
+                item.normalized_command_name == "dc"
+                    && item.form_id == "stdin_script_implicit"
+                    && item.payload_mode == Some(ExecutionPayloadMode::StdinImplicit)
+                    && item.operation_semantics_unresolved
+            }),
+            "{command}: {:?}",
+            result.decision_trace.execution_semantics
+        );
+        assert!(
+            result.decision_trace.nested_payloads.iter().any(|payload| {
+                payload.language == NestedPayloadLanguage::Opaque
+                    && payload.source == NestedPayloadSource::Stdin
+            }),
+            "{command}: {:?}",
+            result.decision_trace.nested_payloads
+        );
+    }
+}
+
+#[test]
+fn dc_explicit_program_routes_and_unobserved_stdin_keep_their_existing_forms() {
+    for (command, form) in [
+        ("dc", "interactive_shell"),
+        ("dc --version", "information"),
+        ("printf '%s\\n' '3 p' | dc -e '1 2 + p'", "evaluate_dc_program"),
+        ("printf '%s\\n' '3 p' | dc arithmetic.dc", "script_file"),
+        ("printf '%s\\n' '3 p' | dc -f arithmetic.dc", "evaluate_program_file"),
+    ] {
+        let result = ShellQueryCore::new().check(request(command));
+        assert!(
+            result.decision_trace.execution_semantics.iter().any(|item| {
+                item.normalized_command_name == "dc" && item.form_id == form
+            }),
+            "{command}: {:?}",
+            result.decision_trace.execution_semantics
+        );
+        if form == "interactive_shell" {
+            assert_eq!(result.decision, Decision::NeedApproval, "{command}");
+            assert!(
+                result.decision_trace.nested_payloads.iter().any(|payload| {
+                    payload.language == NestedPayloadLanguage::Opaque
+                        && payload.source == NestedPayloadSource::Interactive
+                }),
+                "{command}"
+            );
+        }
+    }
+}
+
+#[test]
 fn another_dispatch_carrier_uses_the_same_unknown_source_contract() {
     for command in [r"env find . -exec sh -c 'echo {}' \;"] {
         let result = ShellQueryCore::new().check(request(command));

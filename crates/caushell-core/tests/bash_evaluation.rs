@@ -368,3 +368,100 @@ fn arithmetic_word_grammar_recovery_preserves_approval_and_denial_effects() {
         );
     }
 }
+
+#[test]
+fn known_array_nameref_does_not_invalidate_unrelated_loop_counter() {
+    check(
+        r#"pick() {
+    local -n items=$1
+    local needle=$2 result=''
+    for (( idx=${#items[@]}-2; idx>=0; idx-=2 )); do
+        if [[ ${items[idx]} == "$needle" ]]; then
+            result=${items[idx+1]}
+            break
+        fi
+    done
+    printf '%s' "$result"
+}
+declare -a entries=(word other)
+result=$(pick entries word)
+printf '%s' "$result""#,
+        Decision::Allow,
+    );
+}
+
+#[test]
+fn uncertain_namerefs_keep_loop_counter_approvals() {
+    for command in [
+        "f() { local -n ref=$1; for ((i=0;i<3;i++)); do echo ok; done; }; f i",
+        "f() { local -n ref=$1; for ((i=0;i<3;i++)); do echo ok; done; }; f \"$target\"",
+        "f() { local -n ref='a[0]'; for ((i=0;i<3;i++)); do echo ok; done; }; declare -a a=(1); f",
+        "f() { local -n ref=$1; for ((i=0;i<3;i++)); do unset a; done; }; declare -a a=(1); f a",
+        "f() { for ((i=0;i<3;i++)); do local -n ref=$1; done; }; declare -a a=(1); f a",
+        "f() { local -n ref=$1; for ((i=0;i<3;i++)); do printf -v inherited '%s' 1; done; }; declare -a a=(1); declare -n inherited=i; f a",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+}
+#[test]
+fn whole_numeric_capture_does_not_add_a_second_arithmetic_gap() {
+    let source = r#"f() {
+        local data=K
+        local -i code=$(printf "%d" "'$data")
+        echo "$code"
+    }; f"#;
+    let result = check(source, Decision::Allow);
+    assert_eq!(
+        result
+            .decision_trace
+            .derived_invocations
+            .iter()
+            .filter(|call| call.command_name.as_deref() == Some("printf"))
+            .count(),
+        1,
+    );
+
+    for source in [
+        r#"declare -i number=$(printf '%s' "$runtime_value")"#,
+        r#"declare -i number=$(printf '%d' 74)other"#,
+        r#"printf() { echo "$runtime_value"; }; declare -i number=$(printf '%d' 74)"#,
+    ] {
+        let result = check(source, Decision::NeedApproval);
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| reason == "shell arithmetic/index expression is unresolved")
+        );
+    }
+}
+
+#[test]
+fn numeric_pipeline_capture_preserves_upstream_policy_checks() {
+    let source = r#"number=$(printf '%s\n' peach | wc -l)
+        let number--
+        printf '%d\n' "$number""#;
+    check(source, Decision::Allow);
+
+    let source = r#"number=$(find "$runtime_directory" -type d | wc -l)
+        let number--
+        printf '%d\n' "$number""#;
+    let result = check(source, Decision::NeedApproval);
+    assert!(result.reasons.iter().any(|reason| {
+        reason.starts_with("command find has unresolved operation semantics")
+    }));
+    assert!(!result.reasons.iter().any(|reason| {
+        reason == "shell arithmetic/index expression is unresolved"
+    }));
+
+    for source in [
+        r#"number=$(printf '%s\n' peach | wc -l sample.txt); let number--"#,
+        r#"number=$(printf '%s\n' peach | wc -l; printf '%s' unknown); let number--"#,
+        r#"wc() { printf '%s' unknown; }; number=$(printf '%s\n' peach | wc -l); let number--"#,
+    ] {
+        let result = check(source, Decision::NeedApproval);
+        assert!(result.reasons.iter().any(|reason| {
+            reason == "shell arithmetic/index expression is unresolved"
+        }));
+    }
+}

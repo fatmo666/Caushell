@@ -110,4 +110,4 @@ extensions:
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
-    - Pagination (-l/--paginate) runs pr and remains unsupported until its external execution source is declared; it is not a harmless output-format flag.
+    - Pagination (-l/--paginate) can start pr. Only the fixed brief and side-by-side option combination can use the comparison binding without modeling pagination.

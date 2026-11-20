@@ -349,3 +349,69 @@ fn unknown_git_selectors_do_not_invent_an_absent_global_config() {
         "{r:#?}"
     );
 }
+
+#[test]
+fn startup_shopt_keeps_the_command_string_in_the_execution_graph() {
+    for command in [
+        "bash -O nocasematch -c 'printf BODY'",
+        r"find . -maxdepth 0 -exec bash -O nocasematch -c 'printf BODY' -- {} \;",
+    ] {
+        let response = check(command, false, RuleAction::NeedApproval);
+        assert_eq!(response.decision, Decision::NeedApproval);
+        assert!(
+            response.decision_trace.execution_semantics.iter().any(|entry| {
+                entry.normalized_command_name == "bash"
+                    && entry.executes_payload
+                    && entry.operation_semantics_unresolved
+            }),
+            "{command}: {:#?}",
+            response.reasons
+        );
+        assert!(response.decision_trace.execution_semantics.iter().any(|entry| {
+            entry.normalized_command_name == "printf"
+        }));
+    }
+}
+
+#[test]
+fn startup_shopt_does_not_supply_startup_config_authority() {
+    let response = check(
+        "bash -O nocasematch -c 'printf BODY'",
+        true,
+        RuleAction::Deny,
+    );
+    assert_eq!(response.decision, Decision::Deny);
+    assert!(
+        startup_paths(&response)
+            .iter()
+            .any(|path| path == "/work/external/startup.sh")
+    );
+    assert!(response.decision_trace.findings.iter().any(|finding| {
+        finding.rule_id == RuleId::OutsideWorkspaceStartupConfig
+    }));
+}
+
+#[test]
+fn unsupported_startup_shopt_values_keep_the_outer_guard() {
+    for command in [
+        r#"bash -O "$option" -c 'printf BODY'"#,
+        "bash -O extglob -c 'printf BODY'",
+        "bash -O -c 'printf BODY'",
+        "bash -O nocasematch ./script.sh",
+    ] {
+        let response = check(command, false, RuleAction::NeedApproval);
+        assert_ne!(response.decision, Decision::Allow, "{command}");
+        assert!(!response.decision_trace.execution_semantics.iter().any(|entry| {
+            entry.form_id == "command_string_with_startup_shopt"
+        }));
+    }
+
+    let ordinary = check(
+        r#"bash -c 'printf "%s" "$1"' fixture -O nocasematch"#,
+        false,
+        RuleAction::NeedApproval,
+    );
+    assert!(ordinary.decision_trace.execution_semantics.iter().any(|entry| {
+        entry.form_id == "command_string" && !entry.operation_semantics_unresolved
+    }));
+}

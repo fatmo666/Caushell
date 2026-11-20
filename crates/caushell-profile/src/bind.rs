@@ -26,6 +26,8 @@ pub struct InvocationShape {
     /// Some only when each positional source has one proven native field.
     /// Unknown-width words must not select an apparently harmless short call.
     pub exact_positional_count: Option<usize>,
+    /// Count of native argv entries before removing flags and their values.
+    pub exact_argument_count: Option<usize>,
     pub positional_args_before_dashdash: Vec<String>,
     // Native text templates are not their empty diagnostic spelling. Keep
     // their bounds separate from exact values used by legacy shape callers.
@@ -39,6 +41,8 @@ pub struct InvocationShape {
     /// Missing/unknown values are not populated; no full argv copy is made.
     pub argument_values: BTreeMap<usize, String>,
     pub has_dashdash: bool,
+    /// The ownership scan found no option or terminator after the first operand.
+    pub options_before_positionals: bool,
     pub subcommand_path: Vec<String>,
     pub stdin_payload_available: bool,
     pub interactive_session: bool,
@@ -453,7 +457,7 @@ pub fn select_invocation<'a>(
     }
 
     let scope = ArgumentScope::for_invocation(projection);
-    let option_scope = scoped_options(
+    let mut option_scope = scoped_options(
         profile.option_scope,
         profile.option_matching,
         profile.option_prefixes,
@@ -515,6 +519,13 @@ pub fn select_invocation<'a>(
         profile.option_matching,
     )?;
 
+    if let Some(options) = &mut option_scope
+        && options.ownership_unresolved
+        && bare_temporal_alternative_ends_without_effects(profile, projection, form, options)
+    {
+        options.ownership_unresolved = false;
+    }
+
     let mut residuals = Vec::new();
     if let Some(error) = recovery_error {
         residuals.push(Residual::new(
@@ -547,6 +558,98 @@ pub fn select_invocation<'a>(
             .collect(),
         option_scope,
     })
+}
+
+/// The attached layout retains the potential file operand. The bare layout
+/// consumes it and must independently bind to a declared terminal error with
+/// no additional effects. All other layouts retain the ordinary ownership gap.
+fn bare_temporal_alternative_ends_without_effects(
+    profile: &CommandProfile,
+    projection: &ProjectedInvocation,
+    attached_form: &Form,
+    options: &crate::ScopedOptions,
+) -> bool {
+    use crate::{ArgumentFieldCount, OptionMatchingPolicy, OptionPrefixPolicy, OptionScopePolicy,
+                ProfileSourceKind, StreamInputMode, StreamOutputMode};
+
+    if profile.trust.source != ProfileSourceKind::BuiltIn
+        || profile.option_scope != OptionScopePolicy::PermutedOptions
+        || profile.option_matching != OptionMatchingPolicy::ShortClusters
+        || profile.option_prefixes != OptionPrefixPolicy::DashOnly
+        || !profile.exact_option_words.is_empty()
+        || !profile.trailing_option_words.is_empty()
+        || !profile.argument_regions.is_empty()
+        || profile.option_operand_matcher.is_some()
+        || options.error.is_some()
+        || options.terminator.is_some()
+        || options.positionals.as_deref() != Some(&[1])
+        || options.scope != ArgumentScope::new(0, 2)
+    {
+        return false;
+    }
+    let [option, next] = projection.args.as_slice() else {
+        return false;
+    };
+    let [(0, flag)] = options.flags.as_slice() else {
+        return false;
+    };
+    let flag = flag.as_str();
+    let shape = crate::argument_structure(option);
+    let next_shape = crate::argument_structure(next);
+    if flag.len() != 2 || !flag.starts_with('-')
+        || !option.text.starts_with(flag) || option.text.len() <= flag.len()
+        || shape.fields != ArgumentFieldCount::ExactlyOne || shape.exact
+        || shape.static_prefix != flag || !shape.may_equal(flag)
+        || !next_shape.exact_value().is_some_and(|word| {
+            !word.is_empty() && !word.starts_with(['-', '+'])
+        })
+        || !crate::option_scope::temporal_option_is_value_only(flag, &profile.modifiers, &profile.forms)
+    {
+        return false;
+    }
+
+    let Some(contract) = attached_form.stream_contract else {
+        return false;
+    };
+    if contract.stdin_mode != StreamInputMode::Ignored
+        || contract.stdout_mode != StreamOutputMode::Opaque
+        || contract.stderr_mode != StreamOutputMode::Opaque
+        || contract.stdout_from_payload
+        || attached_form.stdout_scalar.is_some()
+        || attached_form.stdout_records.is_some()
+        || attached_form.stdout_growth.is_some()
+    {
+        return false;
+    }
+
+    // Only the option's fixed bytes are substituted into this analysis
+    // projection. The command source and the attached layout stay untouched.
+    let mut bare = projection.clone();
+    bare.args[0].text = flag.into();
+    bare.args[0].runtime_data = true;
+    bare.args[0].quoted = false;
+    bare.args[0].node_kind = "word".into();
+    bare.args[0].substitution_shape = None;
+    bare.args[0].lexical_field_prefix = None;
+    let Ok(selection) = select_invocation(profile, &bare) else {
+        return false;
+    };
+    if selection.form.extensions
+        .get("caushell.form/terminal_missing_operands")
+        .and_then(serde_json::Value::as_bool) != Some(true)
+    {
+        return false;
+    }
+    let bound = bind_invocation(profile, &bare, &selection);
+    !bound.operation_semantics_unresolved
+        && bound.residuals.is_empty()
+        && bound.effects.is_empty()
+        && bound.bound_implicit_inputs.is_empty()
+        && bound.payload_projections.is_empty()
+        && bound.stream_contract == Some(contract)
+        && bound.stdout_scalar.is_none()
+        && bound.stdout_records.is_none()
+        && bound.stdout_growth.is_none()
 }
 
 pub fn bind_invocation(
@@ -802,10 +905,19 @@ pub fn bind_invocation(
         });
     bound.operation_semantics_unresolved |= state.binding_boundary_unresolved
         || selection.form.operation_semantics_unresolved
-        || selection
-            .option_scope
-            .as_ref()
-            .is_some_and(|o| o.error.is_some());
+        || selection.option_scope.as_ref().is_some_and(|options| {
+            // A form that uses operand count to distinguish two native
+            // interpretations cannot borrow the profile's read-only fallback
+            // when a runtime word can change option ownership.
+            options.error.is_some()
+                || (options.ownership_unresolved
+                    && selection
+                        .form
+                        .extensions
+                        .get("caushell.form/require_proven_option_ownership")
+                        .and_then(serde_json::Value::as_bool)
+                        == Some(true))
+        });
     bound
 }
 
@@ -1439,10 +1551,9 @@ fn scan_subcommand_path<'p, 'a>(
             break;
         }
         let argument = &projection.args[index];
-        if matches!(
-            argument.runtime_argument_domain,
-            Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. })
-        ) {
+        if argument.runtime_argument_domain.as_ref()
+            .is_some_and(caushell_types::RuntimeArgumentDomain::is_spelling_template)
+        {
             let structure = crate::argument_structure(argument);
             if !children.is_empty()
                 && (structure.fields != crate::ArgumentFieldCount::ExactlyOne
@@ -1864,6 +1975,13 @@ fn populate_argument_selector(
                 shape.syntax_tokens.insert((kind.clone(), value.clone()));
             }
         }
+        SelectorExpr::Predicate(SelectorPredicate::ExactArgumentCount(_)) => {
+            shape.exact_argument_count = projection
+                .args
+                .iter()
+                .all(|arg| crate::argument_structure(arg).fields == crate::ArgumentFieldCount::ExactlyOne)
+                .then_some(projection.args.len());
+        }
         SelectorExpr::Predicate(SelectorPredicate::HasArgumentAtMatching(index, _)) => {
             if shape.argument_values.contains_key(index) {
                 return;
@@ -2240,12 +2358,11 @@ fn shape_for_scope_internal<'a>(
         // order. Operands have already been excluded by the ownership scan.
         shape.flags = options.flags.iter().map(|(_, flag)| flag.clone()).collect();
         shape.has_dashdash = options.terminator.is_some();
+        shape.options_before_positionals = options.ownership_is_leading();
     }
     for (index, arg) in args_in_scope(projection, scope) {
-        let native_template = matches!(
-            arg.runtime_argument_domain,
-            Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. })
-        )
+        let native_template = arg.runtime_argument_domain.as_ref()
+            .is_some_and(caushell_types::RuntimeArgumentDomain::is_spelling_template)
         .then(|| crate::argument_structure(arg));
         if let Some(structure) = &native_template {
             shape.argument_templates.insert(index, structure.clone());
@@ -2325,9 +2442,9 @@ fn populate_modifier_parameters_for_shape(
                 if matches!(
                     &value,
                     BoundValue::ImplicitInput {
-                        domain: Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. }),
+                        domain: Some(domain),
                         ..
-                    }
+                    } if domain.is_spelling_template()
                 ) {
                     shape.template_modifier_parameters.insert((
                         selected_modifier.modifier.id.clone(),
@@ -4633,6 +4750,7 @@ fn predicate_matches(predicate: &SelectorPredicate, shape: &InvocationShape) -> 
             .get(index)
             .is_some_and(|value| argument_matches_value_matcher(value, matcher)),
         SelectorPredicate::HasPositionalAt(index) => shape.has_positional_at(*index),
+        SelectorPredicate::ExactArgumentCount(count) => shape.exact_argument_count == Some(*count),
         SelectorPredicate::ExactPositionalCount(count) => {
             shape.exact_positional_count == Some(*count)
         }
@@ -4658,6 +4776,7 @@ fn predicate_matches(predicate: &SelectorPredicate, shape: &InvocationShape) -> 
             .positional_args
             .last()
             .is_some_and(|text| argument_matches_value_matcher(text, matcher)),
+        SelectorPredicate::OptionsBeforePositionals => shape.options_before_positionals,
         SelectorPredicate::NoPositionalArgs => shape.positional_args.is_empty(),
         SelectorPredicate::NoArguments => {
             shape.positional_args.is_empty() && shape.flags.is_empty() && !shape.has_dashdash

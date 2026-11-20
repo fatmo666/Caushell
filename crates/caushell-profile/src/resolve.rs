@@ -320,7 +320,7 @@ pub fn resolve_invocation_artifact_with_stdout_proofs(
     command: &CommandFact,
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
-    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
 ) -> ResolveInvocationArtifactResult {
     resolve_invocation_in_lookup_domain_with_stdout_proofs(
         registry,
@@ -339,7 +339,7 @@ pub fn resolve_invocation_in_namespace_with_stdout_proofs<'a>(
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
     module_runtime: Option<&str>,
-    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
 ) -> ResolveInvocationResult<'a> {
     let domain =
         module_runtime.map(|runtime| crate::CommandLookupDomain::Module(runtime.to_owned()));
@@ -363,9 +363,23 @@ pub fn resolve_invocation_in_lookup_domain_with_stdout_proofs<'a>(
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
     domain: &crate::CommandLookupDomain,
-    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
 ) -> ResolveInvocationResult<'a> {
-    resolve_invocation_with_proofs(registry, command, context, bindings, domain, proofs, &[])
+    resolve_invocation_with_proofs(registry, command, context, bindings, domain, proofs, &[], false)
+}
+
+/// Resolve a source Bash builtin after the caller owns each operand's shell
+/// arithmetic evaluation in the canonical execution frame.
+pub fn resolve_source_let_artifact(
+    registry: &ProfileRegistry,
+    command: &CommandFact,
+    context: InvocationRuntimeContext,
+    bindings: &SessionBindings,
+) -> ResolveInvocationArtifactResult {
+    resolve_invocation_with_proofs(
+        registry, command, context, bindings, bindings.command_lookup_domain(), &[], &[], true,
+    )
+    .into_artifact()
 }
 
 /// Complete source-word proofs refine the original invocation before native
@@ -375,11 +389,11 @@ pub fn resolve_invocation_artifact_with_argument_proofs(
     command: &CommandFact,
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
-    shapes: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+    shapes: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
     fields: &[crate::ArgumentFieldsProof],
 ) -> ResolveInvocationArtifactResult {
     resolve_invocation_with_proofs(registry, command, context, bindings,
-        bindings.command_lookup_domain(), shapes, fields).into_artifact()
+        bindings.command_lookup_domain(), shapes, fields, false).into_artifact()
 }
 
 fn resolve_invocation_with_proofs<'a>(
@@ -388,8 +402,9 @@ fn resolve_invocation_with_proofs<'a>(
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
     domain: &crate::CommandLookupDomain,
-    proofs: &[(caushell_parse::SourceSpan, crate::StdoutScalarShape)],
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
     fields: &[crate::ArgumentFieldsProof],
+    source_let_arithmetic_owned: bool,
 ) -> ResolveInvocationResult<'a> {
     let dialect;
     let bindings = if bindings.shell_kind() != context.shell_kind {
@@ -469,7 +484,11 @@ fn resolve_invocation_with_proofs<'a>(
     let lookup =
         registry.lookup_in_domain(command_name, command_word_was_materialized, &lookup_domain);
     let normalized_command_name = lookup.normalized_command_name;
-    let Some(profile) = lookup.profile else {
+    let Some(profile) = lookup.profile.filter(|profile| {
+        source_let_arithmetic_owned
+            || profile.primary_name() != "let"
+            || profile.identity.execution_domain != crate::ProfileExecutionDomain::ShellBuiltin
+    }) else {
         return ResolveInvocationResult::NoProfile {
             normalized_command_name,
             gap_kind: ResolveGapKind::NoProfile,
@@ -485,10 +504,41 @@ fn resolve_invocation_with_proofs<'a>(
     }
     if !proofs.is_empty() {
         for arg in &mut projection.args {
-            arg.substitution_shape = proofs
-                .iter()
-                .find(|(span, _)| *span == arg.span)
-                .map(|(_, shape)| *shape);
+            if arg.runtime_data
+                || arg.implicit_input_source.is_some()
+                || arg.word_context != crate::WordContext::ShellArgument
+                || fields.iter().any(|field| {
+                    field.span == arg.span
+                        && field.source_word == arg.text
+                        && field.exact_fields().is_some()
+                })
+            {
+                continue;
+            }
+            let mut matching = proofs.iter().filter(|(span, _)| *span == arg.span);
+            if let Some((_, proof)) = matching.next()
+                && matching.next().is_none()
+            {
+                match proof {
+                    crate::SubstitutionOutputProof::ScalarShape(shape) => {
+                        arg.substitution_shape = Some(*shape);
+                    }
+                    crate::SubstitutionOutputProof::ArithmeticField { prefix, suffix } => {
+                        arg.implicit_input_source =
+                            Some(caushell_types::ImplicitInputSource::CommandSubstitution);
+                        arg.runtime_argument_domain = Some(
+                            caushell_types::RuntimeArgumentDomain::ArithmeticTemplate {
+                                prefix: prefix.clone(),
+                                suffix: suffix.clone(),
+                            },
+                        );
+                        arg.runtime_data = true;
+                        arg.node_kind = "runtime_scalar".into();
+                    }
+                    crate::SubstitutionOutputProof::LineCountQuit
+                    | crate::SubstitutionOutputProof::SedDayTemplate { .. } => {}
+                }
+            }
         }
     }
     // The built-in find dispatch adapter expands every layout represented
@@ -500,6 +550,17 @@ fn resolve_invocation_with_proofs<'a>(
             .argument_regions
             .iter()
             .all(|r| matches!(r.id.as_str(), "exec" | "execdir" | "ok" | "okdir"));
+    let arithmetic_fields = constant_arithmetic_fields(command, &projection, bindings);
+    let mut all_fields;
+    let fields = if arithmetic_fields.is_empty() {
+        fields
+    } else {
+        all_fields = fields.to_vec();
+        all_fields.extend(arithmetic_fields.into_iter().filter(|arithmetic| {
+            !fields.iter().any(|field| field.span == arithmetic.span)
+        }));
+        &all_fields
+    };
     let mut materialized_projection =
         crate::materialize::materialize_projected_invocation_with_argument_fields(
             &projection, bindings, fields, supports_region_alternatives,
@@ -521,7 +582,12 @@ fn resolve_invocation_with_proofs<'a>(
         .invocation
         .apply_option_prefixes(profile.option_prefixes);
 
-    let original_selection = select_invocation(profile, &materialized_projection.invocation);
+    let brief_diff =
+        crate::diff_pagination::binding_projection(profile, command, &materialized_projection);
+    let original_projection = brief_diff
+        .as_ref()
+        .unwrap_or(&materialized_projection.invocation);
+    let original_selection = select_invocation(profile, original_projection);
     // A symbolic control word can fail lexical option selection before the
     // native effect closure is reached. Recover only a certified exact prefix,
     // then retain the entire symbolic tail as possible inputs in the shared
@@ -529,7 +595,7 @@ fn resolve_invocation_with_proofs<'a>(
     let symbolic_prefix = original_selection.is_err()
         .then(|| crate::native_effect_envelope::symbolic_shell_argv_prefix(profile, &materialized_projection))
         .flatten();
-    let binding_projection = symbolic_prefix.as_ref().unwrap_or(&materialized_projection.invocation);
+    let binding_projection = symbolic_prefix.as_ref().unwrap_or(original_projection);
     let selection = match symbolic_prefix.as_ref() {
         Some(prefix) => select_invocation(profile, prefix),
         None => original_selection,
@@ -541,7 +607,7 @@ fn resolve_invocation_with_proofs<'a>(
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
             let bound = crate::environment_inputs::attach(profile, bound, command, bindings);
             let mut bound = attach_argument_file_effects(profile, &materialized_projection, bound);
-            crate::native_variable_writes::attach(profile, &materialized_projection, &lookup_domain, context.shell_kind, &mut bound);
+            crate::native_variable_writes::attach(profile, &materialized_projection, &lookup_domain, context.shell_kind, bindings, &mut bound);
             // Variable-writing CLI ownership must not use a hypothetical
             // one-word expansion. Unknown width can swallow controls or add
             // unmodeled destinations, even when this selected form is a query.
@@ -586,7 +652,16 @@ fn resolve_invocation_with_proofs<'a>(
                     )
                 })
             {
-                bound.operation_semantics_unresolved = true;
+                if command_name == "exit"
+                    && matches!(lookup_domain, crate::CommandLookupDomain::Shell | crate::CommandLookupDomain::Builtin)
+                    && profile.trust.source == crate::ProfileSourceKind::BuiltIn
+                    && profile.identity.execution_domain == crate::ProfileExecutionDomain::ShellBuiltin
+                    && is_bash_exit_status_argument(&projection)
+                {
+                    bound.conditional_shell_termination = true;
+                } else {
+                    bound.operation_semantics_unresolved = true;
+                }
             }
             if writes.unresolved
                 || writes
@@ -621,6 +696,14 @@ fn resolve_invocation_with_proofs<'a>(
                 } else {
                     bound.operation_semantics_unresolved = true;
                 }
+            }
+            if !candidate_argv_only && !materialized_projection.shell_expansion_unresolved {
+                crate::native_effect_envelope::retain_pv_read_effects_for_split_rate(
+                    profile, command, &projection, &selection, bindings, &mut bound,
+                );
+                crate::native_effect_envelope::retain_sed_substitution(
+                    profile, command, &projection, proofs, &mut bound,
+                );
             }
             crate::native_effect_envelope::close_symbolic_shell_argv(profile, &materialized_projection, &mut bound);
             if candidate_argv_only {
@@ -721,6 +804,101 @@ fn resolve_invocation_with_proofs<'a>(
             }),
         },
     }
+}
+
+/// Split constant arithmetic only when the owning frame supplies IFS and no
+/// other source expansion in the same command can change it before splitting.
+fn is_bash_exit_status_argument(projection: &ProjectedInvocation) -> bool {
+    if projection.shell_kind != caushell_types::ShellKind::Bash {
+        return false;
+    }
+    let arg = match projection.args.as_slice() {
+        [arg] => arg,
+        [separator, arg]
+            if separator.kind == crate::ProjectedArgKind::DashDash
+                && separator.text == "--" =>
+        {
+            arg
+        }
+        _ => return false,
+    };
+    if arg.runtime_data
+        || arg.implicit_input_source.is_some()
+        || arg.word_context != crate::WordContext::ShellArgument
+        || arg.kind != crate::ProjectedArgKind::Positional
+    {
+        return false;
+    }
+    // Bash supplies unsigned decimal digits. Even a digit in IFS cannot
+    // turn them into options, command text or paths. Keep the field count
+    // unknown and do not fence following state on this evidence.
+    matches!(
+        (arg.node_kind.as_str(), arg.quoted, arg.text.as_str()),
+        ("simple_expansion", false, "$?")
+            | ("expansion", false, "${?}")
+            | ("string", true, "$?" | "${?}")
+    )
+}
+
+fn constant_arithmetic_fields(
+    command: &CommandFact,
+    projection: &ProjectedInvocation,
+    bindings: &SessionBindings,
+) -> Vec<crate::ArgumentFieldsProof> {
+    if projection.shell_kind != caushell_types::ShellKind::Bash
+        || !command.prefix_assignments.is_empty()
+        || !command.text.contains("$((")
+        || crate::observed_ifs_value(bindings).is_none()
+    {
+        return Vec::new();
+    }
+
+    let mut fields = Vec::new();
+    let mut offset = 0;
+    for arg in projection.args.iter().filter(|arg| {
+        arg.word_context == crate::WordContext::ShellArgument
+            && !arg.quoted
+            && !arg.runtime_data
+            && arg.implicit_input_source.is_none()
+            && arg.runtime_argument_domain.is_none()
+            && arg.node_kind == "arithmetic_expansion"
+    }) {
+        if fields.len() == 256 {
+            return Vec::new();
+        }
+        let Some(start) = arg.span.start_byte.checked_sub(command.span.start_byte) else {
+            return Vec::new();
+        };
+        let Some(end) = arg.span.end_byte.checked_sub(command.span.start_byte) else {
+            return Vec::new();
+        };
+        let Some(prefix) = command.text.get(offset..start) else {
+            return Vec::new();
+        };
+        let Some(word) = command.text.get(start..end) else {
+            return Vec::new();
+        };
+        if prefix.contains(['$', '`']) || word != arg.text {
+            return Vec::new();
+        }
+        let Some(value) = caushell_parse::constant_arithmetic_word(word) else {
+            return Vec::new();
+        };
+        let parts = [crate::ShellFieldFragment::UnquotedExpansion(value.to_string())];
+        let Some(layout) = crate::materialize_bash_field_fragments(&parts, bindings) else {
+            return Vec::new();
+        };
+        fields.push(crate::ArgumentFieldsProof {
+            span: arg.span.clone(),
+            source_word: arg.text.clone(),
+            layout: crate::ArgumentFieldLayout::Exact(layout),
+        });
+        offset = end;
+    }
+    if command.text[offset..].contains(['$', '`']) {
+        return Vec::new();
+    }
+    fields
 }
 
 fn argument_file_effects(

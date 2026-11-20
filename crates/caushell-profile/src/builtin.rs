@@ -6,6 +6,70 @@ struct BuiltInProfileSource {
 }
 
 const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
+    BuiltInProfileSource {
+        profile_id: "security",
+        content: include_str!("../profiles/security.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ccze",
+        content: include_str!("../profiles/ccze.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "cpp",
+        content: include_str!("../profiles/cpp.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pbzip2",
+        content: include_str!("../profiles/pbzip2.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "mplayer",
+        content: include_str!("../profiles/mplayer.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "qstat",
+        content: include_str!("../profiles/qstat.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "groff",
+        content: include_str!("../profiles/groff.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "parec",
+        content: include_str!("../profiles/parec.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "json_xs",
+        content: include_str!("../profiles/json_xs.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "samefile",
+        content: include_str!("../profiles/samefile.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dscl",
+        content: include_str!("../profiles/dscl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "dscacheutil",
+        content: include_str!("../profiles/dscacheutil.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pwpolicy",
+        content: include_str!("../profiles/pwpolicy.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "smbstatus",
+        content: include_str!("../profiles/smbstatus.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "plistbuddy",
+        content: include_str!("../profiles/plistbuddy.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "plutil",
+        content: include_str!("../profiles/plutil.yaml"),
+    },
     BuiltInProfileSource { profile_id: "swapon", content: include_str!("../profiles/swapon.yaml") },
     BuiltInProfileSource { profile_id: "csrutil", content: include_str!("../profiles/csrutil.yaml") },
     BuiltInProfileSource { profile_id: "kmod", content: include_str!("../profiles/kmod.yaml") },
@@ -21,6 +85,12 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource { profile_id: "route", content: include_str!("../profiles/route.yaml") },
     BuiltInProfileSource { profile_id: "nslookup", content: include_str!("../profiles/nslookup.yaml") },
     BuiltInProfileSource { profile_id: "umask", content: include_str!("../profiles/umask.yaml") },
+    BuiltInProfileSource { profile_id: "getconf", content: include_str!("../profiles/getconf.yaml") },
+    BuiltInProfileSource { profile_id: "xgettext", content: include_str!("../profiles/xgettext.yaml") },
+    BuiltInProfileSource { profile_id: "objdump", content: include_str!("../profiles/objdump.yaml") },
+    BuiltInProfileSource { profile_id: "svn", content: include_str!("../profiles/svn.yaml") },
+    BuiltInProfileSource { profile_id: "blkid", content: include_str!("../profiles/blkid.yaml") },
+    BuiltInProfileSource { profile_id: "smartctl", content: include_str!("../profiles/smartctl.yaml") },
     BuiltInProfileSource { profile_id: "ulimit", content: include_str!("../profiles/ulimit.yaml") },
     BuiltInProfileSource { profile_id: "lsmem", content: include_str!("../profiles/lsmem.yaml") },
     BuiltInProfileSource { profile_id: "lsblk", content: include_str!("../profiles/lsblk.yaml") },
@@ -90,6 +160,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "go",
         content: include_str!("../profiles/go.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "jar",
+        content: include_str!("../profiles/jar.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "java",
@@ -220,8 +294,16 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/ip.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "kextfind",
+        content: include_str!("../profiles/kextfind.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "kubectl",
         content: include_str!("../profiles/kubectl.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "launchctl",
+        content: include_str!("../profiles/launchctl.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "loginctl",
@@ -290,6 +372,18 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "snap",
         content: include_str!("../profiles/snap.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "system_profiler",
+        content: include_str!("../profiles/system_profiler.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "screencapture",
+        content: include_str!("../profiles/screencapture.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "ioreg",
+        content: include_str!("../profiles/ioreg.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "systemctl",
@@ -832,6 +926,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/dmidecode.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "ld",
+        content: include_str!("../profiles/ld.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "ldconfig",
         content: include_str!("../profiles/ldconfig.yaml"),
     },
@@ -852,12 +950,20 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/arj.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "elinks",
+        content: include_str!("../profiles/elinks.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "links",
         content: include_str!("../profiles/links.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "w3m",
         content: include_str!("../profiles/w3m.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xterm",
+        content: include_str!("../profiles/xterm.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "xmore",
@@ -1080,6 +1186,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/xmodmap.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "xwud",
+        content: include_str!("../profiles/xwud.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "7z",
         content: include_str!("../profiles/7z.yaml"),
     },
@@ -1272,6 +1382,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/chattr.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "SetFile",
+        content: include_str!("../profiles/SetFile.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "setcap",
         content: include_str!("../profiles/setcap.yaml"),
     },
@@ -1406,6 +1520,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "exit",
         content: include_str!("../profiles/exit.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "logout",
+        content: include_str!("../profiles/logout.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "return",
@@ -1556,6 +1674,14 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/base64.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "b64encode",
+        content: include_str!("../profiles/b64encode.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "b64decode",
+        content: include_str!("../profiles/b64decode.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "blkdiscard",
         content: include_str!("../profiles/blkdiscard.yaml"),
     },
@@ -1598,6 +1724,14 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "command",
         content: include_str!("../profiles/command.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "type",
+        content: include_str!("../profiles/type.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "let",
+        content: include_str!("../profiles/let.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "cp",
@@ -1716,8 +1850,16 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/grep.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "rgrep",
+        content: include_str!("../profiles/rgrep.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "gzip",
         content: include_str!("../profiles/gzip.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pigz",
+        content: include_str!("../profiles/pigz.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "iconv",
@@ -1852,6 +1994,14 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/od.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "xattr",
+        content: include_str!("../profiles/xattr.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "xmllint",
+        content: include_str!("../profiles/xmllint.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "xxd",
         content: include_str!("../profiles/xxd.yaml"),
     },
@@ -1894,6 +2044,14 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "psql",
         content: include_str!("../profiles/psql.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pg_dump",
+        content: include_str!("../profiles/pg_dump.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "pg_restore",
+        content: include_str!("../profiles/pg_restore.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "python",
@@ -2076,6 +2234,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/uniq.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "uuidgen",
+        content: include_str!("../profiles/uuidgen.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "unzip",
         content: include_str!("../profiles/unzip.yaml"),
     },
@@ -2232,8 +2394,16 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/bind.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "trap",
+        content: include_str!("../profiles/trap.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "bzip2",
         content: include_str!("../profiles/bzip2.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "bzcat",
+        content: include_str!("../profiles/bzcat.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "cal",
@@ -2338,6 +2508,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "readlink",
         content: include_str!("../profiles/readlink.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "symlinks",
+        content: include_str!("../profiles/symlinks.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "rename",
@@ -2516,6 +2690,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/info.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "import",
+        content: include_str!("../profiles/import.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "link",
         content: include_str!("../profiles/link.yaml"),
     },
@@ -2614,6 +2792,10 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
     BuiltInProfileSource {
         profile_id: "tsort",
         content: include_str!("../profiles/tsort.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "tput",
+        content: include_str!("../profiles/tput.yaml"),
     },
     BuiltInProfileSource {
         profile_id: "tty",

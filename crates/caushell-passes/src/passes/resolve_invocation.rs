@@ -1236,7 +1236,7 @@ struct TopLevelDispatchDerivedCommand {
     stdin_available: bool,
     stdout_proofs: Vec<(
         caushell_parse::SourceSpan,
-        caushell_profile::StdoutScalarShape,
+        caushell_profile::SubstitutionOutputProof,
     )>,
 }
 
@@ -1767,7 +1767,7 @@ fn forwarded_substitution_shapes(
     child: &caushell_parse::CommandFact,
 ) -> Vec<(
     caushell_parse::SourceSpan,
-    caushell_profile::StdoutScalarShape,
+    caushell_profile::SubstitutionOutputProof,
 )> {
     if !parent
         .materialized_projection
@@ -1797,7 +1797,7 @@ fn forwarded_substitution_shapes(
                         && arg.implicit_input_source.is_none()
                         && token.implicit_input_source.is_none()
                 })?;
-            Some((token.span.clone(), original.substitution_shape?))
+            Some((token.span.clone(), original.substitution_output_proof()?))
         })
         .collect()
 }
@@ -2064,6 +2064,7 @@ fn find_dispatch_candidates(
         may_escape: follows_symlinks || roots.is_empty() || roots_unknown,
         roots: roots.clone(),
         basename_suffix: None,
+        no_adjacent_slashes: false,
     };
     // Only a validated, static global minimum depth excludes the starting
     // points. Do not interpret arbitrary find predicates as scope proofs.
@@ -2110,6 +2111,7 @@ fn find_dispatch_candidates(
         },
         may_escape: roots_unknown,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     };
     let mut candidates = Vec::new();
     let mut unresolved = Vec::new();
@@ -2133,6 +2135,23 @@ fn find_dispatch_candidates(
         let batch = decoded.get(end).and_then(|value| value.as_deref()) == Some("+");
         let basename_suffix =
             find_action_basename_suffix(resolved, &decoded, &root_values, region);
+        // The same closed native expression proof also validates the root
+        // operands. For -exec ... {} +, find appends each directory entry
+        // with one separator and preserves the root's original spelling.
+        let no_adjacent_slashes = batch
+            && basename_suffix.is_some()
+            && !roots_unknown
+            && !roots.is_empty()
+            && root_values.iter().all(|value| {
+                matches!(value, BoundValue::Argument {
+                    materialization: caushell_profile::BoundArgumentMaterialization::Literal,
+                    text,
+                    ..
+                } if !text.starts_with('~'))
+            })
+            && roots
+                .iter()
+                .all(|root| !root.is_empty() && !root.ends_with('/') && !root.contains("//"));
 
         let make_argument = |slot: &str,
                              token: &caushell_profile::ProjectedArg,
@@ -2151,10 +2170,13 @@ fn find_dispatch_candidates(
                 .substitute_into(value, "{}");
                 if is_placeholder
                     && let caushell_types::RuntimeArgumentDomain::PathSet {
-                        basename_suffix: domain_suffix, ..
+                        basename_suffix: domain_suffix,
+                        no_adjacent_slashes: domain_has_plain_separators,
+                        ..
                     } = &mut domain
                 {
                     *domain_suffix = basename_suffix.clone();
+                    *domain_has_plain_separators = no_adjacent_slashes;
                 }
                 domain
             });
@@ -2269,9 +2291,9 @@ fn find_dispatch_candidates(
                 lookup_domain: CommandLookupDomain::External,
                 stdin_from_parent: false,
                 stdin_from_tool: false,
-                // Every admitted layout may contribute bytes to find's
-                // output. Do not let read-only closure erase their origin.
-                stdout_to_parent: expand_layouts,
+                // Find's callback inherits stdout regardless of whether its
+                // arguments resolve to one layout or several alternatives.
+                stdout_to_parent: true,
                 dispatch_index: candidates.len() + unresolved.len(),
                 command: command.clone(),
                 argv,
@@ -2715,6 +2737,48 @@ struct ExpandedFrontierEntry {
     inherited_scope: ExecutionUnitInheritedScope,
 }
 
+fn source_let_with_arithmetic<'a>(
+    entry: &'a ExpandedFrontierEntry,
+    request_source: &caushell_parse::ParsedCommandArtifact,
+) -> Option<&'a caushell_parse::CommandFact> {
+    let scope = &entry.parsed_scope;
+    let source_frame = match entry.origin_kind {
+        ExecutionUnitOriginKind::TopLevel => scope.raw_command == request_source.raw_command,
+        ExecutionUnitOriginKind::FunctionExpansion => true,
+        _ => false,
+    };
+    if !source_frame
+        || scope.shell_kind != caushell_types::ShellKind::Bash
+        || !matches!(
+            entry.bindings.command_lookup_domain(),
+            caushell_profile::CommandLookupDomain::Shell
+        )
+    {
+        return None;
+    }
+    let command = scope.commands.get(entry.command_ref.command_index)?;
+    (command.command_name.as_deref() == Some("let")
+        && !command.command_name_runtime_data
+        && command.prefix_assignments.is_empty()
+        && command.text == entry.rendered_command_text
+        && command.tokens.iter().all(|token| {
+            // A syntax site represents one source operand, not arbitrary
+            // split fields or pathname expansions in the final argv.
+            let single_word = matches!(token.node_kind.as_str(), "raw_string" | "string")
+                || (token.node_kind == "word"
+                    && !token.text.contains(['$', '`', '*', '?', '[', ']', '{', '}', '~', '\\']));
+            single_word
+                && !token.runtime_data
+                && token.implicit_input_source.is_none()
+                && token.runtime_argument_domain.is_none()
+                && scope.shell_evaluations.iter().any(|site| {
+                    matches!(site.kind, caushell_parse::ShellEvaluationKind::ArithmeticBuiltin)
+                        && site.input.span == token.span
+                })
+        }))
+    .then_some(command)
+}
+
 #[derive(Clone)]
 struct ProgramSourceContext {
     entry_cwd: caushell_runner::EffectiveCwd,
@@ -2844,7 +2908,7 @@ fn materialize_pathname_fields(
     };
     if !resolved.projection.args.iter().any(|arg| {
         !matches!(
-            caushell_profile::PathnamePattern::from_argument(arg),
+            caushell_profile::PathnamePattern::from_argument(arg, entry.shell_kind),
             Ok(None)
         )
     }) {
@@ -3870,6 +3934,7 @@ fn collect_execution_unit_resolve_records(
                     alternative_groups: 0,
                     gap: None,
                     rejected_candidate_encoding: None,
+                    empty_nul_path_snapshot: false,
                 },
             );
         }
@@ -4125,6 +4190,25 @@ fn collect_execution_unit_resolve_records(
                 // redirections. Child/depth/parse guards remain independent.
                 expanded_function_calls.insert(entry.source_node_id.clone(), name.clone());
             }
+        }
+
+        if function_children.is_none()
+            && matches!(&entry.result, ResolveInvocationArtifactResult::NoProfile {
+                normalized_command_name, ..
+            } if normalized_command_name == "let")
+            && let Some(command) = source_let_with_arithmetic(&entry, parsed_request)
+        {
+            // The arithmetic audit and native argument expansion are already
+            // owned by the source shell. Bind the intrinsic only at this
+            // boundary so a generic lookup cannot certify unproved argv.
+            let context = runtime_context_for_parsed_command(
+                &entry.parsed_scope,
+                entry.command_ref.command_index,
+                command,
+            );
+            entry.result = caushell_profile::resolve_source_let_artifact(
+                registry, command, context, &entry.bindings,
+            );
         }
 
         let frontier_depth = entry.depth;
@@ -6347,7 +6431,7 @@ fn expanded_process_substitution_body_children(
                         None,
                         ExecutionUnitOriginKind::ProcessSubstitutionBody,
                         ExecutionUnitOriginLocator::ProcessSubstitutionBody {
-                            location_kind: ProcessSubstitutionLocationKind::Argument,
+                            location_kind: ProcessSubstitutionLocationKind::ArgumentWord,
                             outer_index: token_index,
                             location_subindex: 0,
                             substitution_index,
@@ -6418,7 +6502,7 @@ fn expanded_process_substitution_body_children(
                         origin_kind: ExecutionUnitOriginKind::ProcessSubstitutionBody,
                         origin_index: command_index,
                         origin_locator: ExecutionUnitOriginLocator::ProcessSubstitutionBody {
-                            location_kind: ProcessSubstitutionLocationKind::Argument,
+                            location_kind: ProcessSubstitutionLocationKind::ArgumentWord,
                             outer_index: token_index,
                             location_subindex: 0,
                             substitution_index,
@@ -7273,7 +7357,7 @@ fn expanded_static_xargs_children(
         None
     };
 
-    let native = observed
+    let observed_input = observed
         .inputs
         .get(&entry.source_node_id)
         .filter(|i| {
@@ -7282,29 +7366,29 @@ fn expanded_static_xargs_children(
                 && !entry.inherited_scope.static_input_cwd_unproven
                 && i.scope == entry.static_payload_scope.parsed_scope
                 && i.bindings == entry.bindings
-        })
-        .map(|i| {
-            let groups = observed_xargs_groups(&i.records, &config).and_then(|groups| {
-                if has_applied_modifier(&resolved.bound, "max_chars") {
-                    return Err("native size-limited batching is unresolved".into());
-                }
-                let fixed = std::iter::once(&candidate.command)
-                    .chain(candidate.argv.iter())
-                    .map(|a| a.text.len().saturating_add(1))
-                    .sum::<usize>();
-                let bytes = groups
-                    .iter()
-                    .flatten()
-                    .map(|s| s.len().saturating_add(1))
-                    .sum::<usize>();
-                if fixed.saturating_mul(groups.len()).saturating_add(bytes) > 256 * 1024 {
-                    Err("native argv byte budget exceeded".into())
-                } else {
-                    Ok(groups)
-                }
-            });
-            (i.records.node_id.clone(), groups)
         });
+    let native = observed_input.map(|i| {
+        let groups = observed_xargs_groups(&i.records, &config).and_then(|groups| {
+            if has_applied_modifier(&resolved.bound, "max_chars") {
+                return Err("native size-limited batching is unresolved".into());
+            }
+            let fixed = std::iter::once(&candidate.command)
+                .chain(candidate.argv.iter())
+                .map(|a| a.text.len().saturating_add(1))
+                .sum::<usize>();
+            let bytes = groups
+                .iter()
+                .flatten()
+                .map(|s| s.len().saturating_add(1))
+                .sum::<usize>();
+            if fixed.saturating_mul(groups.len()).saturating_add(bytes) > 256 * 1024 {
+                Err("native argv byte budget exceeded".into())
+            } else {
+                Ok(groups)
+            }
+        });
+        (i.records.node_id.clone(), groups)
+    });
     if let Some((producer, groups)) = &native {
         observed.decoded.insert(
             entry.source_node_id.clone(),
@@ -7315,6 +7399,13 @@ fn expanded_static_xargs_children(
                 alternative_groups: groups.as_ref().map_or(0, Vec::len),
                 gap: groups.as_ref().err().cloned(),
                 rejected_candidate_encoding: None,
+                empty_nul_path_snapshot: observed_input.is_some_and(|i| i.empty_nul_path_snapshot)
+                    && config.decoding_proved
+                    && matches!(config.item_mode, XargsItemMode::NullSeparated)
+                    && matches!(config.dispatch_mode, XargsDispatchMode::AppendAll)
+                    && config.eof_marker.is_none()
+                    && config.insert_batch_token.is_none()
+                    && !config.requires_confirmation,
             },
         );
     }
@@ -9092,7 +9183,7 @@ fn refresh_substitution_argument_fields(
             r.projection
                 .args
                 .iter()
-                .filter_map(|a| a.substitution_shape.map(|shape| (a.span.clone(), shape)))
+                .filter_map(|a| a.substitution_output_proof().map(|proof| (a.span.clone(), proof)))
                 .collect(),
             InvocationRuntimeContext {
                 shell_kind: entry.shell_kind,
@@ -9462,6 +9553,7 @@ fn project_execution_unit_derived_invocation_mutation(
                     parent_node_id: record.parent_execution_node_id.0.clone(),
                     location_kind: match location_kind {
                         ProcessSubstitutionLocationKind::Argument => "argument".to_string(),
+                        ProcessSubstitutionLocationKind::ArgumentWord => "argument_word".to_string(),
                         ProcessSubstitutionLocationKind::Redirection => "redirection".to_string(),
                     },
                     outer_index: *outer_index,
@@ -12048,6 +12140,7 @@ modifiers:
             roots: roots.iter().map(|root| root.to_string()).collect(),
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         };
         command.command_name.as_deref() == Some(command_name)
             && command.tokens.get(argument_index).is_some_and(|token| {
@@ -12065,6 +12158,7 @@ modifiers:
             roots: roots.iter().map(|root| root.to_string()).collect(),
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         };
         matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
             if resolved.bound.bound_parameters.iter().flat_map(|parameter| &parameter.values)
@@ -13649,6 +13743,7 @@ modifiers:
             roots: vec!["./input".into()],
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         });
         argument.node_kind = "runtime_scalar".into();
         for (body, expected_fields, may_control) in [

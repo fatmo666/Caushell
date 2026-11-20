@@ -80,3 +80,82 @@ fn ordinary_data_external_programs_and_boundaries_remain_usable() {
         assert_eq!(r.decision, Decision::Allow, "{command}: {r:#?}");
     }
 }
+
+#[test]
+fn plain_hex_capture_is_a_data_only_printf_format() {
+    for command in [
+        "v=$(echo 'F% !' | xxd -p); printf $v",
+        "v=$(echo 'F% !' | xxd -ps -c 2); printf $v",
+    ] {
+        let result = check(command);
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        assert!(result.decision_trace.execution_semantics.iter().any(|item| {
+            item.normalized_command_name == "printf" && !item.operation_semantics_unresolved
+        }));
+    }
+}
+
+#[test]
+fn plain_hex_format_proof_does_not_escape_its_capture_or_reference() {
+    for command in [
+        "v=$(echo '25' | xxd -r -p); printf $v",
+        "v=$(echo 'F' | xxd -p; echo literal); printf $v",
+        "v=$(echo 'F' | xxd -p 2>&1); printf $v",
+        "xxd() { echo literal; }; v=$(echo 'F' | xxd -p); printf $v",
+        "v=$(echo 'F' | xxd -p); v=$unknown; printf $v",
+        "(v=$(echo 'F' | xxd -p)); printf $v",
+        "v=$(echo 'F' | xxd -p); printf -v \"$destination\" $v",
+    ] {
+        let result = check(command);
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+}
+
+#[test]
+fn raw_base64_capture_is_a_data_only_printf_format() {
+    for command in [
+        "v=$(echo 'demo % text' | b64encode -r -); printf $v",
+        "v=$(echo 'fixture' | b64encode -r fixture-output); printf \"$v\"",
+    ] {
+        let result = check(command);
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|item| {
+                    item.normalized_command_name == "printf"
+                        && !item.operation_semantics_unresolved
+                        && !item.mutates_current_shell
+                })
+        );
+    }
+}
+
+#[test]
+fn raw_base64_format_proof_requires_the_complete_capture() {
+    for command in [
+        "v=$(echo 'fixture' | b64encode fixture-output); printf $v",
+        "v=$(echo 'fixture' | b64encode -r input.txt fixture-output); printf $v",
+        "v=$(echo 'fixture' | b64encode -r - 2>&1); printf $v",
+        "v=$(echo 'fixture' | b64encode -r -; echo suffix); printf $v",
+        "v=$(echo 'Zg==' | b64decode -r); printf $v",
+        "b64encode() { echo literal; }; v=$(echo 'fixture' | b64encode -r -); printf $v",
+        "v=$(echo 'fixture' | b64encode -r -); v=$unknown; printf $v",
+        "v=$(echo 'fixture' | b64encode -r -); printf -v \"$destination\" $v",
+    ] {
+        let result = check(command);
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+}

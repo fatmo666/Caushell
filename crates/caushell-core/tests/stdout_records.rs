@@ -141,6 +141,83 @@ fn proofs(response: &CheckResponse) -> Vec<&StdoutRecordsEvidence> {
 }
 
 #[test]
+fn follow_preserves_observed_output_until_a_link_can_change_it() {
+    let command = "find ./input -name '*.csv' -follow -type f -print0 | xargs -0 cat";
+    let mut ordinary = Files::new();
+    ordinary
+        .dirs
+        .get_mut("/workspace/input")
+        .unwrap()
+        .1
+        .retain(|entry| entry.kind != DirectoryEntryKind::Symlink);
+    let response = check(command, ordinary);
+    let produced = proofs(&response)[0];
+    assert!(produced.complete, "{produced:#?}");
+    assert_eq!(produced.records.len(), 3);
+    assert_eq!(produced.encoding, Some(StreamRecordEncoding::Nul));
+
+    for (command, gap) in [
+        (
+            "find ./input -name '*.csv' -follow -type f -print0 | cat",
+            "followed symlink target is not observed",
+        ),
+        (
+            "find ./input -false -a -follow -o -print0 | cat",
+            "followed symlink target is not observed",
+        ),
+        (
+            "find ./input/link.csv -follow -print0 | cat",
+            "native root is not an observed directory",
+        ),
+    ] {
+        let response = check(command, Files::new());
+        let produced = proofs(&response)[0];
+        assert!(
+            !produced.complete && produced.records.is_empty(),
+            "{produced:#?}"
+        );
+        assert_eq!(produced.gap.as_deref(), Some(gap));
+    }
+}
+
+#[test]
+fn leading_link_modes_respect_precedence_and_require_observed_referents() {
+    for flags in ["-H", "-L -H", "-L -P"] {
+        let response = check(
+            &format!("find {flags} ./input -type l -print0 | cat"),
+            Files::new(),
+        );
+        let produced = proofs(&response)[0];
+        assert!(produced.complete, "{flags}: {produced:#?}");
+        assert_eq!(produced.records.len(), 1);
+        assert_eq!(produced.records[0].bytes, b"./input/link.csv\0");
+    }
+
+    for (command, reason) in [
+        (
+            "find -P -L ./input -type l -print0 | cat",
+            "followed symlink target is not observed",
+        ),
+        (
+            "find -H ./input -follow -type l -print0 | cat",
+            "followed symlink target is not observed",
+        ),
+        (
+            "find -H ./input/link.csv -print0 | cat",
+            "native root is not an observed directory",
+        ),
+    ] {
+        let response = check(command, Files::new());
+        let produced = proofs(&response)[0];
+        assert!(
+            !produced.complete && produced.records.is_empty(),
+            "{produced:#?}"
+        );
+        assert_eq!(produced.gap.as_deref(), Some(reason));
+    }
+}
+
+#[test]
 fn complete_records_preserve_spelling_and_do_not_invent_traversal_order() {
     for (flag, encoding, sep) in [
         ("-print", StreamRecordEncoding::Lines, b'\n'),
@@ -989,4 +1066,70 @@ fn empty_name_selection_and_newline_ancestor_injection_remain_distinct() {
             .any(|p| p.operation == PathTargetOperation::Metadata
                 && matches!(&p.lexical,PathResolution::Concrete{path} if path=="/outside/victim"))
     );
+}
+
+#[test]
+fn unobserved_permission_bits_do_not_prove_mutating_consumer_targets() {
+    for (mode, gap) in [
+        ("-040", "native permission bits are unobserved"),
+        (
+            "/g=r",
+            "native permission mode requires a GNU find dialect proof",
+        ),
+    ] {
+        let result = check(
+            &format!("find ./input -type f -perm {mode} -print0 | xargs -0 chmod 644"),
+            Files::new(),
+        );
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{mode}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result.reasons.iter().any(|reason| reason == gap),
+            "{mode}: {:?}",
+            result.reasons
+        );
+        let observed = proofs(&result);
+        assert!(!observed.is_empty());
+        assert!(observed.iter().all(|proof| !proof.complete && proof.records.is_empty()));
+    }
+}
+
+#[test]
+fn a_plain_pipe_to_a_compound_stage_proves_only_producer_stdout() {
+    let source = "find ./input -maxdepth 1 -type d -print | { cat; }";
+    let result = check(source, Files::new());
+    let observed = proofs(&result);
+    let [produced] = observed.as_slice() else {
+        panic!("expected only producer evidence: {observed:#?}");
+    };
+    assert!(produced.complete, "{produced:#?}");
+    assert_eq!(produced.encoding, Some(StreamRecordEncoding::Lines));
+    let mut paths = produced.records.iter().map(|r| r.path_spelling.as_str()).collect::<Vec<_>>();
+    paths.sort_unstable();
+    assert_eq!(paths, ["./input", "./input/sub"]);
+
+    let source = r#"find ./input -maxdepth 1 -type d -print |
+        while IFS= read -r value; do printf '%s\n' "$value"; done"#;
+    let result = check(source, Files::new());
+    let observed = proofs(&result);
+    let [produced] = observed.as_slice() else {
+        panic!("expected only producer evidence: {observed:#?}");
+    };
+    assert!(!produced.complete);
+    assert!(produced.gap.as_deref().is_some_and(|gap| {
+        gap.contains("read has unproved effect BindVariableFromRuntimeInput")
+    }), "{produced:#?}");
+
+    for separator in [">fixture-output |", "2>&1 |", "|&"] {
+        let source = format!(
+            r#"find ./input -maxdepth 1 -type d -print {separator}
+            while IFS= read -r value; do printf '%s\n' "$value"; done"#
+        );
+        let result = check(&source, Files::new());
+        assert!(proofs(&result).iter().all(|r| !r.complete), "{source}");
+    }
 }

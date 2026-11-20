@@ -3,7 +3,7 @@ use caushell_core::ShellQueryCore;
 use caushell_runner::{DirectoryRead, FilesystemView};
 use caushell_types::*;
 use std::{collections::BTreeMap, sync::Arc};
-struct Namespace(BTreeMap<String, FilesystemEntry>);
+struct Namespace(BTreeMap<String, FilesystemEntry>, BTreeMap<String, String>);
 impl Namespace {
     fn ordinary() -> Self {
         Self(BTreeMap::from([
@@ -15,10 +15,14 @@ impl Namespace {
             ("/outside/secret".into(), FilesystemEntry::File),
             ("/workspace/file".into(), FilesystemEntry::File),
             ("/workspace/src/input".into(), FilesystemEntry::File),
-        ]))
+        ]), BTreeMap::new())
     }
     fn set(mut self, path: &str, entry: FilesystemEntry) -> Self {
         self.0.insert(path.into(), entry);
+        self
+    }
+    fn shared_directory_identity(mut self, path: &str, alias_of: &str) -> Self {
+        self.1.insert(path.into(), alias_of.into());
         self
     }
 }
@@ -30,6 +34,9 @@ impl FilesystemView for Namespace {
             .unwrap_or(FilesystemEntry::Missing)
     }
     fn read_directory(&self, path: &str, limits: DirectoryReadLimits) -> DirectoryRead {
+        let identity_path = self.1.get(path).map_or(path, String::as_str);
+        let inode = self.0.keys().position(|entry| entry == identity_path)
+            .map_or(1, |index| index as u64 + 2);
         let prefix = format!("{}/", path.trim_end_matches('/'));
         if self.0.iter().any(|(p, entry)| p.strip_prefix(&prefix).is_some_and(|name|
             !name.is_empty() && !name.contains('/') && matches!(entry, FilesystemEntry::Unavailable { .. }))) {
@@ -71,7 +78,7 @@ impl FilesystemView for Namespace {
             limits,
             FileContentIdentity {
                 device: 1,
-                inode: 1,
+                inode,
                 size: 0,
                 modified_seconds: 0,
                 modified_nanos: 0,
@@ -111,13 +118,120 @@ fn has_relocation_proof(r: &CheckResponse) -> bool {
 }
 
 #[test]
+fn relocating_a_regular_staging_leaf_preserves_the_bounded_destination_and_staging_lookup() {
+    let command = r#"find . -name '*.fixture' -type f -exec sh -c 'printf fixture > staging && mv staging "$1"' fixture '{}' \;"#;
+    for present in [false, true] {
+        let mut view = Namespace::ordinary().set("/workspace/input.fixture", FilesystemEntry::File);
+        if present {
+            view = view.set("/workspace/staging", FilesystemEntry::File);
+        }
+        let response = check(command, view);
+        assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+        let staging = response
+            .decision_trace
+            .path_targets
+            .iter()
+            .find(|target| target.slot_name.starts_with("redirect_target"))
+            .expect("staging redirection");
+        assert!(matches!(&staging.resolution, SemanticResolution::Resolved { value }
+            if value.concrete_path() == Some("/workspace/staging")));
+        assert!(staging.namespace_proofs.iter().any(|p| p.effect == PathNamespaceEffect::EntryRelocation));
+        assert!(response.decision_trace.path_targets.iter().any(|target| {
+            target.operation == PathTargetOperation::MoveSource
+                && matches!(&target.resolution, SemanticResolution::Resolved { value }
+                    if value.concrete_path() == Some("/workspace/staging"))
+        }));
+    }
+}
+
+#[test]
+fn relocating_an_unproved_staging_leaf_still_requires_approval() {
+    let command = r#"find . -name '*.fixture' -type f -exec sh -c 'printf fixture > staging && mv staging "$1"' fixture '{}' \;"#;
+    for entry in [
+        FilesystemEntry::Symlink { target: "/outside/secret".into() },
+        FilesystemEntry::Directory,
+        FilesystemEntry::Unavailable { reason: "fixture has no observation".into() },
+    ] {
+        let view = Namespace::ordinary().set("/workspace/staging", entry);
+        let response = check(command, view);
+        assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+    }
+    let outside = r#"find . -name '*.fixture' -type f -exec sh -c 'printf fixture > /outside/staging && mv /outside/staging "$1"' fixture '{}' \;"#;
+    let response = check(outside, Namespace::ordinary());
+    assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+    for setup in ["mkdir staging", "mkdir -p staging/child"] {
+        let creates_directory = format!(
+            r#"{setup}; find . -name '*.fixture' -type f -exec sh -c 'mv staging "$1"' fixture '{{}}' \;"#,
+        );
+        let response = check(&creates_directory, Namespace::ordinary());
+        assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+        assert!(!has_relocation_proof(&response));
+    }
+}
+
+#[test]
+fn disjoint_relocations_preserve_both_observed_directory_bounds() {
+    let command = r"find . -maxdepth 1 -name '*.old' -exec mv '{}' /tmp/ \; -or -name '*.bak' -exec mv '{}' /tmp/ \;";
+    let view = Namespace::ordinary()
+        .set("/workspace/input.old", FilesystemEntry::File)
+        .set("/workspace/input.bak", FilesystemEntry::Directory)
+        .set("/tmp/existing", FilesystemEntry::File);
+    let response = check(command, view);
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    let targets: Vec<_> = response.decision_trace.path_targets.iter()
+        .filter(|target| target.operation.is_mutation()).collect();
+    assert_eq!(targets.len(), 4);
+    for target in targets {
+        let root = match target.operation {
+            PathTargetOperation::MoveSource => "/workspace",
+            PathTargetOperation::Write => "/tmp",
+            _ => panic!("unexpected mutation {target:?}"),
+        };
+        assert!(matches!(&target.resolution, SemanticResolution::Resolved {
+            value: PathResolution::BoundedPathSet { roots, may_escape: false },
+        } if roots == &[root]), "{target:?}");
+        assert!(target.namespace_proofs.iter().any(|proof| {
+            proof.effect == PathNamespaceEffect::EntryRelocation
+                && proof.path == "/workspace"
+                && proof.additional_paths == ["/tmp"]
+        }), "{target:?}");
+    }
+}
+
+#[test]
+fn disjoint_relocations_require_stable_anchors_and_preserve_policy_checks() {
+    let ordinary = r"find . -maxdepth 1 -name '*.old' -exec mv '{}' /tmp/ \; -or -name '*.bak' -exec mv '{}' /tmp/ \;";
+    for view in [
+        Namespace::ordinary().set("/workspace/link", FilesystemEntry::Symlink { target: "/outside".into() }),
+        Namespace::ordinary().set("/tmp/link", FilesystemEntry::Symlink { target: "/outside".into() }),
+        Namespace::ordinary().set("/tmp", FilesystemEntry::Unavailable { reason: "fixture gap".into() }),
+        Namespace::ordinary().shared_directory_identity("/tmp", "/workspace"),
+    ] {
+        let response = check(ordinary, view);
+        assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+        assert!(!has_relocation_proof(&response));
+    }
+    let named_root = ordinary.replacen("find .", "find src", 1);
+    let response = check(&named_root, Namespace::ordinary());
+    assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+    assert!(!has_relocation_proof(&response));
+    let outside = ordinary.replace("/tmp/", "/outside/");
+    let response = check(&outside, Namespace::ordinary());
+    assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+    let changes_destination = format!("ln -s /outside /tmp/new-link; {ordinary}");
+    let response = check(&changes_destination, Namespace::ordinary());
+    assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+    assert!(!has_relocation_proof(&response));
+}
+
+#[test]
 fn original_namespace_candidates_measure_actual_decisions() {
     let rows: serde_json::Value = serde_json::from_str(include_str!("fixtures/entry_relocation_requests.json")).unwrap();
     assert_eq!(rows.as_array().unwrap().len(), 105);
-    // Preserve the accepted outcomes from the paired-relocation fixes and
-    // the basename constraint case within the original fixture.
+    // Preserve the accepted outcomes from the paired-relocation, basename
+    // constraint, and current-directory placement fixes.
     let expected = [
-        "U02308", "U02429", "U03139", "U03457", "U05189", "U05190", "U05197", "U05219",
+        "U02308", "U02429", "U03139", "U03457", "U05152", "U05189", "U05190", "U05197", "U05219",
         "U06457", "U06657", "U06917", "U07041", "U07068", "U07070", "U07073", "U07076",
         "U08759", "U08760", "U09564", "U09820", "U10029", "U10093", "U10354",
     ];
@@ -343,4 +457,36 @@ fn find_name_constraints_require_an_owned_positive_predicate_and_safe_result() {
     );
     assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.reasons);
     assert!(!has_relocation_proof(&r));
+}
+
+#[test]
+fn moving_multiple_sources_into_dot_checks_each_landing_entry() {
+    for destination in [".", "././", "\".\""] {
+        let view = Namespace::ordinary()
+            .set("/workspace/second", FilesystemEntry::Directory)
+            .set("/workspace/second/extra", FilesystemEntry::File);
+        let response = check(&format!("mv src/input second/extra {destination}"), view);
+        let writes: Vec<_> = response.decision_trace.path_targets.iter()
+            .filter(|target| target.operation == PathTargetOperation::Write)
+            .collect();
+        assert_eq!(writes.len(), 2, "{writes:?}");
+        for (target, expected) in writes.iter().zip(["/workspace/input", "/workspace/extra"]) {
+            assert!(matches!(&target.resolution, SemanticResolution::Resolved { value }
+                if value.concrete_path() == Some(expected)), "{target:?}");
+        }
+        assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    }
+}
+
+#[test]
+fn moving_into_dot_does_not_drop_an_outside_source_or_follow_an_outside_landing_link() {
+    let view = Namespace::ordinary();
+    let response = check("mv src/input /outside/secret .", view);
+    assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+
+    let view = Namespace::ordinary()
+        .set("/workspace/src/extra", FilesystemEntry::File)
+        .set("/workspace/extra", FilesystemEntry::Symlink { target: "/outside/secret".into() });
+    let response = check("mv src/input src/extra .", view);
+    assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
 }

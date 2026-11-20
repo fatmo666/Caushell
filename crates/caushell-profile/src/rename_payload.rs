@@ -59,6 +59,36 @@ impl Arg {
             shell_structure,
         }
     }
+    fn excludes_literal_path_fragment(&self, fragment: &str) -> bool {
+        if let Some(text) = self.text.as_deref() {
+            return !text.contains(fragment);
+        }
+        // Only a literal prefix followed by one star is a leaf glob here.
+        // Expansion, literal fallback and zero fields cannot add a slash.
+        if fragment.contains('/')
+            && self.shell_structure.as_ref().is_some_and(ArgumentStructure::has_pathname_generation)
+            && let BoundValue::Argument { text, quoted: false, node_kind, .. } = &self.source
+            && node_kind == "word"
+            && let Some(prefix) = text.strip_suffix('*')
+            && prefix.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            && prefix.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.'))
+        {
+            return true;
+        }
+        fragment.contains("//")
+            && matches!(
+                &self.source,
+                BoundValue::ImplicitInput {
+                    source: ImplicitInputSource::DispatchOutput,
+                    domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                        no_adjacent_slashes: true,
+                        ..
+                    }),
+                    ..
+                }
+            )
+    }
+
     fn non_option(&self) -> bool {
         match &self.text {
             Some(s) => !s.starts_with('-') || s == "-",
@@ -845,6 +875,7 @@ fn transformed_domain(
                 roots,
                 may_escape: false,
                 basename_suffix,
+                ..
             }),
         origin,
     } = source
@@ -883,6 +914,7 @@ fn transformed_domain(
             roots: projected,
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         }),
         origin: origin.clone(),
     })
@@ -937,6 +969,7 @@ fn utility_transformed_domain(
             roots: projected,
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         }),
         origin: origin.clone(),
     })
@@ -1065,6 +1098,16 @@ pub(crate) fn project(
             }
         };
         if *dialect == Dialect::Util {
+            // A variable batch may occupy both the replacement and the
+            // filenames. Use a spelling proof only when no such filename
+            // can match the literal search in this parsed file mode.
+            if let Some((from, rest)) = call.operands.split_first()
+                && let Some(fragment) = from.text.as_deref()
+                && fragment.contains('/')
+                && rest.iter().all(|arg| arg.excludes_literal_path_fragment(fragment))
+            {
+                continue;
+            }
             if call.operands.len() < 3 {
                 if call.operands.iter().all(|a| a.single) {
                     continue;
@@ -1249,6 +1292,7 @@ mod tests {
                 roots: vec!["./foo".into(), "/opt/foo".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }),
             origin: None,
         };
@@ -1288,6 +1332,7 @@ mod tests {
                     roots: vec![root.into()],
                     may_escape: false,
                     basename_suffix: None,
+                    no_adjacent_slashes: false,
                 }),
                 origin: None,
             };
@@ -1443,6 +1488,7 @@ mod tests {
                     roots: vec![root.into()],
                     may_escape: false,
                     basename_suffix: None,
+                    no_adjacent_slashes: false,
                 }),
                 origin: None,
             };

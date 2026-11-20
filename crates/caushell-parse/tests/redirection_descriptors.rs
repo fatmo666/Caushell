@@ -148,6 +148,37 @@ fn signed_numeric_words_before_redirects_are_argv_not_io_numbers() {
 }
 
 #[test]
+fn signed_numeric_argv_and_its_adjacent_redirect_remain_a_complete_pipeline() {
+    for source in [
+        "printf '%s\\n' sample|head -200>out",
+        "printf '%s\\n' sample | head +200>>out",
+    ] {
+        let parsed = parse_command(source, ShellKind::Bash).unwrap();
+        assert_eq!(
+            parsed.status,
+            ParseStatus::Complete,
+            "{source}: {} {parsed:#?}",
+            syntax(source)
+        );
+        assert_eq!(parsed.commands.len(), 2);
+        let stage = &parsed.commands[1];
+        assert!(stage.in_pipeline);
+        let expected = if source.contains("-200") { "-200" } else { "+200" };
+        assert_eq!(stage.tokens[0].text, expected);
+        assert_eq!(
+            &source[stage.tokens[0].span.start_byte..stage.tokens[0].span.end_byte],
+            expected
+        );
+        let [redirect] = parsed.redirections.as_slice() else {
+            panic!("{source}: {parsed:#?}");
+        };
+        assert_eq!(redirect.file_descriptor, None);
+        assert_eq!(redirect.parent_command_span.as_ref(), Some(&stage.span));
+        assert_eq!(redirect.target.as_ref().unwrap().text, "out");
+    }
+}
+
+#[test]
 fn operators_and_descriptor_spelling_are_preserved_from_original_source() {
     for (source, fd, operator, target) in [
         ("cat 0<input", "0", "<", Some("input")),

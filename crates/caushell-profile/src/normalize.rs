@@ -1745,6 +1745,9 @@ fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, Normali
         RawSelectorExpr::HasPositionalAt { index } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::HasPositionalAt(index),
         )),
+        RawSelectorExpr::ExactArgumentCount { count } => Ok(SelectorExpr::Predicate(
+            SelectorPredicate::ExactArgumentCount(count),
+        )),
         RawSelectorExpr::ExactPositionalCount { count } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::ExactPositionalCount(count),
         )),
@@ -1772,6 +1775,9 @@ fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, Normali
         ),
         RawSelectorExpr::LastPositionalMatches { matcher } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::LastPositionalMatches(normalize_value_matcher(matcher)?),
+        )),
+        RawSelectorExpr::OptionsBeforePositionals => Ok(SelectorExpr::Predicate(
+            SelectorPredicate::OptionsBeforePositionals,
         )),
         RawSelectorExpr::NoPositionalArgs => {
             Ok(SelectorExpr::Predicate(SelectorPredicate::NoPositionalArgs))
@@ -3648,7 +3654,8 @@ fn normalize_interactive_escape_surface(
 ) -> crate::InteractiveEscapeSurface {
     crate::InteractiveEscapeSurface {
         kind: normalize_interactive_escape_surface_kind(raw.kind),
-        requires_tty: raw.requires_tty,
+        requires_tty: raw.requires_tty || raw.requires_stdout_tty,
+        requires_stdout_tty: raw.requires_stdout_tty,
         capabilities: raw
             .capabilities
             .into_iter()

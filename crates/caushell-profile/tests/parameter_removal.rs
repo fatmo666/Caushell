@@ -197,6 +197,7 @@ fn paths(roots: &[&str]) -> RuntimeArgumentDomain {
         roots: roots.iter().map(|r| r.to_string()).collect(),
         may_escape: false,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     }
 }
 #[test]

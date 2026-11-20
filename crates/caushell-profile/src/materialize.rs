@@ -1313,6 +1313,11 @@ pub enum ShellParameterReference {
         kind: ShellPatternRemovalKind,
         pattern: String,
     },
+    Substring {
+        name: String,
+        offset: usize,
+        length: Option<usize>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -1380,7 +1385,8 @@ where
             });
         }
         return parse_braced_shell_parameter_expansion(&body)
-            .or_else(|| parse_braced_shell_parameter_substitution(&body));
+            .or_else(|| parse_braced_shell_parameter_substitution(&body))
+            .or_else(|| parse_braced_shell_substring(&body));
     }
 
     if chars.peek().is_some_and(|ch| ch.is_ascii_digit()) {
@@ -1494,6 +1500,30 @@ fn resolved_parameter(
         ShellParameterReference::Variable(name) => {
             crate::resolve_shell_reference(bindings, T::Variable { name: name.clone() }).ok()
         }
+        ShellParameterReference::Substring { name, offset, length } => {
+            if bindings.shell_kind() != caushell_types::ShellKind::Bash {
+                return None;
+            }
+            let binding = bindings.get(name)?;
+            // Printable ASCII has stable byte and character boundaries. Keep
+            // stateful encodings, controls and other source kinds out of this proof.
+            let SessionValue::ExactScalar(value) = binding.value else {
+                return None;
+            };
+            if !value.bytes().all(|byte| byte.is_ascii_graphic() || byte == b' ') {
+                return None;
+            }
+            let start = (*offset).min(value.len());
+            let end = length.map_or(value.len(), |length| {
+                start.saturating_add(length).min(value.len())
+            });
+            Some(crate::ResolvedShellValue {
+                name: name.clone(),
+                value: SessionValue::exact_scalar(&value[start..end]),
+                origin: binding.origin,
+                dependencies: vec![name.clone()],
+            })
+        }
         ShellParameterReference::ArrayElement { name, index } => {
             let target = crate::shell_reference_target(&format!("{name}[{index}]"), bindings)?;
             crate::resolve_shell_reference(bindings, target).ok()
@@ -1603,7 +1633,9 @@ fn exact_scalar_shell_parameter_value_at_depth(
             .ok()?
             .value,
         ),
-        ShellParameterReference::ArrayElement { .. } | ShellParameterReference::Indirect { .. } => {
+        ShellParameterReference::ArrayElement { .. }
+        | ShellParameterReference::Indirect { .. }
+        | ShellParameterReference::Substring { .. } => {
             exact_scalar_session_value(&resolved_parameter(bindings, reference)?.value)
         }
         ShellParameterReference::ArrayValues { .. } => None,
@@ -1827,6 +1859,11 @@ fn materialize_shell_word_with_resolver(
                     Some(_) => out.push('\\'),
                     None => return None,
                 },
+                '$' if matches!(bindings.shell_kind(), caushell_types::ShellKind::Bash | caushell_types::ShellKind::Sh)
+                    && chars.peek().copied().is_some_and(caushell_parse::is_literal_dollar_follower) =>
+                {
+                    out.push('$');
+                }
                 '$' => {
                     let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
                     if mode == ShellWordMode::PositionalArgument
@@ -1837,6 +1874,7 @@ fn materialize_shell_word_with_resolver(
                                 | ShellParameterReference::Indirect { .. }
                                 | ShellParameterReference::Positional(_)
                                 | ShellParameterReference::PatternRemoval { .. }
+                                | ShellParameterReference::Substring { .. }
                         )
                     {
                         return None;
@@ -1860,6 +1898,11 @@ fn materialize_shell_word_with_resolver(
                 },
                 '$' => {
                     let reference = parse_shell_parameter_reference_after_dollar(&mut chars)?;
+                    if mode == ShellWordMode::CommandName
+                        && matches!(reference, ShellParameterReference::Substring { .. })
+                    {
+                        return None;
+                    }
                     if mode == ShellWordMode::PositionalArgument
                         && !matches!(
                             reference,
@@ -2015,6 +2058,31 @@ fn parse_braced_shell_parameter_substitution(body: &str) -> Option<ShellParamete
         replace_all,
         pattern: pattern.to_string(),
         replacement: replacement.to_string(),
+    })
+}
+
+fn parse_braced_shell_substring(body: &str) -> Option<ShellParameterReference> {
+    fn literal_bound(text: &str) -> Option<usize> {
+        // A leading zero otherwise changes the base in Bash arithmetic.
+        if (text.starts_with('0') && text.len() > 1) || !text.bytes().all(|b| b.is_ascii_digit()) {
+            return None;
+        }
+        usize::try_from(text.parse::<i32>().ok()?).ok()
+    }
+
+    let (ShellParameterName::Variable(name), rest) = parse_shell_parameter_name_prefix(body)? else {
+        return None;
+    };
+    let bounds = rest.strip_prefix(':')?;
+    let (offset, length) = if let Some((offset, length)) = bounds.split_once(':') {
+        (literal_bound(offset)?, Some(literal_bound(length)?))
+    } else {
+        (literal_bound(bounds)?, None)
+    };
+    Some(ShellParameterReference::Substring {
+        name,
+        offset,
+        length,
     })
 }
 
@@ -2660,10 +2728,41 @@ pub(crate) fn materialize_projected_invocation_with_argument_fields(
                 }
                 continue;
             }
-            if arg.word_context == crate::WordContext::ShellArgument
-                && let Some(domain) = integer_argument_domain(arg, bindings)
-                    .or_else(|| materialize_argument_domain(arg, bindings))
-            {
+            let render_fields = || {
+                materialize_argument_fields(
+                    arg,
+                    bindings,
+                    supports_region_alternatives
+                        && projection.shell_kind == caushell_types::ShellKind::Bash,
+                )
+            };
+            let mut exact_integer_fields = None;
+            let domain = if arg.word_context == crate::WordContext::ShellArgument {
+                if let Some(domain) = integer_argument_domain(arg, bindings) {
+                    let fields = render_fields();
+                    // An integer shape is a fallback for unknown bytes. Keep
+                    // exact argv and its origin when the same frame proves it.
+                    if matches!(
+                        fields.as_slice(),
+                        [MaterializedText {
+                            resolution: ValueMaterialization::ResolvedExactScalar { .. }
+                                | ValueMaterialization::ResolvedRuntimeProduced { .. }
+                                | ValueMaterialization::ResolvedShellWord { .. },
+                            ..
+                        }]
+                    ) {
+                        exact_integer_fields = Some(fields);
+                        None
+                    } else {
+                        Some(domain)
+                    }
+                } else {
+                    materialize_argument_domain(arg, bindings)
+                }
+            } else {
+                None
+            };
+            if let Some(domain) = domain {
                 let source = if matches!(
                     domain,
                     caushell_types::RuntimeArgumentDomain::GeneratedFileName { .. }
@@ -2687,11 +2786,7 @@ pub(crate) fn materialize_projected_invocation_with_argument_fields(
                 arg_resolutions.push(ValueMaterialization::RequiresImplicitInput { source });
                 continue;
             }
-            for materialized in materialize_argument_fields(
-                arg,
-                bindings,
-                supports_region_alternatives && projection.shell_kind == caushell_types::ShellKind::Bash,
-            ) {
+            for materialized in exact_integer_fields.unwrap_or_else(render_fields) {
                 args.push(ProjectedArg {
                     word_context: arg.word_context,
                     text: materialized.text,
@@ -3376,7 +3471,8 @@ fn materialize_shell_parameter_reference_fields(
         ShellParameterReference::AllPositionals(kind) => {
             materialize_all_positional_parameter_fields(*kind, quoted, bindings)
         }
-        ShellParameterReference::Variable(_) => {
+        ShellParameterReference::Substring { .. } if !quoted => None,
+        ShellParameterReference::Variable(_) | ShellParameterReference::Substring { .. } => {
             let binding = resolved_parameter(bindings, reference)?;
             materialize_session_value_field(binding.name, &binding.value, binding.origin, quoted)
                 .map(|field| vec![field])
@@ -3723,8 +3819,10 @@ fn materialize_argument_text_in_context(
 
     if let Some(
         reference @ (ShellParameterReference::ArrayElement { .. }
-        | ShellParameterReference::Indirect { .. }),
+        | ShellParameterReference::Indirect { .. }
+        | ShellParameterReference::Substring { .. }),
     ) = exact_shell_parameter_reference(text)
+        && (!matches!(reference, ShellParameterReference::Substring { .. }) || quoted || scalar)
     {
         if let Some(binding) = resolved_parameter(bindings, &reference) {
             let resolution = match &binding.value {
@@ -3934,7 +4032,8 @@ fn materialize_argument_text_in_context(
             let reference_value = |reference: &ShellParameterReference| match reference {
                 ShellParameterReference::Variable(_)
                 | ShellParameterReference::ArrayElement { .. }
-                | ShellParameterReference::Indirect { .. } => {
+                | ShellParameterReference::Indirect { .. }
+                | ShellParameterReference::Substring { .. } => {
                     resolved_parameter(bindings, reference)
                         .map(|binding| (binding.value, binding.origin))
                 }
@@ -4047,7 +4146,9 @@ fn materialize_argument_text_in_context(
 
 fn shell_parameter_reference_name(reference: &ShellParameterReference) -> String {
     match reference {
-        ShellParameterReference::Variable(name) => name.clone(),
+        ShellParameterReference::Variable(name) | ShellParameterReference::Substring { name, .. } => {
+            name.clone()
+        }
         ShellParameterReference::ArrayElement { name, .. }
         | ShellParameterReference::ArrayValues { name }
         | ShellParameterReference::Indirect { name } => name.clone(),
@@ -4230,6 +4331,54 @@ mod tests {
     }
 
     #[test]
+    fn bash_substrings_resolve_known_ascii_and_keep_quote_boundaries() {
+        let mut bindings = SessionBindings::new();
+        bindings.insert_exact_scalar("word", "a bc%nx");
+        bindings.insert_exact_scalar("unicode", "éx");
+        bindings.insert_exact_scalar("controls", "a\x1bb");
+        for (source, expected) in [
+            ("${word:0:1}", "a"),
+            ("${word:1:3}", " bc"),
+            ("${word:4}", "%nx"),
+            ("${word:4:2}", "%n"),
+            ("${word:80:1}", ""),
+            ("${word:2:0}", ""),
+            ("pre${word:2:2}post", "prebcpost"),
+        ] {
+            let result = super::materialize_argument_text(source, true, "string", &bindings);
+            assert_eq!(result.text, expected, "{source}");
+            assert!(matches!(
+                result.resolution,
+                ValueMaterialization::ResolvedExactScalar { .. }
+            ));
+        }
+        for source in [
+            "${word:$offset:1}",
+            "${word:1+1:1}",
+            "${word:01:1}",
+            "${word: -1:1}",
+            "${word:0:-1}",
+            "${word:2147483648}",
+            "${absent:0:1}",
+            "${unicode:0:1}",
+            "${controls:0:1}",
+        ] {
+            assert!(
+                super::exact_scalar_shell_parameter_reference_value(source, &bindings).is_none(),
+                "{source}"
+            );
+        }
+        assert!(
+            super::materialize_exact_shell_parameter_reference_fields("${word:0:1}", false, &bindings,)
+                .is_none()
+        );
+        bindings.set_shell_kind(ShellKind::Sh);
+        assert!(
+            super::exact_scalar_shell_parameter_reference_value("${word:0:1}", &bindings).is_none()
+        );
+    }
+
+    #[test]
     fn composite_positionals_materialize_single_fields_not_fictitious_indices() {
         let mut bindings = SessionBindings::new();
         bindings.set_shell_program_name(Some(crate::SessionValue::exact_scalar("/opt/program")));
@@ -4277,6 +4426,61 @@ mod tests {
             super::materialize_argument_text("$10", true, "string", &bindings).resolution,
             ValueMaterialization::UnsupportedDynamicText { .. }
         ));
+    }
+
+    #[test]
+    fn exact_integer_arguments_keep_their_bytes_and_unknown_integers_keep_their_shape() {
+        let source =
+            parse_command(r#"printf '%s' "$number" "n=${number}""#, ShellKind::Bash).unwrap();
+        let projection = project_invocation(
+            &source.commands[0],
+            crate::InvocationRuntimeContext::default().with_shell_kind(ShellKind::Bash),
+        );
+        let facts = super::ShellVariableFacts {
+            integer_scalar: true,
+            ..Default::default()
+        };
+        let mut exact = SessionBindings::new().with_exact_scalar("number", "7");
+        exact.set_variable_facts("number", facts);
+        let result = materialize_projected_invocation(&projection, &exact);
+        for (index, text) in [(1, "7"), (2, "n=7")] {
+            let argument = &result.invocation.args[index];
+            assert_eq!(argument.text, text, "{:#?}", result.arg_resolutions);
+            assert!(argument.runtime_data && argument.runtime_argument_domain.is_none());
+            assert!(matches!(
+                result.arg_resolutions[index],
+                ValueMaterialization::ResolvedExactScalar { .. }
+            ));
+        }
+
+        let mut produced = SessionBindings::new().with_runtime_produced(
+            "number",
+            "7",
+            RuntimeProducedValueKind::Scalar,
+        );
+        produced.set_variable_facts("number", facts);
+        let result = materialize_projected_invocation(&projection, &produced);
+        assert!(matches!(
+            &result.arg_resolutions[1],
+            ValueMaterialization::ResolvedRuntimeProduced {
+                kind: RuntimeProducedValueKind::Scalar, value, ..
+            } if value == "7"
+        ));
+
+        let mut symbolic = SessionBindings::new().with_opaque_dynamic("number", "fixture");
+        symbolic.set_variable_facts("number", facts);
+        let result = materialize_projected_invocation(&projection, &symbolic);
+        for (index, prefix) in [(1, ""), (2, "n=")] {
+            assert!(matches!(
+                &result.invocation.args[index].runtime_argument_domain,
+                Some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix: actual, suffix })
+                    if actual == prefix && suffix.is_empty()
+            ));
+            assert!(matches!(
+                result.arg_resolutions[index],
+                ValueMaterialization::RequiresImplicitInput { .. }
+            ));
+        }
     }
 
     #[test]

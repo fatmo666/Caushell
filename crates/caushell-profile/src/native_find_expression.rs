@@ -11,6 +11,8 @@ pub(crate) enum Expression {
     Not(Box<Self>),
     Output(NativeRecordFormat),
     Prune,
+    FollowLinks,
+    StayOnDevice,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -35,7 +37,7 @@ impl Expression {
             Self::Test(NativePathPredicate::Constant(value)) => (Some(*value), false),
             Self::Test(_) | Self::MetadataTest { .. } => (None, false),
             Self::Output(_) => (Some(true), true),
-            Self::Prune => (Some(true), false),
+            Self::Prune | Self::FollowLinks | Self::StayOnDevice => (Some(true), false),
             Self::Not(inner) => {
                 let (truth, emits) = inner.output_reachability();
                 (truth.map(|value| !value), emits)
@@ -57,13 +59,48 @@ impl Expression {
         }
     }
 
-    pub(crate) fn contains_metadata_test(&self) -> bool {
+    /// This traversal setting takes effect while parsing the whole expression,
+    /// even if the evaluator later short-circuits the branch containing it.
+    pub(crate) fn follows_symlinks(&self) -> bool {
         match self {
-            Self::MetadataTest { .. } => true,
-            Self::And(a, b) | Self::Or(a, b) => {
-                a.contains_metadata_test() || b.contains_metadata_test()
+            Self::FollowLinks => true,
+            Self::And(a, b) | Self::Or(a, b) => a.follows_symlinks() || b.follows_symlinks(),
+            Self::Not(inner) => inner.follows_symlinks(),
+            _ => false,
+        }
+    }
+
+    /// This primary controls descent even when its Boolean branch is skipped.
+    pub(crate) fn stays_on_device(&self) -> bool {
+        match self {
+            Self::StayOnDevice => true,
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.stays_on_device() || right.stays_on_device()
             }
-            Self::Not(inner) => inner.contains_metadata_test(),
+            Self::Not(inner) => inner.stays_on_device(),
+            _ => false,
+        }
+    }
+
+    fn disable_pruning(&mut self) {
+        match self {
+            Self::Prune => *self = Self::Test(NativePathPredicate::Constant(true)),
+            Self::And(left, right) | Self::Or(left, right) => {
+                left.disable_pruning();
+                right.disable_pruning();
+            }
+            Self::Not(inner) => inner.disable_pruning(),
+            _ => {}
+        }
+    }
+
+    pub(crate) fn contains_metadata_test(&self, name: Option<&str>) -> bool {
+        match self {
+            Self::MetadataTest { test, .. } => name.is_none_or(|name| test == name),
+            Self::And(a, b) | Self::Or(a, b) => {
+                a.contains_metadata_test(name) || b.contains_metadata_test(name)
+            }
+            Self::Not(inner) => inner.contains_metadata_test(name),
             _ => false,
         }
     }
@@ -123,8 +160,14 @@ impl Expression {
             Self::Test(test) => match test {
                 NativePathPredicate::Constant(v) => *v,
                 NativePathPredicate::Kind(v) => *v == kind,
-                NativePathPredicate::Name { pattern, insensitive }
-                | NativePathPredicate::Path { pattern, insensitive } => {
+                NativePathPredicate::Name {
+                    pattern,
+                    insensitive,
+                }
+                | NativePathPredicate::Path {
+                    pattern,
+                    insensitive,
+                } => {
                     if *insensitive && !case_fold_proven {
                         return Err("native case folding locale is unobserved or unsupported");
                     }
@@ -139,6 +182,12 @@ impl Expression {
             // The syntax is closed, but the observer does not have an
             // authoritative value for this test. Only a branch that reaches
             // it loses exact output; the existing short circuit owns that.
+            Self::MetadataTest { test, .. } if test == "-perm" => {
+                return Err("native permission bits are unobserved");
+            }
+            Self::MetadataTest { test, .. } if test == "-newermt" => {
+                return Err("native modification time and reference timezone are unobserved");
+            }
             Self::MetadataTest { .. } => {
                 return Err("native numeric metadata predicate is unobserved");
             }
@@ -155,6 +204,7 @@ impl Expression {
                 result.prune = true;
                 true
             }
+            Self::FollowLinks | Self::StayOnDevice => true,
             Self::Output(format) => {
                 crate::native_records::encode_format(
                     format,
@@ -183,12 +233,55 @@ fn numeric_metadata_operand(test: &str, operand: &str) -> bool {
     digits.bytes().all(|b| b.is_ascii_digit()) && digits.parse::<u32>().is_ok()
 }
 
+/// Recognize the shared numeric date spelling, leaving calendar and timezone
+/// interpretation to the native tool.
+fn civil_time_spelling(operand: &str) -> bool {
+    let shape = b"dddd-dd-dd dd:dd:dd";
+    operand.len() == shape.len()
+        && operand.bytes().zip(shape).all(|(actual, expected)| {
+            if *expected == b'd' {
+                actual.is_ascii_digit()
+            } else {
+                actual == *expected
+            }
+        })
+}
+
+/// Keep the shared octal and explicit-class symbolic subset. The slash prefix
+/// is a GNU extension and cannot establish an output plan across dialects.
+fn validate_permission_operand(operand: &str) -> Result<(), &'static str> {
+    let mode = operand.strip_prefix(['-', '/']).unwrap_or(operand);
+    let octal =
+        (1..=4).contains(&mode.len()) && mode.bytes().all(|digit| matches!(digit, b'0'..=b'7'));
+    let symbolic = mode.split(',').all(|clause| {
+        clause
+            .split_once(['=', '+', '-'])
+            .is_some_and(|(who, bits)| {
+                !who.is_empty()
+                    && who
+                        .bytes()
+                        .all(|byte| matches!(byte, b'u' | b'g' | b'o' | b'a'))
+                    && !bits.is_empty()
+                    && bits.bytes().all(|byte| matches!(byte, b'r' | b'w' | b'x'))
+            })
+    });
+    if !octal && !symbolic {
+        return Err("unsupported native permission mode");
+    }
+    if operand.starts_with('/') {
+        return Err("native permission mode requires a GNU find dialect proof");
+    }
+    Ok(())
+}
+
 struct Parser<'a> {
     argv: &'a [String],
     at: usize,
     min_depth: usize,
     max_depth: Option<usize>,
     has_output: bool,
+    depth_first: bool,
+    apple_leading_x: bool,
 }
 impl Parser<'_> {
     fn peek(&self) -> Option<&str> {
@@ -265,6 +358,24 @@ impl Parser<'_> {
                     operand: operand.to_owned(),
                 }
             }
+            "-newermt" => {
+                let operand = self.take()?.to_owned();
+                if !civil_time_spelling(&operand) {
+                    return Err("unsupported native modification-time date spelling");
+                }
+                Expression::MetadataTest {
+                    test: word,
+                    operand,
+                }
+            }
+            "-perm" => {
+                let operand = self.take()?;
+                validate_permission_operand(operand)?;
+                Expression::MetadataTest {
+                    test: word,
+                    operand: operand.to_owned(),
+                }
+            }
             "-mindepth" | "-maxdepth" => {
                 let token = self.take()?;
                 let value = (!token.is_empty() && token.bytes().all(|b| b.is_ascii_digit()))
@@ -280,7 +391,16 @@ impl Parser<'_> {
                 // Traversal options apply globally, even on an unevaluated branch.
                 Expression::Test(NativePathPredicate::Constant(true))
             }
+            "-depth" => {
+                self.depth_first = true;
+                Expression::Test(NativePathPredicate::Constant(true))
+            }
             "-prune" => Expression::Prune,
+            "-follow" => Expression::FollowLinks,
+            "-xdev" | "-mount" => Expression::StayOnDevice,
+            "-printf" if self.apple_leading_x => {
+                return Err("Apple find does not support -printf");
+            }
             "-print" | "-print0" | "-printf" => {
                 let format = match word.as_str() {
                     "-print" => NativeRecordFormat::Line,
@@ -295,7 +415,7 @@ impl Parser<'_> {
     }
 }
 
-pub(crate) fn parse(argv: &[String]) -> Result<ParsedFind, &'static str> {
+pub(crate) fn parse(argv: &[String], apple_find: bool) -> Result<ParsedFind, &'static str> {
     if argv.len() > 256 || argv.iter().any(|a| a.len() > 4096 || a.contains('\0')) {
         return Err("producer argv budget exceeded");
     }
@@ -305,8 +425,23 @@ pub(crate) fn parse(argv: &[String]) -> Result<ParsedFind, &'static str> {
         min_depth: 0,
         max_depth: None,
         has_output: false,
+        depth_first: false,
+        apple_leading_x: false,
     };
-    while parser.peek() == Some("-P") {
+    let mut follow_descendants = false;
+    let mut requires_explicit_root = false;
+    while let Some(mode @ ("-H" | "-L" | "-P" | "-x")) = parser.peek() {
+        if mode == "-x" {
+            if !apple_find {
+                return Err("leading -x requires an Apple find dialect proof");
+            }
+            parser.apple_leading_x = true;
+        } else {
+            // The last link setting wins. With -H, the observer must see a
+            // real directory at the root, so descendant traversal is physical.
+            follow_descendants = mode == "-L";
+            requires_explicit_root |= mode != "-P";
+        }
         parser.at += 1;
     }
     if parser.peek() == Some("--") {
@@ -323,7 +458,14 @@ pub(crate) fn parse(argv: &[String]) -> Result<ParsedFind, &'static str> {
         }
         roots.push(root.to_owned());
     }
-    if roots.is_empty() {
+    let implicit_root = roots.is_empty();
+    if implicit_root {
+        if parser.apple_leading_x {
+            return Err("native device traversal requires an explicit starting point");
+        }
+        if requires_explicit_root {
+            return Err("native link mode requires an explicit search root");
+        }
         roots.push(".".into());
     }
     let mut expression = if parser.peek().is_none() {
@@ -333,6 +475,24 @@ pub(crate) fn parse(argv: &[String]) -> Result<ParsedFind, &'static str> {
     };
     if parser.peek().is_some() {
         return Err("trailing native expression token");
+    }
+    if parser.depth_first {
+        if implicit_root {
+            // BSD find has no implicit starting point.
+            return Err("native depth traversal requires an explicit starting point");
+        }
+        // The observer proves a record set and does not promise traversal order.
+        // In depth-first find, -prune still tests true after visiting children.
+        expression.disable_pruning();
+    }
+    if implicit_root && expression.stays_on_device() {
+        return Err("native device traversal requires an explicit starting point");
+    }
+    if parser.apple_leading_x {
+        expression = Expression::And(Box::new(Expression::StayOnDevice), Box::new(expression));
+    }
+    if follow_descendants {
+        expression = Expression::And(Box::new(Expression::FollowLinks), Box::new(expression));
     }
     // A prune action alone does not suppress find's implicit print. Any explicit
     // output suppresses it globally, including output on an unvisited branch.
@@ -348,4 +508,82 @@ pub(crate) fn parse(argv: &[String]) -> Result<ParsedFind, &'static str> {
         max_depth: parser.max_depth,
         expression,
     })
+}
+
+#[cfg(test)]
+mod depth_tests {
+    use super::*;
+
+    fn evaluation(arguments: &[&str], path: &str) -> NativeFindEvaluation {
+        let mut argv = vec![".".to_owned()];
+        argv.extend(arguments.iter().map(|word| (*word).to_owned()));
+        let name = path.rsplit('/').next().unwrap();
+        let mut result = NativeFindEvaluation::default();
+        parse(&argv, false)
+            .expect("recognize the traversal expression")
+            .expression
+            .evaluate(
+                path,
+                path,
+                name,
+                DirectoryEntryKind::Directory,
+                true,
+                &mut result,
+            )
+            .unwrap();
+        result
+    }
+
+    #[test]
+    fn depth_disables_pruning_but_preserves_its_true_result() {
+        let ordinary = evaluation(&["-name", "skip", "-prune", "-o", "-print0"], "./skip");
+        assert!(ordinary.prune);
+        assert!(!ordinary.emitted);
+
+        let depth = ["-depth", "-name", "skip", "-prune", "-o", "-print0"];
+        let directory = evaluation(&depth, "./skip");
+        assert!(!directory.prune);
+        assert!(!directory.emitted);
+        let child = evaluation(&depth, "./skip/nested");
+        assert!(child.emitted);
+        assert_eq!(child.bytes, b"./skip/nested\0");
+    }
+
+    #[test]
+    fn depth_is_global_even_inside_a_skipped_branch() {
+        let result = evaluation(
+            &[
+                "(",
+                "-name",
+                "unmatched",
+                "-a",
+                "-depth",
+                ")",
+                "-o",
+                "-name",
+                "skip",
+                "-prune",
+                "-o",
+                "-print0",
+            ],
+            "./skip",
+        );
+        assert!(!result.prune);
+        assert!(!result.emitted);
+
+        let operand = evaluation(&["-name", "-depth", "-prune", "-o", "-print0"], "./-depth");
+        assert!(operand.prune);
+        assert!(!operand.emitted);
+    }
+
+    #[test]
+    fn depth_requires_an_explicit_starting_point() {
+        for argv in [vec!["-depth", "-print0"], vec!["--", "-depth", "-print0"]] {
+            let argv = argv.into_iter().map(str::to_owned).collect::<Vec<_>>();
+            assert_eq!(
+                parse(&argv, false).err(),
+                Some("native depth traversal requires an explicit starting point")
+            );
+        }
+    }
 }

@@ -165,3 +165,75 @@ fn nested_sed_does_not_erase_known_embedded_effects() {
     expect("sed -i'/opt/*' 's/a/b/' input", Decision::NeedApproval);
     expect("sed -i\"$SUFFIX\" 's/a/b/' input", Decision::NeedApproval);
 }
+
+#[test]
+fn gsed_uses_the_sed_in_place_contract_in_direct_and_find_dispatch() {
+    expect("gsed -i -E 's/a+/b/' input", Decision::Allow);
+    let edits = paths("gsed -i -E 's/a+/b/' input");
+    assert!(edits.iter().any(|(role, target)| {
+        *role == ResolvedPathRole::Write && target.concrete_path() == Some("/tmp/project/input")
+    }));
+    let nested = |name| {
+        ShellQueryCore::new().check(request(&format!(
+            r"find . -type f -exec {name} -i -E 's/a+/b/' {{}} \;"
+        )))
+    };
+    let canonical = nested("sed");
+    let alias = nested("gsed");
+    assert_eq!(alias.decision, canonical.decision);
+    assert_eq!(alias.reasons, canonical.reasons);
+    assert!(
+        alias
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|fact| { fact.form_id == "positional_script_transform_in_place" })
+    );
+    assert!(alias.decision_trace.path_targets.iter().any(|target| {
+        target.operation == PathTargetOperation::Write && target.slot_name == "input_paths"
+    }));
+}
+
+#[test]
+fn gsed_alias_preserves_script_and_path_approval_reasons() {
+    for arguments in [
+        "-i 's/a/b/' /opt/shared/input",
+        "'w /opt/shared/output' input",
+        "'e printf fixture' input",
+        "-f /opt/shared/unseen.sed input",
+        "--unrecognized-option input",
+    ] {
+        let canonical = ShellQueryCore::new().check(request(&format!("sed {arguments}")));
+        let alias = ShellQueryCore::new().check(request(&format!("gsed {arguments}")));
+        assert_eq!(canonical.decision, Decision::NeedApproval, "{arguments}");
+        assert_eq!(alias.decision, canonical.decision, "{arguments}");
+        let rules = |result: &CheckResponse| {
+            result
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .map(|proposal| proposal.rule_id)
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(rules(&alias), rules(&canonical), "{arguments}");
+    }
+}
+
+#[test]
+fn unterminated_blank_substitution_has_no_script_execution_or_write() {
+    let command = r#"find . -type f -name '*.fixture' -exec sed '/x/s /x//g' '{}' \;"#;
+    let result = ShellQueryCore::new().check(request(command));
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert!(result.decision_trace.execution_semantics.iter().any(|item| {
+        item.normalized_command_name == "sed" && !item.executes_payload
+    }));
+    assert!(result.decision_trace.path_targets.iter().all(|item| {
+        item.operation != PathTargetOperation::Write
+    }));
+}
+
+#[test]
+fn unterminated_blank_substitution_preserves_an_earlier_script_write() {
+    let command = "sed -e 'w /opt/shared/fixture' -e '/x/s /x//g' input";
+    expect(command, Decision::NeedApproval);
+}

@@ -1,0 +1,36 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pg_dump, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos, windows], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: short_clusters
+opaque_on_unresolved: true
+selection_failure_effects:
+  - {kind: database_operation, database_operation: opaque, target: {kind: none}}
+forms:
+  - id: plain_stdout
+    selector: {kind: exact_positional_count, count: 1}
+    parameters:
+      - {name: database, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: database_operation, database_operation: read, target: {kind: none}}
+      - {kind: network_endpoint, target: {kind: none}}
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      # A read-only server transaction does not constrain libpq client diagnostics.
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+modifiers:
+  - id: username
+    matcher: {kind: any_flag, flags: [-U, --username]}
+    parameters:
+      - {name: username, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+extensions:
+  caushell.profile/source_research:
+    - https://www.postgresql.org/docs/18/app-pgdump.html
+    - https://github.com/postgres/postgres/blob/REL_18_STABLE/src/bin/pg_dump/pg_dump.c
+    - https://www.postgresql.org/docs/18/libpq-connect.html
+    - https://www.postgresql.org/docs/18/libpq-pgservice.html
+  caushell.profile/known_limitations:
+    - Only the default plain stdout dump with one explicit database and optional username is modeled. Additional options remain unresolved.
+    - The database name may carry connection settings. Connection-service configuration, the negotiated transport and optional local diagnostic output are not observed.

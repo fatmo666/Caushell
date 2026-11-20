@@ -25,7 +25,7 @@ pub(crate) fn parse_for_backquotes(parser: &mut Parser, source: &[u8]) -> Result
     bare_dollar::recover(parser, source, tree, true)
 }
 
-pub(crate) use bare_dollar::literal_punctuation;
+pub use bare_dollar::is_literal_dollar_follower;
 
 fn parse_escaped_blanks(parser: &mut Parser, source: &[u8]) -> Result<Tree, ParseError> {
     let mut tree = parser

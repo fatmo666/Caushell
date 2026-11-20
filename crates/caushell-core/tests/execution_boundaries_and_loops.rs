@@ -27,6 +27,45 @@ fn opaque(r: &CheckResponse) -> bool {
 }
 
 #[test]
+fn a_self_delimiting_loop_tail_retains_its_write_checks() {
+    let inside = check("while false; do if true; then printf fixture > ./out; fi done");
+    assert_eq!(inside.decision, Decision::Allow, "{:?}", inside.reasons);
+    let outside = check("while false; do if true; then printf fixture > /opt/shared/out; fi done");
+    assert_eq!(outside.decision, Decision::NeedApproval);
+    assert!(
+        outside
+            .decision_trace
+            .decision_proposals
+            .iter()
+            .any(|proposal| proposal.rule_id == RuleId::OutsideWorkspaceMutation)
+    );
+    assert!(outside.decision_trace.path_targets.iter().any(|target| {
+        target.operation == PathTargetOperation::Write
+            && target.lexical.concrete_path() == Some("/opt/shared/out")
+    }));
+}
+
+#[test]
+fn closing_a_compound_condition_preserves_branch_effects() {
+    let inside = check("if (printf condition) then printf fixture > ./out; fi");
+    assert_eq!(inside.decision, Decision::Allow, "{:?}", inside.reasons);
+    for command in [
+        "if (printf condition) then printf fixture > /opt/shared/out; fi",
+        "if (printf fixture > /opt/shared/out) then printf ok; fi",
+    ] {
+        let outside = check(command);
+        assert_eq!(outside.decision, Decision::NeedApproval);
+        assert!(
+            outside
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| proposal.rule_id == RuleId::OutsideWorkspaceMutation)
+        );
+    }
+}
+
+#[test]
 fn inline_stream_and_outside_non_shell_code_keep_approval() {
     for c in [
         "python -c 'print(1)'",
@@ -180,6 +219,68 @@ fn interactive_escape_defaults_to_ask_but_can_be_overridden() {
 }
 
 #[test]
+fn more_reports_unobserved_input_hooks_independently_of_interactivity() {
+    let result = check("more notes.txt | cat");
+    assert_eq!(result.decision, Decision::NeedApproval);
+    for variable in ["LESSOPEN", "LESSCLOSE"] {
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| reason.contains(variable)),
+            "{variable}: {:?}",
+            result.reasons
+        );
+    }
+    assert!(
+        result
+            .decision_trace
+            .findings
+            .iter()
+            .any(|finding| { finding.rule_id == RuleId::InteractiveEscapeSurface })
+    );
+}
+
+#[test]
+fn more_keeps_observed_input_hooks_opaque_and_empty_overrides_inert() {
+    for command in [
+        "LESSOPEN=fixture-open LESSCLOSE='' more notes.txt | cat",
+        "LESSOPEN=fixture-open LESSCLOSE=fixture-close more notes.txt | cat",
+    ] {
+        let result = check(command);
+        assert_eq!(result.decision, Decision::NeedApproval);
+        assert!(
+            result
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|semantics| {
+                    semantics.normalized_command_name == "more" && semantics.executes_payload
+                }),
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+    let result = check("LESSOPEN='' LESSCLOSE='' more notes.txt | cat");
+    assert_eq!(result.decision, Decision::NeedApproval);
+    assert!(
+        result
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|semantics| {
+                semantics.normalized_command_name == "more" && !semantics.executes_payload
+            })
+    );
+    assert!(
+        result
+            .reasons
+            .iter()
+            .all(|reason| !reason.contains("native environment control is not observed"))
+    );
+}
+
+#[test]
 fn quoted_iteration_paths_keep_bounds_and_templates() {
     let mut policy = PolicyConfig::default();
     policy.rule_policy.rules.insert(
@@ -274,17 +375,31 @@ fn oversized_lists_and_implicit_unknown_positionals_do_not_guess() {
 #[test]
 fn for_list_substitutions_have_their_own_execution_units() {
     for (command, expected) in [
-        (r#"for entry in "$(find . -type f -print)"; do printf '%s\n' "$entry"; done"#, 1),
+        (
+            r#"for entry in "$(find . -type f -print)"; do printf '%s\n' "$entry"; done"#,
+            1,
+        ),
         (r#"for entry in "`find . -type f -print`"; do :; done"#, 1),
-        (r#"for entry in "$(find . -print)" "$(find . -print)"; do :; done"#, 2),
+        (
+            r#"for entry in "$(find . -print)" "$(find . -print)"; do :; done"#,
+            2,
+        ),
         (r#"for entry in '$(find . -type f -print)'; do :; done"#, 0),
-        (r#"scan() { for entry in "$(find . -print)"; do :; done; }"#, 0),
-        (r#"scan() { for entry in "$(find . -print)"; do :; done; }; scan"#, 1),
+        (
+            r#"scan() { for entry in "$(find . -print)"; do :; done; }"#,
+            0,
+        ),
+        (
+            r#"scan() { for entry in "$(find . -print)"; do :; done; }; scan"#,
+            1,
+        ),
     ] {
         let response = check(command);
         let trace = &response.decision_trace;
         assert_eq!(
-            trace.execution_semantics.iter()
+            trace
+                .execution_semantics
+                .iter()
                 .filter(|entry| entry.normalized_command_name == "find")
                 .count(),
             expected,

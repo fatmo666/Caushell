@@ -1,0 +1,53 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: svn, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: local_status
+    selector: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(status|stat|st)$'}}
+    # Working-copy metadata and the account's default configuration location
+    # are not fully observed. Initialization can create config files.
+    operation_semantics_unresolved: true
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: subcommand, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - name: working_copy
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: optional_one
+        value_constraints: [{kind: require_match, pattern: '^[^-:@][^:@]*$'}]
+    effects:
+      - kind: read_path
+        target: {kind: configured_path, sources: [{slot: working_copy, projection: {kind: identity}}], default_value: ".", purpose: generic_operand}
+      - kind: load_config
+        target: &config_root
+          kind: configured_path
+          sources: [{slot: config_dir, projection: {kind: identity}}]
+          missing: unknown
+          purpose: tool_config
+      - kind: write_path
+        namespace_effect: directory_tree_write
+        target: *config_root
+
+modifiers:
+  - id: config_directory
+    matcher: {kind: any_flag, flags: [--config-dir]}
+    parameters:
+      - name: config_dir
+        semantic: {kind: path, role: config, purpose: tool_config}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/apache/subversion/blob/1.14.x/subversion/svn/svn.c
+    - https://github.com/apache/subversion/blob/1.14.x/subversion/libsvn_subr/config_file.c
+    - https://github.com/apache/subversion/blob/1.14.x/subversion/svn/status-cmd.c
+  caushell.profile/known_limitations:
+    - The default user configuration directory depends on the native environment and account; the profile does not infer that path from the guard process.
+    - Remote status, URLs, peg revisions, additional targets and other subcommands remain unresolved. No complete stream or working-copy metadata proof is supplied.

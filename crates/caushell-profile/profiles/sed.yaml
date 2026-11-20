@@ -3,7 +3,7 @@ kind: command_profile
 
 identity:
   canonical_name: sed
-  aliases: []
+  aliases: [gsed]
 
 trust:
   tier: tier_a
@@ -173,7 +173,8 @@ forms:
         binding:
           kind: next_positional
         cardinality: required_one
-      - name: stdin_markers
+      - &positional_stdin_markers
+        name: stdin_markers
         semantic: {kind: plain_value}
         binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}
         cardinality: optional_many
@@ -208,11 +209,58 @@ forms:
     effects: *sed_effects
 
   - id: positional_script_transform_in_place
-    selector: {kind: all, items: [*positional_script_transform_selector, {kind: has_modifier, modifier: in_place}]}
+    selector:
+      kind: all
+      items:
+        - *positional_script_transform_selector
+        - {kind: has_modifier, modifier: in_place}
+        - kind: not
+          item: &split_empty_suffix
+            kind: all
+            items:
+              - {kind: no_dash_dash}
+              - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: '-i'}}
+              - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: ''}}
+              - kind: has_argument_at_matching
+                index: 2
+                matcher: {kind: regex_pattern, pattern: '^s/[^/\r\n]*/[^/\r\n]*/$'}
+              - {kind: has_positional_at, index: 2}
+              - kind: not
+                item:
+                  kind: any
+                  items:
+                    - {kind: has_modifier, modifier: quiet}
+                    - {kind: has_modifier, modifier: ordinary_controls}
+                    - {kind: has_modifier, modifier: line_length}
+                    - {kind: has_flag, flag: '--in-place'}
+                    - {kind: has_flag_at_least, flag: '-i', count: 2}
     parameters: *positional_inputs
     payload_projections: *positional_script_transform_payload
     stream_contract: {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
     effects: *sed_effects
+
+  - id: positional_in_place_split_empty_suffix
+    selector: {kind: all, items: [*positional_script_transform_selector, {kind: has_modifier, modifier: in_place}, *split_empty_suffix]}
+    parameters:
+      - {name: empty_suffix_or_script, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: script, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - *positional_stdin_markers
+      - *input_paths
+    payload_projections: *positional_script_transform_payload
+    # BSD parses the second positional as a script. GNU parses it as an
+    # input path, but the final slash precludes editing it as a regular file.
+    # Unobserved dialect and temporary sibling behavior still require review.
+    operation_semantics_unresolved: true
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
+      - kind: target_path
+        target: {kind: configured_path, sources: [{slot: script, projection: {kind: identity}}], missing: skip, purpose: generic_operand}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: script_reads}}
+      - {kind: write_path, path_access: content_open, target: {kind: slot, name: script_writes}, catastrophic: {semantic_class: raw_write_target}}
+      - {kind: delete_path, target: {kind: slot, name: script_deletes}}
+      - {kind: execute_payload, target: {kind: slot, name: script_executions}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: in_place_dash_paths}}
 
 
   - id: explicit_script_transform_quiet

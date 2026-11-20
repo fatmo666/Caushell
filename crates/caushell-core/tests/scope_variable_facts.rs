@@ -43,6 +43,22 @@ fn positive_facts_follow_visible_function_and_substitution_frames() {
 }
 
 #[test]
+fn function_positional_assignment_owns_later_arithmetic_in_a_substitution() {
+    check(
+        "check_value() { local family=$1; local value=$2; if [[ \"$family\" == sample ]] && (( value > 2 )); then printf '%s' yes; fi; }; family=sample; value=5; result=$(check_value \"$family\" \"$value\"); printf '%s' \"$result\"",
+        Decision::Allow,
+    );
+    check(
+        "compare() { local value=$1; (( value > 2 )); }; value=5; compare \"$value\"",
+        Decision::Allow,
+    );
+    check(
+        "compare() { local value=$1; (( value > 2 )); }; result=$(compare \"$unknown\")",
+        Decision::NeedApproval,
+    );
+}
+
+#[test]
 fn writes_shadowing_and_unknown_operations_do_not_retain_old_proofs() {
     for source in [
         "ord=$(printf '%d' 1); ord=$unknown; f() { printf '%d' \"$((ord))\"; }; f",

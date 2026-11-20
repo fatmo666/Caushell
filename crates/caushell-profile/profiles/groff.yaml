@@ -1,0 +1,57 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: groff, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: short_clusters
+opaque_on_unresolved: true
+
+forms:
+  - id: render_andoc_html_from_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: no_positional_args}
+        - {kind: has_modifier_parameter_matching, modifier: macro_package, parameter: package, matcher: {kind: literal, value: andoc}}
+        - {kind: has_modifier_parameter_matching, modifier: output_device, parameter: device, matcher: {kind: literal, value: html}}
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    operation_semantics_unresolved: true
+    effects:
+      # The macro files, device description and helper search depend on
+      # the installed configuration and the execution environment.
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: execute_payload, target: {kind: configured_path, sources: [], missing: unknown, purpose: script_source}}
+      # The HTML driver can emit image files and create temporary files.
+      # Only the intermediate files are subject to driver cleanup.
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+      - {kind: delete_path, target: {kind: configured_path, sources: [], missing: unknown}}
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stdout_dependency: inputs, stderr_mode: opaque}
+
+modifiers:
+  - id: macro_package
+    matcher: {kind: any_flag, flags: [-m]}
+    parameters:
+      - name: package
+        semantic: {kind: plain_value}
+        binding: &value {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        value_constraints: [{kind: require_match, pattern: '^andoc$'}]
+  - id: output_device
+    matcher: {kind: any_flag, flags: [-T]}
+    parameters:
+      - name: device
+        semantic: {kind: plain_value}
+        binding: *value
+        cardinality: required_one
+        value_constraints: [{kind: require_match, pattern: '^html$'}]
+
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/groff/manual/groff.html
+    - https://www.gnu.org/software/groff/manual/groff-man-pages.pdf
+    - https://lists.gnu.org/archive/html/info-gnu/2023-07/msg00001.html
+  caushell.profile/known_limitations:
+    - Models HTML rendering of stdin with the andoc macro package. Other drivers, macro packages, input filenames and unsafe mode remain unresolved.
+    - No renderer executable, document include path, image path or temporary directory is established by these flags alone.

@@ -1,7 +1,7 @@
 use caushell_graph::NodeId;
 use caushell_profile::{
-    BoundArgumentMaterialization, EffectKind, EffectTarget, SemanticValueRef,
-    SemanticValueResolution,
+    BoundArgumentMaterialization, EffectKind, EffectTarget, FilesystemNamespaceImpact,
+    SemanticValueRef, SemanticValueResolution,
 };
 use caushell_query::IoTarget;
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
@@ -48,7 +48,8 @@ struct Input {
     cwd_dependent: bool,
     directory_anchor: Option<String>,
     namespace_effect: Option<caushell_types::PathNamespaceEffect>,
-    relocation_scope: Option<String>,
+    move_from_dot_search: bool,
+    relocation_scope: Option<entry_relocation::RelocationScope>,
 }
 
 impl SessionTransformPass for ResolvePathTargetsPass {
@@ -130,8 +131,11 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     Vec::new(),
                 )
             };
-            if inputs[index].namespace_effect
+            if (inputs[index].namespace_effect
                 == Some(caushell_types::PathNamespaceEffect::EntryRemoval)
+                || (inputs[index].namespace_effect
+                    == Some(caushell_types::PathNamespaceEffect::EntryRelocation)
+                    && inputs[index].fact.operation == PathTargetOperation::MoveSource))
                 && let SemanticResolution::Resolved {
                     value: PathResolution::Concrete { path },
                 } = &resolution
@@ -228,6 +232,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                         if let Some(proof) = namespace_state::scope_preservation(
                             &inputs[*other],
                             &baselines[*other],
+                            &inputs[index],
                             &baselines[index],
                         ) {
                             proofs.push(proof);
@@ -412,12 +417,24 @@ fn new_input(
         cwd_dependent: false,
         directory_anchor: None,
         namespace_effect: None,
+        move_from_dot_search: false,
         relocation_scope: None,
     }
 }
 
 fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
+    use caushell_profile::{BoundValue, ImplicitInputSource};
+    use caushell_runner::{CwdPathContext, ExecutionUnitOriginKind};
+    use caushell_types::RuntimeArgumentDomain;
+
     let cwd = ctx.request().shell_state_before.cwd();
+    let find_parents: std::collections::BTreeSet<_> = ctx.execution_unit_resolve_records().iter()
+        .filter(|r| r.origin_kind == ExecutionUnitOriginKind::TopLevel
+            && matches!(&r.result, caushell_profile::ResolveInvocationArtifactResult::Resolved(result)
+                if result.normalized_command_name.as_str() == "find"
+                    && !result.bound.operation_semantics_unresolved))
+        .map(|r| &r.source_node_id)
+        .collect();
     let mut inputs = Vec::new();
     for record in graph_backed_execution_resolve_records(ctx) {
         let home = record
@@ -526,6 +543,10 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                                     | EffectKind::DeletePath
                                     | EffectKind::TransformData
                                     | EffectKind::ImportPackage => true,
+                                    // Metadata references (such as touch -r) do
+                                    // not rewrite the writer's namespace.
+                                    EffectKind::TargetPath => effect.filesystem_namespace_impact()
+                                        == FilesystemNamespaceImpact::Neutral,
                                     // A native configuration loader can participate only after
                                     // complete current-action parse evidence. Executable hooks
                                     // remain separate effects and fail this closed-effect test.
@@ -541,12 +562,29 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             input.namespace_effect = if matches!(
                                 operation,
                                 PathTargetOperation::MoveSource | PathTargetOperation::Delete
-                            ) && !(effect.namespace_effect == Some(caushell_types::PathNamespaceEffect::EntryRelocation)
-                                && matches!(input.fact.lexical, PathResolution::BoundedPathSet { .. } | PathResolution::FileNamePrefix { .. })) {
+                            ) && effect.namespace_effect != Some(caushell_types::PathNamespaceEffect::EntryRelocation) {
                                 Some(caushell_types::PathNamespaceEffect::EntryRemoval)
                             } else {
                                 effect.namespace_effect
                             };
+                            // These find callbacks run in the entry cwd. The
+                            // only inclusive starting spelling is literally
+                            // '.', which plain native mv cannot move.
+                            input.move_from_dot_search = operation == PathTargetOperation::MoveSource
+                                && bound.command_name.as_str() == "mv"
+                                && bound.form_id.as_str() == "default_move"
+                                && bound.applied_modifiers.is_empty()
+                                && matches!(case, CwdPathContext::Exact(path) if path == cwd)
+                                && record.variable_frame().is_some_and(|(parent, kind, _)|
+                                    kind == ExecutionUnitOriginKind::Dispatch && find_parents.contains(&parent))
+                                && matches!(&effect.target, EffectTarget::Slot(slot)
+                                    if bound.bound_parameters.iter().any(|p| p.name == *slot
+                                        && matches!(p.values.as_slice(), [BoundValue::ImplicitInput {
+                                            source: ImplicitInputSource::DispatchOutput,
+                                            domain: Some(RuntimeArgumentDomain::PathSet {
+                                                roots, may_escape: false, ..
+                                            }), ..
+                                        }] if roots == &["."])));
                         }
                         if archive_members {
                             // The complete archive proof excludes link/special

@@ -113,6 +113,14 @@ fn expression_outputs_and_pruned_traversal_match_native_find() {
         vec!["input", "!", "-name", "*.tmp", "-print0"],
         vec!["input", "-name", "skip", "-prune", "-o", "-print0"],
         vec![
+            "input", "-depth", "-name", "skip", "-prune", "-o", "-print0",
+        ],
+        vec![
+            "input", "(", "-name", "missing", "-a", "-depth", ")", "-o", "-name", "skip", "-prune",
+            "-o", "-print0",
+        ],
+        vec!["input", "-name", "-depth", "-prune", "-o", "-print0"],
+        vec![
             "input", "-name", "a", "-print0", "-o", "-name", "b", "-print0",
         ],
         vec!["input", "-print0", "-false"],
@@ -219,7 +227,7 @@ fn numeric_metadata_requires_observation_when_evaluated_and_valid_syntax_everywh
         &["-false", "-size", "1w"],
         &["-false", "-size", "4294967296c"],
         &["-false", "-size", "-print"],
-        &["-false", "-depth"],
+        &["-false", "-quit"],
     ] {
         assert!(plan(args).is_err(), "{args:?}");
     }

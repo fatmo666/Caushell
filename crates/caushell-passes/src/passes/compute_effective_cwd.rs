@@ -1259,8 +1259,7 @@ fn cwd_at_scope_position(
                 .find(|(_, target)| target.span.start_byte == source_start_byte)
                 .is_some_and(|(_, target)| target.shell_scope_span == command.shell_scope_span)
             && matches!(&record.result, ResolveInvocationArtifactResult::Resolved(r)
-                if !r.bound.operation_semantics_unresolved && r.bound.effects.iter()
-                    .any(|e|e.kind == EffectKind::TerminateCurrentShell))
+                if r.bound.definitely_terminates_current_shell())
         {
             return returned;
         }

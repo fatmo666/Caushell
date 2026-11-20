@@ -159,3 +159,42 @@ fn comments_and_stderr_pipes_keep_newline_separators() {
         assert!(!parsed.commands[3].in_pipeline);
     }
 }
+
+#[test]
+fn a_swallowed_boundary_does_not_consume_the_next_functions_header() {
+    let source = "function makeFixture {\n local data=$1\n printf '%s' fixture | tr -d '\\n' | xargs -I {} echo -n \"$data\"\n}\n\nfunction writeFixture {\n local data=$1\n echo -n \"$data\" >./output.txt\n}\n";
+    let parsed = parse_command(source, ShellKind::Bash).unwrap();
+    assert_eq!(
+        parsed.status,
+        ParseStatus::Complete,
+        "{:?}",
+        parsed.diagnostics
+    );
+    assert_eq!(parsed.function_definitions.len(), 2);
+    assert_eq!(parsed.function_definitions[0].name, "makeFixture");
+    let write = &parsed.function_definitions[1];
+    assert_eq!(write.name, "writeFixture");
+    assert_eq!(
+        write.body_text,
+        "local data=$1\n echo -n \"$data\" >./output.txt"
+    );
+    coordinates(source, &write.span);
+    let body = parse_command(&write.body_text, ShellKind::Bash).unwrap();
+    assert_eq!(body.status, ParseStatus::Complete);
+    assert_eq!(body.redirections.len(), 1);
+    assert_eq!(body.redirections[0].operator.as_deref(), Some(">"));
+    assert_eq!(
+        body.redirections[0]
+            .target
+            .as_ref()
+            .map(|target| target.text.as_str()),
+        Some("./output.txt")
+    );
+}
+
+#[test]
+fn a_missing_redirect_operand_stays_incomplete_after_an_earlier_separator() {
+    let source = "function makeFixture {\n local data=$1\n printf '%s' fixture | tr -d '\\n' | xargs -I {} echo -n \"$data\"\n}\n\nfunction writeFixture {\n local data=$1\n echo -n \"$data\" >\n}\n";
+    let parsed = parse_command(source, ShellKind::Bash).unwrap();
+    assert_eq!(parsed.status, ParseStatus::Partial, "{parsed:?}");
+}

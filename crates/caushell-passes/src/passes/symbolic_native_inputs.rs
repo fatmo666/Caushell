@@ -194,6 +194,47 @@ mod tests {
         ProfileRegistry::from_profiles(profiles).unwrap()
     }
     #[test]
+    fn combined_reader_preserves_shell_word_and_native_record_origins() {
+        use caushell_profile::{BoundValue, ImplicitInputSource};
+        let registry = ProfileRegistry::built_in().unwrap();
+        let ctx = context(
+            &registry,
+            r#"find . -name "$name" -type f -print0 | xargs -0 grep -i "$pattern""#,
+        );
+        let bound = ctx
+            .execution_unit_resolve_records()
+            .iter()
+            .find_map(|record| {
+                let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+                    return None;
+                };
+                (record.origin_kind == ExecutionUnitOriginKind::StaticXargs
+                    && resolved.normalized_command_name == "grep")
+                    .then_some(&resolved.bound)
+            })
+            .expect("analyzed xargs child");
+        let reads = bound
+            .bound_parameters
+            .iter()
+            .find(|parameter| parameter.name.as_str() == "__native_symbolic_paths__")
+            .expect("conservative read effects");
+        assert!(matches!(
+            reads.values.as_slice(),
+            [
+                BoundValue::Argument { text, span: shell_span, .. },
+                BoundValue::ImplicitInput {
+                    source: ImplicitInputSource::StdinData,
+                    origin: Some(origin),
+                    ..
+                },
+            ] if text.contains("$pattern") && shell_span != &origin.span
+        ));
+        assert!(bound.effects.iter().any(|effect| effect.kind == EffectKind::ReadPath));
+        assert!(bound.effects.iter().all(read_effect));
+        assert!(bound.stdout_records.is_none() && bound.stdout_scalar.is_none());
+    }
+
+    #[test]
     fn strict_audit_is_based_on_contracts_not_reader_names() {
         let registry = reader_registry(|_| {});
         let ctx = context(

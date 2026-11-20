@@ -1,10 +1,19 @@
-//! Relational namespace closure for paired bounded entry transfers.
-//! Containment only: no command names, policy roots, exact entries or outputs.
-use super::{Input, directory_tree, namespace_state::Baseline};
+//! Relational namespace closure for paired transfers between observed entries.
+use super::{
+    Input, directory_tree,
+    namespace_state::{Baseline, ordinary_leaf},
+};
 use crate::path::namespace::NamespaceResolver;
 use caushell_runner::{DirectoryReadBudget, FilesystemView};
 use caushell_types::*;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
+
+#[derive(Clone, PartialEq, Eq)]
+pub(super) struct RelocationScope {
+    pub(super) root: String,
+    pub(super) ordinary_source: Option<String>,
+    pub(super) disjoint_destination: Option<String>,
+}
 
 pub(super) fn close_families(
     inputs: &mut [Input],
@@ -37,6 +46,7 @@ pub(super) fn close_families(
         }
         let mut anchors = Vec::new();
         let mut fixed_writes = Vec::new();
+        let mut ordinary_source = None;
         let complete = indices.iter().all(|&i| {
             if !inputs[i].pending_resolution { return false; }
             match &baselines[i].0 {
@@ -55,14 +65,82 @@ pub(super) fn close_families(
                     fixed_writes.push((i, path.clone()));
                     true
                 }
+                SemanticResolution::Resolved {
+                    value: PathResolution::Concrete { path },
+                } if indices.len() == 2
+                    && inputs[i].fact.operation == PathTargetOperation::MoveSource
+                    && inputs[i].fact.lexical.concrete_path() == Some(path.as_str()) =>
+                {
+                    if !ordinary_leaf(path, &baselines[i].1) {
+                        return false;
+                    }
+                    ordinary_source = Some((path.clone(), i));
+                    true
+                }
                 _ => false,
             }
         });
         if !complete || anchors.len() > 256 { continue; }
         let Some(root) = common_root(&anchors) else { continue };
+        if let [source, destination] = indices.as_slice()
+            && let [(fixed, path)] = fixed_writes.as_slice()
+            && destination == fixed
+            && anchors == [root.clone()]
+            && inputs[*source].move_from_dot_search
+            && root == entry_directory
+            && !caushell_query::path_is_within_root(path, &root)
+            && !caushell_query::path_is_within_root(&root, path)
+            && inputs[*destination].fact.spelling.as_ref().is_some_and(|p| p.ends_with('/'))
+            && baselines[*source].1.iter().any(|o| o.path == root && o.entry == FilesystemEntry::Directory)
+            && baselines[*destination].1.iter().any(|o| o.path == *path && o.entry == FilesystemEntry::Directory)
+        {
+            let mut family = inputs[*destination].clone();
+            family.fact.lexical = PathResolution::BoundedPathSet {
+                roots: vec![root.clone(), path.clone()],
+                may_escape: false,
+            };
+            let ((state, observations), proof) =
+                directory_tree::resolve(&family, resolver, view.clone(), budget, entry_directory);
+            let mut identities = BTreeSet::new();
+            let closed = proof.complete
+                && matches!(state, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == [root.clone(), path.clone()])
+                && [root.as_str(), path.as_str()].into_iter()
+                    .all(|anchor| proof.directories.iter().any(|dir| dir.path == anchor))
+                && proof.directories.iter().all(|dir| dir.identity.as_ref()
+                    .is_some_and(|id| identities.insert((id.device, id.inode))));
+            evidence.push(proof);
+            if closed {
+                // Facts retain separate policy bounds. Both depend on the
+                // complete two-root snapshot for mutation invalidation.
+                baselines[*destination].0 = SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet {
+                        roots: vec![path.clone()],
+                        may_escape: false,
+                    },
+                };
+                let scope = RelocationScope {
+                    root,
+                    ordinary_source: None,
+                    disjoint_destination: Some(path.clone()),
+                };
+                for &index in &indices {
+                    inputs[index].relocation_scope = Some(scope.clone());
+                    for observation in &observations {
+                        if !baselines[index].1.contains(observation) {
+                            baselines[index].1.push(observation.clone());
+                        }
+                    }
+                }
+            }
+            continue;
+        }
         // Fixed destinations must fit within the existing family. They do
         // not extend its root or replace the entry anchoring the proof.
         if fixed_writes.iter().any(|(_, path)| {
+            path == &root || !caushell_query::path_is_within_root(path, &root)
+        }) || ordinary_source.as_ref().is_some_and(|(path, _)| {
             path == &root || !caushell_query::path_is_within_root(path, &root)
         }) {
             continue;
@@ -73,7 +151,13 @@ pub(super) fn close_families(
             directory_tree::resolve(&family, resolver, view.clone(), budget, entry_directory);
         let closed = proof.complete && matches!(state,
             SemanticResolution::Resolved { value: PathResolution::BoundedPathSet { may_escape: false, .. } })
-            && (fixed_writes.is_empty() || proof.directories.iter().any(|dir| dir.path == root));
+            && ((fixed_writes.is_empty() && ordinary_source.is_none())
+                || proof.directories.iter().any(|dir| dir.path == root))
+            && ordinary_source.as_ref().is_none_or(|(source, index)| {
+                baselines[*index].1.iter()
+                    .filter(|o| &o.path == source)
+                    .all(|o| view.entry(&o.path) == o.entry)
+            });
         evidence.push(proof);
         if !closed { continue; }
         // The landing path can denote a directory when the move runs. Use a
@@ -84,8 +168,13 @@ pub(super) fn close_families(
                 value: PathResolution::BoundedPathSet { roots: vec![path], may_escape: false },
             };
         }
+        let scope = RelocationScope {
+            root,
+            ordinary_source: ordinary_source.map(|(path, _)| path),
+            disjoint_destination: None,
+        };
         for &i in &indices {
-            inputs[i].relocation_scope = Some(root.clone());
+            inputs[i].relocation_scope = Some(scope.clone());
             for observation in &observations {
                 if !baselines[i].1.contains(observation) {
                     baselines[i].1.push(observation.clone());

@@ -149,6 +149,20 @@ impl Evidence {
                 context.depth,
                 runtime_input_source_name(*source)
             ),
+            NestedPayloadUnresolvedReasonEvidence::RequiresImplicitInput {
+                source: ImplicitInputSource::ToolConfiguration,
+            } => {
+                let source = match &context.origin {
+                    NestedPayloadOriginEvidence::ConfigDefinedTask { task_name, .. } => {
+                        format!("configured execution source {task_name}")
+                    }
+                    _ => "configured execution".to_string(),
+                };
+                format!(
+                    "{source} (record {} at depth {}) requires tool configuration evidence",
+                    context.record_id, context.depth
+                )
+            }
             NestedPayloadUnresolvedReasonEvidence::RequiresImplicitInput { source } => format!(
                 "nested payload record {} at depth {} requires unknown implicit input from {} before it can be parsed",
                 context.record_id,
@@ -1006,7 +1020,9 @@ fn implicit_input_source_name(source: ImplicitInputSource) -> &'static str {
         ImplicitInputSource::StdinData => "stdin_data",
         ImplicitInputSource::InteractiveSession => "interactive_session",
         ImplicitInputSource::DispatchOutput => "dispatch_output",
+        ImplicitInputSource::CommandSubstitution => "command_substitution",
         ImplicitInputSource::InheritedEnvironment => "inherited_environment",
+        ImplicitInputSource::ToolConfiguration => "tool_configuration",
         ImplicitInputSource::ShellIteration => "shell_iteration",
     }
 }

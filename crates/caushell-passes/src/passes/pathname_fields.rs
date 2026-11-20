@@ -26,7 +26,7 @@ pub(super) fn observe(
 ) -> Vec<PathnameFieldsEvidence> {
     let mut proofs = Vec::new();
     for arg in args {
-        let parsed = PathnamePattern::from_argument(arg);
+        let parsed = PathnamePattern::from_argument(arg, shell);
         if matches!(parsed, Ok(None)) {
             continue;
         }

@@ -348,3 +348,73 @@ fn manager_context_and_instance_names_are_not_caller_facts_or_deletion_grants() 
                 && !matches!(&p.resolution, SemanticResolution::Resolved { .. }))
     );
 }
+
+#[test]
+fn smbstatus_share_inspection_keeps_local_messaging_effects_visible() {
+    for command in [
+        "smbstatus --shares",
+        "/usr/bin/smbstatus -S > ./shares.txt",
+        "env smbstatus --shares",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(has_operation(
+            &response,
+            "smbstatus",
+            StateOperationKind::Inspect
+        ));
+        assert!(
+            response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|mode| {
+                    mode.normalized_command_name == "smbstatus"
+                        && mode.form_id == "inspect_shares"
+                        && mode.loads_tool_config
+                        && mode.operation_semantics_unresolved
+                })
+        );
+        for operation in [PathTargetOperation::Write, PathTargetOperation::Delete] {
+            assert!(
+                response.decision_trace.path_targets.iter().any(|path| {
+                    path.operation == operation
+                        && matches!(path.resolution, SemanticResolution::Unresolved { .. })
+                }),
+                "{command}: {:?}",
+                response.decision_trace.path_targets
+            );
+        }
+    }
+}
+
+#[test]
+fn smbstatus_extra_options_and_runtime_arguments_stay_guarded() {
+    for command in [
+        "smbstatus",
+        "smbstatus --notify",
+        "smbstatus --shares --configfile=./fixture.conf",
+        "smbstatus --shares ''",
+        "smbstatus --shares \"$extra\"",
+        "smbstatus --shares --",
+        "smbstatus --shares --shares",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(!has_operation(
+            &response,
+            "smbstatus",
+            StateOperationKind::Inspect
+        ));
+    }
+}

@@ -51,13 +51,36 @@ pub(super) fn refine(
             )
     };
     let start = argv.args.iter().position(native);
+    let shell_end = start.unwrap_or(argv.args.len());
+    let prefix_end = argv.args[..shell_end]
+        .iter()
+        .position(|arg| argument_structure(arg).exact_value().is_none())
+        .unwrap_or(shell_end);
+    let mixed = prefix_end < shell_end;
+    // A native tail and an unresolved shell field have different origins.
+    // Combine them only for a declared, audited total content-reader surface.
+    // Later fixed controls and other implicit argument sources keep their gap.
+    if mixed
+        && (start.is_none()
+            || profile.native_argv_effect_envelope != Some(NativeArgvEffectEnvelope::ContentRead)
+            || materialized.shell_expansion_unresolved
+            || argv.args[..shell_end].iter().any(|a| a.implicit_input_source.is_some())
+            || argv.args[prefix_end..shell_end].iter().any(|a| {
+                argument_structure(a)
+                    .exact_value()
+                    .is_some_and(|word| word.starts_with(['-', '+']))
+            }))
+    {
+        return;
+    }
     if let Some(start) = start {
         if !argv.args[start..].iter().all(native) {
             return;
         }
         // Existing precise non-option/path proofs keep their original model.
-        if (contract == NativeArgvEffectEnvelope::ContentRead
-            || contract == NativeArgvEffectEnvelope::DataOnly)
+        if !mixed
+            && (contract == NativeArgvEffectEnvelope::ContentRead
+                || contract == NativeArgvEffectEnvelope::DataOnly)
             && argv.args[start..].iter().all(|a| {
                 let s = argument_structure(a);
                 s.fields != ArgumentFieldCount::Unknown
@@ -73,24 +96,43 @@ pub(super) fn refine(
         return;
     }
     let mut prefix = argv.clone();
-    prefix.args.truncate(start.unwrap_or(argv.args.len()));
-    if prefix
-        .args
-        .iter()
-        .any(|a| argument_structure(a).exact_value().is_none())
-    {
-        return;
-    }
+    prefix.args.truncate(prefix_end);
     let mut audited = profile.clone();
     audited.opaque_on_unresolved = true;
     audited.read_only_control_surface = false;
     let selection = select_invocation(&audited, &prefix);
+    // A valid prefix need not be an entire invocation. Only admit exact,
+    // standalone controls here: a prefix operand could be reinterpreted as
+    // a file, and a control that consumes the next field crosses the gap.
+    if mixed {
+        let Ok(options) = declared_options(&audited) else {
+            return;
+        };
+        if !prefix.args.iter().all(|arg| {
+            argument_structure(arg).exact_value().is_some_and(|word| {
+                options.get(word) == Some(&None)
+                    && !audited.modifiers.iter().any(|modifier| {
+                        modifier.ends_option_scope
+                            && modifier.matcher.flag_names().iter().any(|flag| flag.as_str() == word)
+                    })
+            })
+        }) || matches!(result, ResolveInvocationArtifactResult::Resolved(resolved)
+            if resolved.bound.effects.iter().any(|e| !native_effect_contract_allows_effect(contract, e)))
+        {
+            return;
+        }
+    }
     // A reviewed total metadata contract covers all native argv modes. A
     // prefix alone may lack a required file or be a different possible mode;
     // certifying that prefix as one valid invocation is a separate question.
     // Preserve all prefix words as possible metadata inputs, without asserting
     // option ownership or using metadata as file-content read authority.
-    let mut bound = if !contract.reads_content()
+    let mut bound = if mixed {
+        BoundInvocation::new(
+            CommandName::new(name.as_str()),
+            FormId::new("__native_argv_effect_envelope__"),
+        )
+    } else if !contract.reads_content()
         && profile.native_argv_effect_envelope == Some(contract)
         && start.is_some()
     {
@@ -198,14 +240,52 @@ pub(super) fn refine(
                     SemanticType::PlainValue
                 },
             );
-            parameter.values.push(BoundValue::ImplicitInput {
-                source: ImplicitInputSource::StdinData,
-                domain: Some(RuntimeArgumentDomain::Unbounded),
-                origin: Some(BoundImplicitArgumentOrigin {
-                    span: argv.args[index].span.clone(),
-                    single_field: argv.args[index].node_kind == "runtime_scalar",
-                }),
-            });
+            if mixed {
+                for (arg, resolution) in argv.args[prefix_end..index]
+                    .iter()
+                    .zip(&materialized.arg_resolutions[prefix_end..index])
+                {
+                    let origin = match resolution {
+                        ValueMaterialization::ResolvedExactScalar { variable_name, .. } => {
+                            BoundArgumentMaterialization::ResolvedExactScalar {
+                                variable_name: variable_name.clone(),
+                            }
+                        }
+                        ValueMaterialization::ResolvedRuntimeProduced { variable_name, .. } => {
+                            BoundArgumentMaterialization::ResolvedRuntimeProduced {
+                                variable_name: variable_name.clone(),
+                            }
+                        }
+                        _ if arg.runtime_data => BoundArgumentMaterialization::RuntimeData,
+                        _ => BoundArgumentMaterialization::Literal,
+                    };
+                    parameter.values.push(
+                        BoundValue::argument_with_node_kind(
+                            arg.text.clone(),
+                            arg.quoted,
+                            arg.node_kind.clone(),
+                            arg.span.clone(),
+                            ArgumentBindingSource::RemainingArg,
+                        )
+                        .with_materialization(origin),
+                    );
+                }
+            }
+            let native_args = if mixed {
+                &argv.args[index..]
+            } else {
+                &argv.args[index..=index]
+            };
+            for arg in native_args {
+                parameter.values.push(BoundValue::ImplicitInput {
+                    source: ImplicitInputSource::StdinData,
+                    domain: Some(RuntimeArgumentDomain::Unbounded),
+                    origin: Some(BoundImplicitArgumentOrigin {
+                        span: arg.span.clone(),
+                        single_field: arg.node_kind == "runtime_scalar",
+                    }),
+                });
+            }
             if effect == Some(EffectKind::NetworkEndpoint) {
                 parameter.value_projection = Some(ValueProjection::Unknown);
                 refresh_parameter_semantic_values(&mut parameter);

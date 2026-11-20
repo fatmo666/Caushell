@@ -36,6 +36,7 @@ mod observation_requirements;
 mod pathname;
 pub use observation_requirements::execution_frame_requirements;
 pub use pathname::{PathnameComponent, PathnamePattern};
+mod diff_pagination;
 mod native_effect_envelope;
 pub use native_effect_envelope::{
     native_effect_contract_allows_effect, native_effect_contract_allows_parameter,
@@ -97,7 +98,8 @@ mod value_shape;
 
 pub use argument_regions::BoundArgumentRegion;
 pub use argument_structure::{
-    ArgumentFieldCount, ArgumentStructure, argument_structure, shell_word_structure,
+    ArgumentFieldCount, ArgumentStructure, argument_structure, bash_pid_redirection_path_domain,
+    shell_word_structure,
 };
 pub use bind::root_option_ownership;
 pub use bind::{
@@ -136,6 +138,7 @@ pub use parameter_pattern::ShellPatternRemovalKind;
 pub use payload_projection::refresh_payload_projections;
 pub use projection::{
     InvocationRuntimeContext, ProjectedArg, ProjectedArgKind, ProjectedInvocation,
+    SubstitutionOutputProof,
     project_invocation,
 };
 pub use raw::RawArgumentControlVocabulary;
@@ -184,6 +187,7 @@ pub use resolve::{
     resolve_invocation_artifact, resolve_invocation_artifact_with_bindings,
     resolve_invocation_artifact_with_argument_proofs, resolve_invocation_artifact_with_stdout_proofs, resolve_invocation_artifact_with_summary,
     resolve_invocation_in_lookup_domain_with_stdout_proofs, resolve_invocation_in_namespace,
+    resolve_source_let_artifact,
     resolve_invocation_in_namespace_with_stdout_proofs, resolve_invocation_with_bindings,
     resolve_invocation_with_summary,
 };

@@ -1,0 +1,54 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: xterm, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: explicit_command_argv
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: execute}
+        - {kind: has_positional_at, index: 0}
+    parameters:
+      - name: child_arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: required_many
+    # Display resources and fallback shell behavior are not proved by -e.
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - kind: open_interactive_escape_surface
+        target: {kind: none}
+        surface: {kind: terminal_ui, requires_tty: false, capabilities: [spawn_shell, run_command]}
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command: child_command
+          argv: [child_arguments]
+          lookup_domain: external
+          unknown_environment_names: [TERM, DISPLAY, WINDOWID, XTERM_SHELL]
+
+modifiers:
+  - id: execute
+    matcher: {kind: any_flag, flags: [-e]}
+    ends_option_scope: true
+    parameters:
+      - name: child_command
+        semantic: {kind: command_ref, dispatch: wrapper_command}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+extensions:
+  caushell.profile/source_research:
+    - https://invisible-island.net/xterm/manpage/xterm.html
+    - https://raw.githubusercontent.com/ThomasDickey/xterm-snapshots/master/main.c
+  caushell.profile/known_limitations:
+    - Models explicit execution with a child command and additional argv.
+    - A single -e operand has another fallback interpretation and stays unresolved.
+    - Display resources, terminal effects and alternate launches remain unresolved.

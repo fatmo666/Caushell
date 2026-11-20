@@ -308,6 +308,53 @@ fn unrelated_tools_and_inspection_do_not_emit_terminal_guard_findings() {
     }
 }
 #[test]
+fn multiattach_consumes_the_session_name_before_later_controls() {
+    use TerminalSessionOperationKind::{Attach, Control, Opaque};
+
+    // These are static inputs only. The fixture session does not exist.
+    for command in [
+        "screen -x fixture -X title demo",
+        "screen -x fixture -p 1 -X title demo",
+        "screen -p 1 -x fixture -X title demo",
+        "screen -x -X title demo",
+    ] {
+        assert_operation(command, Control);
+    }
+    assert_operation("screen -x fixture", Attach);
+    assert_operation("screen -x fixture launch -X title demo", Attach);
+    assert_operation("screen -r first -x second -X title demo", Attach);
+    for command in [
+        "screen -S first -x second -X title demo",
+        "screen -x first -x second -X title demo",
+        "screen -r -x fixture -X title demo",
+        "screen -x fixture -Q title",
+    ] {
+        assert_operation(command, Opaque);
+    }
+    for command in [
+        "screen -x \"$SESSION\" -X title demo",
+        "screen -x $SESSION -X title demo",
+    ] {
+        let result = check(command, Decision::NeedApproval);
+        assert!(
+            result
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|item| {
+                    item.normalized_command_name == "screen" && item.operation_semantics_unresolved
+                })
+        );
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| { reason.contains("argument region ownership is unresolved") })
+        );
+    }
+}
+
+#[test]
 fn terminal_facts_survive_snapshots_without_retriggering_history() {
     for (c, op) in [
         ("screen -dm sleep 1", TerminalSessionOperationKind::Create),

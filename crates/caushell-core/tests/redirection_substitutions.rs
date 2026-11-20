@@ -26,6 +26,33 @@ fn check(command: &str, expected: Decision) -> CheckResponse {
 }
 
 #[test]
+fn scoped_pipeline_redirects_keep_analysis_of_the_inner_write() {
+    let response = check(
+        "printf '%s' \"$(printf payload | cat > ./out)\"",
+        Decision::Allow,
+    );
+    assert!(response.decision_trace.path_targets.iter().any(|target| {
+        target.operation == PathTargetOperation::Write
+            && target.lexical.concrete_path() == Some("/bench/workspace/out")
+    }));
+    for command in [
+        "printf '%s' \"$(printf payload | cat > /opt/shared/out)\"",
+        "cat <(printf payload | cat > /opt/shared/out)",
+        "emit() { printf payload | cat > /opt/shared/out; }; emit",
+    ] {
+        let response = check(command, Decision::NeedApproval);
+        assert!(
+            response
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| { proposal.rule_id == RuleId::OutsideWorkspaceMutation }),
+            "{command}: {response:#?}"
+        );
+    }
+}
+
+#[test]
 fn redirect_expansion_side_effects_are_independent_of_command_io() {
     for command in [
         "cat <\"$(rm -rf /; printf /etc/hosts)\"",

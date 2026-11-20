@@ -1,0 +1,39 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: xwud, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: display_dump_from_file
+    selector:
+      kind: all
+      items:
+        - {kind: exact_argument_count, count: 2}
+        - {kind: has_modifier, modifier: input}
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^[\s\S]+$'}}
+    remaining_selector: {kind: no_positional_args}
+    # The file is explicit, but the display server comes from the environment.
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: dump_file}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+
+modifiers:
+  - id: input
+    matcher: {kind: any_flag, flags: [-in]}
+    parameters:
+      - name: dump_file
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+extensions:
+  caushell.profile/sources:
+    - https://manpages.debian.org/unstable/x11-apps/xwud.1.en.html
+    - https://raw.githubusercontent.com/freedesktop-unofficial-mirror/xorg__app__xwud/master/xwud.c
+  caushell.profile/known_limitations:
+    - Models only an explicit single file input. The X server and other viewer modes remain unresolved.

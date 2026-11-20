@@ -1016,13 +1016,8 @@ impl RuntimeVariableContext<'_> {
         let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
             return None;
         };
-        let terminates = self.can_prove_termination
-            && !resolved.bound.operation_semantics_unresolved
-            && resolved
-                .bound
-                .effects
-                .iter()
-                .any(|e| e.kind == caushell_profile::EffectKind::TerminateCurrentShell);
+        let terminates =
+            self.can_prove_termination && resolved.bound.definitely_terminates_current_shell();
         let writes = runtime_variable_writes(&resolved.bound);
         if visible
             && !writes.unresolved

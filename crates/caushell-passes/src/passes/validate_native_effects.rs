@@ -7,9 +7,10 @@ use std::collections::BTreeMap;
 use caushell_profile::{Effect, EffectKind, ProfileRegistry, ResolveInvocationArtifactResult};
 use caushell_runner::{ExecutionUnitOriginKind, RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{
-    Decision, EvidenceKind, FilesystemObservationSource, NativeBoundEffectsProof,
+    Decision, EvidenceKind, FilesystemObservationSource, ImplicitInputSource,
+    NativeBoundEffectsProof, NativeInputDecodeEvidence,
     NativeInputEffectEvidence, NativePathEffectReference, PathResolution, PathTargetFact, RuleId,
-    SemanticResolution, StreamRecordEncoding,
+    RuntimeArgumentDomain, SemanticResolution, StreamRecordEncoding,
 };
 
 pub struct ValidateNativeEffectsPass {
@@ -24,7 +25,7 @@ impl ValidateNativeEffectsPass {
 fn modeled(
     invocation: &caushell_profile::BoundInvocation,
     effect: &Effect,
-    rejected_nul_records: bool,
+    metadata_route_proved: bool,
 ) -> bool {
     if effect.state_operation.is_some()
         || effect.repository_operation.is_some()
@@ -33,7 +34,7 @@ fn modeled(
         || effect.shell_job_operation.is_some()
         || effect.interactive_escape_surface.is_some()
         || (!effect.extensions.is_empty()
-            && !(rejected_nul_records
+            && !(metadata_route_proved
                 && crate::path::checked_metadata_mutation_for_target(invocation, effect).is_some()))
     {
         return false;
@@ -87,7 +88,7 @@ fn prove(
     registry: &ProfileRegistry,
     facts: &[&PathTargetFact],
     node: &str,
-    rejected_nul_records: bool,
+    gap: &NativeInputDecodeEvidence,
     checks: &mut usize,
 ) -> Option<NativeBoundEffectsProof> {
     let records = ctx.execution_unit_resolve_records();
@@ -132,11 +133,21 @@ fn prove(
         let ResolveInvocationArtifactResult::Resolved(invocation) = &child.result else {
             return None;
         };
+        // A rejected empty snapshot keeps the static child. Its argv must
+        // still carry the separately proved NUL path domain from stdin.
+        let metadata_route_proved = gap.rejected_candidate_encoding == Some(StreamRecordEncoding::Nul)
+            || (gap.empty_nul_path_snapshot
+                && invocation.materialized_projection.invocation.args.iter().any(|arg| {
+                    arg.implicit_input_source == Some(ImplicitInputSource::StdinData)
+                        && matches!(&arg.runtime_argument_domain,
+                            Some(RuntimeArgumentDomain::PathSet { roots, may_escape: false, .. })
+                                if !roots.is_empty())
+                }));
         if invocation
             .bound
             .effects
             .iter()
-            .any(|e| !modeled(&invocation.bound, e, rejected_nul_records))
+            .any(|e| !modeled(&invocation.bound, e, metadata_route_proved))
         {
             return None;
         }
@@ -149,7 +160,7 @@ fn prove(
             || rebound
                 .effects
                 .iter()
-                .any(|e| !modeled(&rebound, e, rejected_nul_records))
+                .any(|e| !modeled(&rebound, e, metadata_route_proved))
         {
             return None;
         }
@@ -240,17 +251,12 @@ impl SessionAnalysisPass for ValidateNativeEffectsPass {
             }) {
                 continue;
             }
-            // Mutating annotations require a known pathname route. A rejected
-            // NUL decode may leave bounded effects; a missing observation or
-            // unsupported record format cannot establish that route.
-            let rejected_nul_records =
-                gap.rejected_candidate_encoding == Some(StreamRecordEncoding::Nul);
             let Some(proof) = prove(
                 ctx,
                 &self.registry,
                 &facts,
                 &node,
-                rejected_nul_records,
+                &gap,
                 &mut checks,
             ) else {
                 continue;

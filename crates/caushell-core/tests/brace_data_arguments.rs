@@ -27,15 +27,17 @@ fn request(text: &str) -> CheckRequest {
     r
 }
 #[test]
-fn four_original_requests_are_resolved_and_independent_blockers_remain() {
-    let corrected = ["U10771", "U10776", "U10784", "U10786"];
+fn original_formats_resolve_while_independent_blockers_remain() {
+    let resolved = [
+        "U10771", "U10772", "U10775", "U10776", "U10784", "U10786", "U11352", "U11354",
+    ];
     let rows = originals();
     assert_eq!(rows.len(), 11);
     let mut mismatches = Vec::new();
     for (id, r) in rows {
         let result = ShellQueryCore::new().check(r);
         println!("{id}: {:?}: {:?}", result.decision, result.reasons);
-        if corrected.contains(&id.as_str()) {
+        if resolved.contains(&id.as_str()) {
             if result.decision != Decision::Allow {
                 mismatches.push(id);
             }

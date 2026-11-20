@@ -42,6 +42,84 @@ fn scalar_parts_keep_literals_parameters_and_quoted_producers_separate() {
 }
 
 #[test]
+fn ansi_c_byte_escapes_keep_the_exact_quoted_fragment() {
+    assert_eq!(
+        parts(
+            r#""prefix$(printf %s 42)"$'\033\[end'"#,
+            false,
+            "concatenation",
+        ),
+        Some(vec![
+            P::Literal("prefix".into()),
+            P::CommandSubstitution("$(printf %s 42)".into()),
+            P::Literal("\x1b\\[end".into()),
+        ])
+    );
+    assert_eq!(
+        caushell_parse::decode_static_shell_argument(
+            r#"head$'\040\x41\['tail"#,
+            false,
+            "concatenation",
+        ),
+        Some("head A\\[tail".into())
+    );
+    for word in [
+        r#"head$'\0'tail"#,
+        r#"head$'\x00'tail"#,
+        r#"head$'\200'tail"#,
+        r#"head$'\x80'tail"#,
+        r#"head$'\400'tail"#,
+        r#"head$'\cA'tail"#,
+        r#"head$'\u0041'tail"#,
+    ] {
+        assert!(
+            caushell_parse::decode_static_shell_argument(word, false, "concatenation").is_none(),
+            "{word}"
+        );
+    }
+}
+
+#[test]
+fn quoted_regex_anchor_remains_literal_next_to_a_capture() {
+    assert_eq!(
+        caushell_parse::decode_static_shell_argument("s/token$/", true, "string"),
+        Some("s/token$/".into())
+    );
+    let word = r#""s/$(printf %s token)$/"$'\033\[tail'"#;
+    let decoded = parts(word, false, "concatenation").unwrap();
+    let (joined, captures) =
+        decoded
+            .into_iter()
+            .fold((String::new(), 0), |(mut joined, mut captures), part| {
+                match part {
+                    P::Literal(text) => joined.push_str(&text),
+                    P::CommandSubstitution(text) => {
+                        assert_eq!(text, "$(printf %s token)");
+                        joined.push_str("token");
+                        captures += 1;
+                    }
+                    other => panic!("unexpected part: {other:?}"),
+                }
+                (joined, captures)
+            });
+    assert_eq!(captures, 1);
+    assert_eq!(joined, "s/token$/\x1b\\[tail");
+    for text in [
+        "$/then $HOME",
+        "$$/",
+        "$?",
+        "$@",
+        "$\\\nNAME",
+        "$\\\n(printf x)",
+    ] {
+        assert!(
+            caushell_parse::decode_static_shell_argument(text, true, "string").is_none(),
+            "{text:?}"
+        );
+    }
+}
+
+#[test]
 fn vectors_operators_unquoted_producers_and_unaccounted_syntax_have_no_scalar_proof() {
     for (word, quoted, kind) in [
         ("$(printf x)", false, "word"),

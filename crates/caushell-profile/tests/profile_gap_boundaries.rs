@@ -237,21 +237,26 @@ fn utility_queries_and_legacy_forms_do_not_become_mutations_or_children() {
             .iter()
             .any(|e| e.kind == EffectKind::DispatchCommand)
     );
-    for command in ["service --status-all", "service -e"] {
-        let result = complete(command);
-        assert!(
-            !result
-                .bound
-                .effects
-                .iter()
-                .any(|e| matches!(e.kind, EffectKind::WritePath | EffectKind::DeletePath))
-        );
-        assert!(has_state_operation(
-            command,
-            StateOperationDomain::ServiceManager,
-            StateOperationKind::Inspect
-        ));
-    }
+    let status_all = resolve("service --status-all");
+    assert_eq!(status_all.bound.form_id.as_str(), "linux_list_all_status");
+    assert!(status_all.bound.operation_semantics_unresolved);
+    assert!(status_all.bound.effects.iter().any(|effect| {
+        effect.kind == EffectKind::ExecutePayload && effect.target == EffectTarget::None
+    }));
+    assert!(has_state_operation(
+        "service --status-all",
+        StateOperationDomain::ServiceManager,
+        StateOperationKind::Opaque
+    ));
+    let freebsd = resolve("service -e");
+    assert_eq!(
+        freebsd.bound.form_id.as_str(),
+        "freebsd_list_enabled_services"
+    );
+    assert!(freebsd.bound.operation_semantics_unresolved);
+    assert!(freebsd.bound.effects.iter().any(|effect| {
+        effect.kind == EffectKind::ExecutePayload && effect.target == EffectTarget::None
+    }));
     assert!(has_state_operation(
         "service nginx status",
         StateOperationDomain::ServiceManager,

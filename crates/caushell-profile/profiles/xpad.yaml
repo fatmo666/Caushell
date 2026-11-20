@@ -8,13 +8,21 @@ opaque_on_unresolved: true
 forms:
   - id: open_file
     selector: {kind: has_modifier, modifier: file}
-    effects: [{kind: read_path, target: {kind: slot, name: input_path}}]
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_path}}
+      # Startup can create or migrate the store, and the import may be
+      # forwarded to a running instance. The input path is not the store.
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
 modifiers:
   - id: file
-    matcher: {kind: any_flag, flags: ['-f']}
-    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+    matcher: {kind: any_flag, flags: ['-f', --new-from-file]}
+    parameters: [{name: input_path, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
 subcommands: null
 extensions:
-  caushell.profile/source_research: ['https://github.com/xpad/xpad', 'GTFOBins fixed snapshot acd524623f9c406acedd2754ebd9c2431f3675ad: _gtfobins/xpad file-read']
-  caushell.profile/known_limitations: [Requires an X server; file argument shape follows the documented -f form and GUI behavior remains opaque.]
+  caushell.profile/source_research:
+    - https://sources.debian.org/src/xpad/5.3.0-1/src/xpad-app.c
+    - https://manpages.debian.org/trixie/xpad/xpad.1.en.html
+  caushell.profile/known_limitations:
+    - File import creates a pad. Startup can create or migrate the application store even when no display is available.
+    - The profile does not resolve the selected storage paths or the running instance, or infer GUI behavior.

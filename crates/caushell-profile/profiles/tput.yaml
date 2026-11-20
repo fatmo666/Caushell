@@ -1,0 +1,34 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: tput, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+
+forms:
+  - id: emit_color_capability
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^seta[fb]$'}}
+        - {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^[0-9]{1,9}$'}}
+        - {kind: not, item: {kind: has_positional_at, index: 2}}
+    parameters:
+      - {name: capability, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: color, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    remaining_selector: {kind: no_positional_args}
+    effects:
+      - kind: read_path
+        target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/mirror/ncurses/blob/master/progs/tput.c
+    - https://github.com/mirror/ncurses/blob/master/ncurses/tinfo/db_iterator.c
+  caushell.profile/known_limitations:
+    - Native terminfo lookup selects the database at runtime. The profile does not certify any specific database file or output bytes.
+    - Initialization, reset, batch mode, terminal selection and other capabilities require their own analysis.

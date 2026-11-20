@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: qstat, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: query_xml
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: no_positional_args}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -xml}}
+        - kind: not
+          item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '[\s\S]*'}}
+    operation_semantics_unresolved: true
+    effects:
+      # Both documented XML dialects can use configuration. Only the Grid
+      # Engine dialect implies a configured scheduler query in this form.
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: network_endpoint, target: {kind: none}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+
+modifiers:
+  - {id: xml, matcher: {kind: any_flag, flags: [-xml]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://gridengine.sourceforge.io/SGE/htmlman/htmlman1/qstat.html
+    - https://github.com/rocketsciencegg/qstat/blob/main/qstatdoc.html
+  caushell.profile/known_limitations:
+    - The single XML option does not identify the installed implementation, configuration files, or a trusted endpoint.
+    - Additional options and operands remain unresolved. XML data is opaque to downstream argument binding.

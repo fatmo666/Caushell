@@ -165,6 +165,7 @@ mod tests {
             roots: vec![".".into()],
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         };
         let mut invocation = consumer(true);
         bind_path_list_targets(

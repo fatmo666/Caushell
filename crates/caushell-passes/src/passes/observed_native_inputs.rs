@@ -18,6 +18,7 @@ pub(super) struct ObservedInput {
     pub bindings: SessionBindings,
     pub records: StdoutRecordsEvidence,
     pub direct_stdin: Option<String>,
+    pub empty_nul_path_snapshot: bool,
 }
 
 #[derive(Default)]
@@ -214,6 +215,7 @@ pub(super) fn prepare(
                         bindings: consumer.bindings().clone(),
                         records: output,
                         direct_stdin: Some(direct_stdin),
+                        empty_nul_path_snapshot: false,
                     },
                 );
             }
@@ -232,10 +234,16 @@ pub(super) fn prepare(
             (output.encoding == Some(caushell_types::StreamRecordEncoding::Lines))
                 .then_some("line-delimited path observations do not close consumer effects")
         });
+        let mut empty_nul_path_snapshot = false;
         if output.complete
             && let Some(gap) = limited_dispatch_gap
             && !has_closed_read_only_dispatch(ctx, registry, consumer.source_node_id())
         {
+            empty_nul_path_snapshot = limited_observation_gap.is_none()
+                && output.records.is_empty()
+                && output.encoding == Some(caushell_types::StreamRecordEncoding::Nul)
+                && output.producer_contract_sha256.is_some()
+                && output.forwarded_by.is_empty();
             output.complete = false;
             output.records.clear();
             output.gap = Some(gap.into());
@@ -262,6 +270,7 @@ pub(super) fn prepare(
                 bindings: consumer.bindings().clone(),
                 records: output,
                 direct_stdin: None,
+                empty_nul_path_snapshot,
             },
         );
     }
@@ -453,6 +462,7 @@ pub(super) fn reject(
                     alternative_groups: 0,
                     gap: Some("consumer frame does not match the observed input".into()),
                     rejected_candidate_encoding: None,
+                    empty_nul_path_snapshot: false,
                 });
         decoded.complete = false;
         decoded.gap.get_or_insert_with(|| {

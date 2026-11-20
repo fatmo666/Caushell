@@ -5,6 +5,43 @@ use caushell_profile::{
 use caushell_types::{ShellKind, StateOperationDomain, StateOperationKind};
 
 #[test]
+fn smbstatus_share_mode_models_configured_reads_and_messaging_paths() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    for command in ["smbstatus -S", "smbstatus --shares"] {
+        let parsed = caushell_parse::parse_command(command, ShellKind::Bash).unwrap();
+        let ResolveInvocationArtifactResult::Resolved(resolved) =
+            resolve_invocation_artifact_with_bindings(
+                &registry,
+                &parsed.commands[0],
+                InvocationRuntimeContext::new(),
+                &SessionBindings::new(),
+            )
+        else {
+            panic!("{command}: missing profile");
+        };
+        assert!(resolved.bound.operation_semantics_unresolved);
+        assert!(resolved.proven_stream_contract().is_none());
+        for kind in [
+            EffectKind::LoadConfig,
+            EffectKind::ReadPath,
+            EffectKind::WritePath,
+            EffectKind::DeletePath,
+        ] {
+            assert!(
+                resolved.bound.effects.iter().any(|effect| {
+                    effect.kind == kind
+                        && matches!(
+                            effect.target,
+                            caushell_profile::EffectTarget::ConfiguredPath(_)
+                        )
+                }),
+                "{command}: missing {kind:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn native_service_contracts_do_not_depend_on_command_names_in_the_engine() {
     let source = include_str!("../profiles/postfix.yaml").replace(
         "canonical_name: postfix",

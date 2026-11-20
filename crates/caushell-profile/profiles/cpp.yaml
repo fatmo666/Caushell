@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: cpp, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: preprocess_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 1}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}
+    parameters:
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: transform_data, target: {kind: none}}
+      # Header reads depend on input directives and the effective include
+      # search. Driver configuration and dependency outputs are unobserved.
+      - {kind: read_path, target: {kind: configured_path, sources: [], missing: unknown}}
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: write_path, target: {kind: configured_path, sources: [], missing: unknown}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+
+extensions:
+  caushell.profile/source_research:
+    - https://gcc.gnu.org/onlinedocs/cpp/Invocation.html
+    - https://gcc.gnu.org/onlinedocs/gcc/Environment-Variables.html
+    - https://clang.llvm.org/docs/UsersManual.html#configuration-files
+  caushell.profile/known_limitations:
+    - Covers the single stdin operand only. Other arguments and response files remain opaque.
+    - Include inputs, selected configuration and dependency output targets require independent runtime evidence.

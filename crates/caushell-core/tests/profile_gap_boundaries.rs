@@ -116,8 +116,120 @@ fn chmod_reference_clusters_unknown_options_and_nested_targets_keep_approval() {
 }
 
 #[test]
+fn service_status_all_exposes_opaque_service_script_dispatch() {
+    for command in [
+        "service --status-all | cat",
+        "service '--status-all' | wc -l",
+        "env service --status-all | cat",
+    ] {
+        let result = check(command);
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}");
+        assert!(
+            has_state_operation(
+                &result,
+                StateOperationDomain::ServiceManager,
+                StateOperationKind::Opaque,
+            ),
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|semantics| {
+                    semantics.form_id == "linux_list_all_status"
+                        && semantics.executes_payload
+                        && semantics.operation_semantics_unresolved
+                }),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn service_status_all_does_not_consume_extra_arguments_as_safe_queries() {
+    for command in [
+        "service --status-all --",
+        "service --status-all ''",
+        "service --status-all --status-all",
+        "service --status-all --help",
+        "service --status-all fixture status",
+        "service --status-all fixture start",
+        "service --status-all \"$EXTRA\"",
+        "service --status-all $EXTRA",
+    ] {
+        let result = check(command);
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}");
+        assert!(
+            !result
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|semantics| { semantics.form_id == "linux_list_all_status" }),
+            "{command}"
+        );
+    }
+    assert_eq!(check("service fixture status").decision, Decision::Allow);
+    assert_eq!(
+        check("service fixture start").decision,
+        Decision::NeedApproval
+    );
+}
+
+#[test]
+fn service_enabled_enumeration_preserves_configuration_execution() {
+    for command in ["service -e", "service '-e' | cat", "env service -e"] {
+        let result = check(command);
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}");
+        assert!(
+            has_state_operation(
+                &result,
+                StateOperationDomain::ServiceManager,
+                StateOperationKind::Opaque,
+            ),
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|item| {
+                    item.form_id == "freebsd_list_enabled_services"
+                        && item.executes_payload
+                        && item.operation_semantics_unresolved
+                })
+        );
+    }
+    for command in [
+        "service -e -h",
+        "service -e --status-all",
+        "service --status-all -e",
+        "service -e --",
+        "service -e -e",
+        "service -e fixture status",
+        "service -e \"$EXTRA\"",
+        "service -e $EXTRA",
+        "service -- -e",
+    ] {
+        let result = check(command);
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}");
+        assert!(
+            !result
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|item| { item.form_id == "freebsd_list_enabled_services" })
+        );
+    }
+}
+
+#[test]
 fn common_entry_boundaries_keep_existing_risk_rules_independent() {
-    for command in ["command", "nice", "service --status-all", "service -e"] {
+    for command in ["command", "nice"] {
         assert_eq!(check(command).decision, Decision::Allow, "{command}");
     }
 
@@ -226,4 +338,86 @@ fn non_filesystem_state_domains_are_visible_without_local_path_fiction() {
         StateOperationDomain::ServiceManager,
         StateOperationKind::Control
     ));
+}
+
+#[test]
+fn bash_debug_trap_registration_keeps_deferred_effects_unresolved() {
+    for command in [
+        "trap 'printf %s marker' DEBUG",
+        "trap 'printf %s marker' DEBUG\nprintf %s body",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
+        assert!(
+            response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|effects| {
+                    effects.normalized_command_name == "trap"
+                        && effects.form_id == "possible_debug_handler_registration"
+                        && effects.operation_semantics_unresolved
+                        && !effects.executes_payload
+                        && !effects.executes_hook
+                        && effects.state_operations.iter().any(|effect| {
+                            effect.domain == StateOperationDomain::ShellTrap
+                                && effect.operation == StateOperationKind::Control
+                        })
+                }),
+            "{command}: {response:#?}"
+        );
+        assert!(
+            response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::StateControl)
+        );
+        assert!(!response.reasons.iter().any(|reason|
+            reason.contains("required parameter") || reason.contains("not fully modeled")
+        ), "{command}: {response:#?}");
+    }
+}
+
+#[test]
+fn bash_debug_trap_registration_does_not_claim_other_forms() {
+    for command in [
+        "trap - DEBUG",
+        "trap '' DEBUG",
+        "trap -p DEBUG",
+        "trap 'printf %s marker' EXIT",
+        "trap 'printf %s marker' DEBUG RETURN",
+        "env trap 'printf %s marker' DEBUG",
+    ] {
+        let response = ShellQueryCore::new().check(request(command));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {response:#?}"
+        );
+        assert!(
+            !response
+                .decision_trace
+                .execution_semantics
+                .iter()
+                .any(|effects| effects.form_id == "possible_debug_handler_registration"),
+            "{command}: {response:#?}"
+        );
+    }
+}
+
+#[test]
+fn bash_debug_trap_dynamic_handler_keeps_argv_and_effects_unresolved() {
+    let response = ShellQueryCore::new().check(request("trap \"$handler\" DEBUG"));
+    assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
+    assert!(
+        response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .all(|effects| {
+                effects.normalized_command_name != "trap"
+                    || (effects.operation_semantics_unresolved && !effects.executes_payload)
+            })
+    );
 }

@@ -143,7 +143,13 @@ pub(super) fn observe_outputs(
         let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
             continue;
         };
-        let Some(plan) = resolved.native_stdout_record_plan() else {
+        let native_variant = record
+            .command()
+            .filter(|command| command.prefix_assignments.is_empty())
+            .and_then(|command| command.command_name.as_deref())
+            .filter(|name| !record.bindings().profile_has_alias_shadow(name))
+            .and_then(|name| record.bindings().native_variant(name));
+        let Some(plan) = resolved.native_stdout_record_plan_with_variant(native_variant) else {
             continue;
         };
         let mut output = StdoutRecordsEvidence {
@@ -277,20 +283,30 @@ fn observe(
 ) -> Result<(), String> {
     let command = record.command().ok_or("producer command is unavailable")?;
     output.encoding = Some(plan.record_encoding());
-    let pipe_stdout = crate::support::collect_pipeline_groups(record.parsed_scope())
+    let parsed = record.parsed_scope();
+    let index = record.command_index();
+    let pipe_stdout = crate::support::collect_pipeline_groups(parsed)
         .iter()
-        .any(|g| {
-            g.commands
+        .any(|group| {
+            group
+                .commands
                 .iter()
-                .position(|c| c.command_index == record.command_index())
-                .is_some_and(|i| i + 1 < g.commands.len())
+                .position(|stage| stage.command_index == index)
+                .is_some_and(|position| position + 1 < group.commands.len())
         });
+    // A compound successor is not necessarily a command in the flat group.
+    // Require a direct fd 1 route and a plain pipe, not a merged stderr stream.
+    let direct_plain_pipe = || {
+        crate::support::stdout_is_direct_pipeline(parsed, index, command)
+            && parsed
+                .raw_command
+                .get(command.span.end_byte..command.top_level_span.end_byte)
+                .and_then(|rest| rest.trim_start().strip_prefix('|'))
+                .is_some_and(|rest| !rest.starts_with(['&', '|']))
+    };
     if output.encoding != Some(caushell_types::StreamRecordEncoding::Nul)
-        && (!pipe_stdout
-            || !crate::support::stdout_route_is_plain(
-                record.parsed_scope(),
-                record.command_index(),
-            ))
+        && !(pipe_stdout && crate::support::stdout_route_is_plain(parsed, index))
+        && !direct_plain_pipe()
     {
         return Err("producer stdout terminal mode is unobserved".into());
     }
@@ -459,6 +475,7 @@ fn observe(
             String::new(),
             0,
             DirectoryEntryKind::Directory,
+            None::<caushell_types::FileContentIdentity>,
             None,
         ));
     }
@@ -486,7 +503,10 @@ fn observe(
     let mut visited = 0usize;
     let mut bytes = 0usize;
     let mut path_bytes = 0usize;
-    while let Some((path, spelling, relative, depth, kind, expected_identity)) = queue.pop_front() {
+    let stays_on_device = plan.stays_on_device();
+    while let Some((path, spelling, relative, depth, kind, expected_identity, starting_device)) =
+        queue.pop_front()
+    {
         visited += 1;
         if visited > MAX_OBSERVED_STREAM_RECORDS || depth > MAX_DIRECTORY_DEPTH {
             return Err("producer traversal budget exceeded".into());
@@ -506,7 +526,12 @@ fn observe(
                 .filter(|n|*n<=MAX_OBSERVED_STREAM_BYTES).ok_or("producer byte budget exceeded")?;
             output.records.push(ObservedStreamRecord{path_spelling:spelling.clone(),bytes:evaluation.bytes});
         }
-        if kind != DirectoryEntryKind::Directory || evaluation.prune {
+        // The boundary entry is evaluated above. Its identity is pinned by
+        // the parent directory snapshot, including the device comparison.
+        let crosses_device = starting_device
+            .zip(expected_identity.as_ref())
+            .is_some_and(|(device, entry)| device != entry.device);
+        if kind != DirectoryEntryKind::Directory || evaluation.prune || crosses_device {
             continue;
         }
         let read = ctx.read_directory(&path, depth);
@@ -523,6 +548,17 @@ fn observe(
         if plan.max_depth.is_some_and(|max| depth >= max) {
             continue;
         }
+        let starting_device = if stays_on_device && starting_device.is_none() {
+            Some(
+                read.observation
+                    .identity
+                    .as_ref()
+                    .ok_or("producer starting point device is unobserved")?
+                    .device,
+            )
+        } else {
+            starting_device
+        };
         for entry in entries {
             queue.push_back((
                 join(&path, &entry.name),
@@ -531,6 +567,7 @@ fn observe(
                 depth + 1,
                 entry.kind,
                 Some(entry.identity.clone()),
+                starting_device,
             ));
             if queue.len().saturating_add(visited) > MAX_OBSERVED_STREAM_RECORDS {
                 return Err("producer traversal budget exceeded".into());

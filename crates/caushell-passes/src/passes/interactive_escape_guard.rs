@@ -91,7 +91,7 @@ impl SessionAnalysisPass for InteractiveEscapeGuardPass {
 mod tests {
     use super::InteractiveEscapeGuardPass;
     use crate::{
-        DecisionAssemblyPass, ExtractExecutionSemanticsPass, ParseCommandPass,
+        DecisionAssemblyPass, ExtractExecutionSemanticsPass, ExtractPipelineFlowPass, ParseCommandPass,
         ProjectTopLevelCommandsPass, ResolveInvocationPass,
     };
     use caushell_graph::SessionGraph;
@@ -146,6 +146,7 @@ mod tests {
         runner.register_request_transform_pass(ParseCommandPass);
         runner.register_session_transform_pass(ProjectTopLevelCommandsPass);
         runner.register_session_transform_pass(ResolveInvocationPass::new(registry));
+        runner.register_session_transform_pass(ExtractPipelineFlowPass);
         runner.register_session_transform_pass(ExtractExecutionSemanticsPass);
         runner.register_session_analysis_pass(InteractiveEscapeGuardPass);
         runner.register_final_decision_pass(DecisionAssemblyPass);
@@ -224,6 +225,52 @@ mod tests {
                 .message
                 .contains("terminal_ui interactive escape surface")
         );
+    }
+
+    #[test]
+    fn git_pager_honors_proven_stdout_pipe() {
+        for command in [
+            "git whatchanged --all | wc -l",
+            "git --paginate log | cat | wc -l",
+            "printf 'ok\\n' | git log | wc -l",
+        ] {
+            let ctx = run_pass(command, policy_with_action(RuleAction::NeedApproval));
+            assert_eq!(ctx.final_decision, Some(Decision::Allow), "{command}");
+            assert!(ctx.pending_mutations().iter().any(|mutation| {
+                matches!(
+                    mutation,
+                    caushell_runner::PendingMutation::AddExecutionSemantics { semantics, .. }
+                        if semantics.normalized_command_name == "git"
+                )
+            }), "{command}");
+            assert!(
+                !ctx.findings
+                    .iter()
+                    .any(|finding| finding.rule_id == RuleId::InteractiveEscapeSurface),
+                "{command}"
+            );
+        }
+    }
+
+    #[test]
+    fn git_pager_proof_requires_a_pipe_on_the_invocation_output() {
+        for command in [
+            "git log",
+            "printf 'ok\\n' | git log",
+            "git log 1>&2 | wc -l",
+            "git log >/dev/tty | wc -l",
+            "git help config | wc -l",
+            "less notes.txt | wc -l",
+        ] {
+            let ctx = run_pass(command, policy_with_action(RuleAction::NeedApproval));
+            assert_eq!(ctx.final_decision, Some(Decision::NeedApproval), "{command}");
+            assert!(
+                ctx.findings
+                    .iter()
+                    .any(|finding| finding.rule_id == RuleId::InteractiveEscapeSurface),
+                "{command}"
+            );
+        }
     }
 
     #[test]

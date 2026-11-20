@@ -10,6 +10,7 @@ pub enum StateOperationDomain {
     CloudResource,
     RemoteAccess,
     ShellHistory,
+    ShellTrap,
     NetworkConfiguration,
     HostIdentity,
     DisplayConfiguration,

@@ -1,6 +1,10 @@
+use std::collections::{BTreeMap, BTreeSet};
+
+use caushell_parse::{CommandFact, StatementTerminator};
 use caushell_profile::{BoundInvocation, EffectKind};
-use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
-use caushell_types::RuleId;
+use caushell_query::{PathTargetQuery, QuerySession};
+use caushell_runner::{ExecutionUnitOriginKind, RunnerContext, SessionAnalysisPass, SessionView};
+use caushell_types::{PathMetadataMutationKind, PathTargetOperation, RuleId, SemanticResolution};
 
 use crate::support::{
     bound_invocation, decision_for_rule_action, graph_backed_execution_resolve_records,
@@ -17,6 +21,154 @@ fn has_candidate(bound: &BoundInvocation) -> bool {
         .any(|effect| effect.kind == EffectKind::PrivilegeModifier)
 }
 
+fn requests_set_id(mode: &str) -> bool {
+    let numeric = mode.strip_prefix(['+', '-', '=']).unwrap_or(mode);
+    if !numeric.is_empty() && numeric.bytes().all(|byte| matches!(byte, b'0'..=b'7')) {
+        return !mode.starts_with('-')
+            && u32::from_str_radix(numeric, 8)
+                .is_ok_and(|bits| bits <= 0o7777 && bits & 0o6000 != 0);
+    }
+
+    // Track explicit requests in clause order. A chmod applies the final
+    // mode to a regular file, even if earlier clauses set a bit it clears.
+    let mut set = 0;
+    for clause in mode.split(',') {
+        let Some(actions_start) = clause.find(['+', '-', '=']) else {
+            return false;
+        };
+        let (who, mut actions) = clause.split_at(actions_start);
+        let mut mask = if who.is_empty() { 0o6000 } else { 0 };
+        for byte in who.bytes() {
+            mask |= match byte {
+                b'u' => 0o4000,
+                b'g' => 0o2000,
+                b'a' => 0o6000,
+                b'o' => 0,
+                _ => return false,
+            };
+        }
+        while !actions.is_empty() {
+            let (operator, tail) = actions.split_at(1);
+            let end = tail.find(['+', '-', '=']).unwrap_or(tail.len());
+            let (permissions, rest) = tail.split_at(end);
+            if !matches!(permissions, "u" | "g" | "o")
+                && !permissions.bytes().all(|byte| b"rwxXst".contains(&byte))
+            {
+                return false;
+            }
+            let has_id = permissions.contains('s');
+            match (operator, has_id) {
+                ("+" | "=", true) => set |= mask,
+                ("-", true) | ("=", false) => set &= !mask,
+                _ => {}
+            }
+            actions = rest;
+        }
+    }
+    set != 0
+}
+
+fn is_ordered_top_level_command(command: &CommandFact) -> bool {
+    !command.in_pipeline
+        && !command.guarded
+        && !command.conditional_execution
+        && command.control_flow_span.is_none()
+        && command.shell_scope_span.is_none()
+        && command.terminator != Some(StatementTerminator::Background)
+}
+
+fn set_id_execution_reasons(ctx: &RunnerContext, staged: SessionView<'_>) -> Vec<String> {
+    let records = ctx.execution_unit_resolve_records();
+    if !records.iter().any(|record| {
+        record.origin_kind == ExecutionUnitOriginKind::TopLevel
+            && bound_invocation(&record.result).is_some_and(|bound| {
+                bound
+                    .effects
+                    .iter()
+                    .any(|effect| effect.kind == EffectKind::ChangeMode)
+            })
+    }) {
+        return Vec::new();
+    }
+    let Some(parsed) = ctx.parsed_command() else {
+        return Vec::new();
+    };
+    let facts = PathTargetQuery::new(ctx.request().sequence_no)
+        .execute(QuerySession::from_session(&staged));
+    let mut mode_targets = BTreeSet::new();
+    let mut executable_paths = BTreeSet::new();
+    for fact in &facts {
+        let SemanticResolution::Resolved { value } = &fact.resolution else {
+            continue;
+        };
+        let Some(path) = value.concrete_path() else {
+            continue;
+        };
+        let target = (fact.source_node_id.as_str(), path);
+        if fact.operation == PathTargetOperation::Metadata
+            && fact.metadata_mutation.as_ref().is_some_and(|mutation| {
+                !mutation.recursive
+                    && mutation
+                        .mutation_kinds
+                        .contains(&PathMetadataMutationKind::ChangeMode)
+                    && mutation.raw_operand.as_deref().is_some_and(requests_set_id)
+            })
+        {
+            mode_targets.insert(target);
+        } else if fact.operation == PathTargetOperation::ExecuteFile
+            && fact.slot_name == crate::path::EXECUTABLE_FILE_SLOT
+        {
+            executable_paths.insert(target);
+        }
+    }
+    if mode_targets.is_empty() || executable_paths.is_empty() {
+        return Vec::new();
+    }
+
+    let commands: BTreeMap<_, _> = records
+        .iter()
+        .filter_map(|record| {
+            let index = record.command_ref.command_index;
+            let command = parsed.commands.get(index)?;
+            (record.origin_kind == ExecutionUnitOriginKind::TopLevel
+                && record.command_ref.span == command.span
+                && is_ordered_top_level_command(command))
+            .then_some((index, (record.source_node_id.0.as_str(), command)))
+        })
+        .collect();
+    let mut reasons = BTreeSet::new();
+    for (&index, &(source, command)) in &commands {
+        let Some(&(next_source, next)) = commands.get(&(index + 1)) else {
+            continue;
+        };
+        // Some shell actions, such as assignments, have no command index.
+        // Only a simple separator proves there is no intervening action.
+        if !ctx
+            .request()
+            .command
+            .get(command.span.end_byte..next.span.start_byte)
+            .is_some_and(|between| {
+                between
+                    .bytes()
+                    .all(|byte| byte.is_ascii_whitespace() || byte == b';')
+            })
+        {
+            continue;
+        }
+        for &(_, path) in mode_targets
+            .range((source, "")..)
+            .take_while(|&&(id, _)| id == source)
+        {
+            if executable_paths.contains(&(next_source, path)) {
+                reasons.insert(format!(
+                    "direct execution of {path:?} follows a mode change requesting set-user-ID or set-group-ID; crossing the execution-identity boundary requires approval"
+                ));
+            }
+        }
+    }
+    reasons.into_iter().collect()
+}
+
 impl SessionAnalysisPass for PrivilegeBoundaryGuardPass {
     fn name(&self) -> &'static str {
         "privilege_boundary_guard"
@@ -25,23 +177,20 @@ impl SessionAnalysisPass for PrivilegeBoundaryGuardPass {
     fn run(
         &self,
         _session: SessionView<'_>,
-        _staged_session: SessionView<'_>,
+        staged_session: SessionView<'_>,
         ctx: &mut RunnerContext,
     ) {
-        // No graph query, path resolution or identity lookup on the common
-        // path. Use the same existing bound effects as the enforcement below.
-        if !ctx
+        let has_declared_effect = ctx
             .execution_unit_resolve_records()
             .iter()
-            .any(|record| bound_invocation(&record.result).is_some_and(has_candidate))
-        {
-            return;
+            .any(|record| bound_invocation(&record.result).is_some_and(has_candidate));
+        let mut reasons = set_id_execution_reasons(ctx, staged_session);
+        if has_declared_effect {
+            reasons.extend(graph_backed_execution_resolve_records(ctx).into_iter().filter_map(|record| {
+                let bound = bound_invocation(record.result()).filter(|bound| has_candidate(bound))?;
+                Some(format!("{} ({}) declares an execution-identity or privilege change; crossing this boundary requires approval", bound.command_name.as_str(), bound.form_id.as_str()))
+            }));
         }
-
-        let reasons: Vec<_> = graph_backed_execution_resolve_records(ctx).into_iter().filter_map(|record| {
-            let bound = bound_invocation(record.result()).filter(|bound| has_candidate(bound))?;
-            Some(format!("{} ({}) declares an execution-identity or privilege change; crossing this boundary requires approval", bound.command_name.as_str(), bound.form_id.as_str()))
-        }).collect();
         let action = ctx
             .policy()
             .rule_policy

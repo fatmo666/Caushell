@@ -55,12 +55,44 @@ forms:
     binding:
       kind: remaining_positionals
     cardinality: optional_many
+    structured_projection:
+      branches:
+      # Only project unambiguous individual hosts. Target lists and range
+      # expressions can describe many addresses.
+      - matcher:
+          kind: regex_capture
+          pattern: >-
+            (?ix)^(
+              (?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)*
+              [a-z](?:[a-z0-9-]{0,61}[a-z0-9])?\.?
+              | (?:(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])\.){3}
+                (?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9]?[0-9])
+            )$
+          group: 1
+        target:
+          name: scan_endpoints
+          semantic: &scan_target_semantic
+            kind: endpoint
+            endpoint_kind: host_port
+            usage: transport_target
+      fallback:
+        name: scan_endpoints
+        semantic: *scan_target_semantic
+        unresolved: true
   effects:
   - &3
     kind: write_path
     target:
       kind: slot
       name: legacy_output
+  - &scan_endpoint_effect
+    kind: network_endpoint
+    target:
+      kind: slot
+      name: scan_endpoints
+    input_scope:
+      slots: [scan_targets]
+      stdin: false
   - kind: read_path
     target:
       kind: configured_path
@@ -105,6 +137,7 @@ forms:
   parameters: *2
   effects: &5
   - *3
+  - *scan_endpoint_effect
   stream_contract:
     stdin_mode: ignored
     stdout_mode: data
@@ -137,6 +170,7 @@ forms:
   parameters: *2
   effects:
   - *3
+  - *scan_endpoint_effect
   - kind: write_path
     target:
       kind: configured_path

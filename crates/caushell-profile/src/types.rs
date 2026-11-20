@@ -284,6 +284,8 @@ pub enum SelectorPredicate {
     /// (excluding the executable). Independent of option/positional ownership.
     HasArgumentAtMatching(usize, ValueMatcher),
     HasPositionalAt(usize),
+    /// Proven argv width before option and operand ownership.
+    ExactArgumentCount(usize),
     ExactPositionalCount(usize),
     HasPositionalBeforeDashDashAt(usize),
     HasPositionalAtMatching(usize, ValueMatcher),
@@ -291,6 +293,7 @@ pub enum SelectorPredicate {
     HasPositionalAfterLeadingMatcher(ValueMatcher),
     NoPositionalAfterLeadingMatcher(ValueMatcher),
     LastPositionalMatches(ValueMatcher),
+    OptionsBeforePositionals,
     NoPositionalArgs,
     NoArguments,
     HasDashDash,
@@ -424,6 +427,10 @@ pub enum StdoutScalarShape {
     AbsolutePath,
     /// Decimal digits, whitespace and signs; no identifiers or shell syntax.
     ArithmeticText,
+    /// Plain hexadecimal digits and LF. The captured value may be empty.
+    PlainHexText,
+    /// Standard Base64 alphabet, padding and line breaks. The value may be empty.
+    RawBase64Text,
 }
 
 /// Restriction on the entire materialized argv before a scalar stdout
@@ -1087,7 +1094,9 @@ pub enum ImplicitInputSource {
     StdinData,
     InteractiveSession,
     DispatchOutput,
+    CommandSubstitution,
     InheritedEnvironment,
+    ToolConfiguration,
     ShellIteration,
 }
 
@@ -1098,7 +1107,9 @@ impl ImplicitInputSource {
             Self::StdinData => "stdin_data",
             Self::InteractiveSession => "interactive_session",
             Self::DispatchOutput => "dispatch_output",
+            Self::CommandSubstitution => "command_substitution",
             Self::InheritedEnvironment => "inherited_environment",
+            Self::ToolConfiguration => "tool_configuration",
             Self::ShellIteration => "shell_iteration",
         }
     }
@@ -1109,7 +1120,9 @@ impl ImplicitInputSource {
             Self::StdinData => caushell_types::ImplicitInputSource::StdinData,
             Self::InteractiveSession => caushell_types::ImplicitInputSource::InteractiveSession,
             Self::DispatchOutput => caushell_types::ImplicitInputSource::DispatchOutput,
+            Self::CommandSubstitution => caushell_types::ImplicitInputSource::CommandSubstitution,
             Self::InheritedEnvironment => caushell_types::ImplicitInputSource::InheritedEnvironment,
+            Self::ToolConfiguration => caushell_types::ImplicitInputSource::ToolConfiguration,
             Self::ShellIteration => caushell_types::ImplicitInputSource::ShellIteration,
         }
     }
@@ -1122,7 +1135,9 @@ impl ImplicitInputSource {
             caushell_types::ImplicitInputSource::StdinData => Self::StdinData,
             caushell_types::ImplicitInputSource::InteractiveSession => Self::InteractiveSession,
             caushell_types::ImplicitInputSource::DispatchOutput => Self::DispatchOutput,
+            caushell_types::ImplicitInputSource::CommandSubstitution => Self::CommandSubstitution,
             caushell_types::ImplicitInputSource::InheritedEnvironment => Self::InheritedEnvironment,
+            caushell_types::ImplicitInputSource::ToolConfiguration => Self::ToolConfiguration,
             caushell_types::ImplicitInputSource::ShellIteration => Self::ShellIteration,
         }
     }
@@ -1135,7 +1150,9 @@ impl ImplicitInputSource {
                 Some(caushell_types::RuntimeInputSource::InteractiveSession)
             }
             Self::DispatchOutput => None,
+            Self::CommandSubstitution => None,
             Self::InheritedEnvironment => None,
+            Self::ToolConfiguration => None,
             Self::ShellIteration => None,
         }
     }
@@ -1332,6 +1349,7 @@ pub enum EffectKind {
 pub struct InteractiveEscapeSurface {
     pub kind: InteractiveEscapeSurfaceKind,
     pub requires_tty: bool,
+    pub requires_stdout_tty: bool,
     pub capabilities: Vec<InteractiveEscapeCapability>,
 }
 
@@ -2216,9 +2234,21 @@ pub struct BoundInvocation {
     pub bound_archive_members: BTreeMap<usize, Vec<String>>,
     /// A declared operation may have additional, unmodeled semantics.
     pub operation_semantics_unresolved: bool,
+    /// The only modeled control effect is termination, but static argv
+    /// evidence does not establish that the builtin succeeds in terminating.
+    pub(crate) conditional_shell_termination: bool,
 }
 
 impl BoundInvocation {
+    pub fn definitely_terminates_current_shell(&self) -> bool {
+        !self.operation_semantics_unresolved
+            && !self.conditional_shell_termination
+            && self
+                .effects
+                .iter()
+                .any(|effect| effect.kind == EffectKind::TerminateCurrentShell)
+    }
+
     pub fn is_auxiliary_input_slot(&self, slot: &str) -> bool {
         self.auxiliary_input_slots()
             .any(|name| name.as_str() == slot)
@@ -2274,6 +2304,7 @@ impl BoundInvocation {
             bound_path_lists: std::collections::BTreeMap::new(),
             bound_archive_members: BTreeMap::new(),
             operation_semantics_unresolved: false,
+            conditional_shell_termination: false,
         }
     }
 

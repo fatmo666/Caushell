@@ -41,6 +41,39 @@ fn carriers(body: &str) -> Vec<String> {
         format!("sh -c '{body}'"),
     ]
 }
+
+#[test]
+fn final_subshell_keeps_function_body_and_group_write_authorization() {
+    for (body, decision, path) in [
+        ("printf fixture", Decision::Allow, None),
+        (
+            "printf fixture > ./report.txt",
+            Decision::Allow,
+            Some("/bench/workspace/report.txt"),
+        ),
+        (
+            "printf fixture > /opt/shared/report.txt",
+            Decision::NeedApproval,
+            Some("/opt/shared/report.txt"),
+        ),
+    ] {
+        let explicit = check(&format!("work() {{ ({body}); }}\nwork"), decision);
+        let implicit = check(&format!("work() {{ ({body}) }}\nwork"), decision);
+        assert_eq!(explicit.reasons, implicit.reasons);
+        if let Some(path) = path {
+            for result in [&explicit, &implicit] {
+                assert!(
+                    result.decision_trace.path_targets.iter().any(|target| {
+                        target.operation == caushell_types::PathTargetOperation::Write
+                            && target.lexical.concrete_path() == Some(path)
+                    }),
+                    "{result:#?}"
+                );
+            }
+        }
+    }
+}
+
 #[test]
 fn conditional_heredoc_reassociation_preserves_data_execution_and_substitution_boundaries() {
     check("true && cat <<'EOF'\nrm -rf /\nEOF", Decision::Allow);
@@ -152,6 +185,33 @@ fn local_temporary_and_discard_outputs_keep_existing_policy() {
             );
         }
     }
+}
+
+#[test]
+fn signed_pipeline_arguments_keep_redirect_paths_under_policy() {
+    check("printf DATA | head -200>./out", Decision::Allow);
+    let outside = check(
+        "printf DATA | head -200>/opt/shared/out",
+        Decision::NeedApproval,
+    );
+    assert!(
+        outside
+            .decision_trace
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation)
+    );
+    let malformed = check(
+        "printf DATA | head -200>./out; printf \"unterminated",
+        Decision::NeedApproval,
+    );
+    assert!(
+        malformed
+            .decision_trace
+            .findings
+            .iter()
+            .any(|finding| finding.rule_id == RuleId::CommandParseFailure)
+    );
 }
 #[test]
 fn opening_cwd_is_not_the_last_body_command_cwd() {

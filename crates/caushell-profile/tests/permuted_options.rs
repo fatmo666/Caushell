@@ -125,6 +125,7 @@ fn bounded_native_batches_keep_per_item_path_proof_without_claiming_scalar_arity
         roots: vec!["./input".into()],
         may_escape: false,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     });
     let shape = argument_structure(tail);
     assert_eq!(shape.fields, ArgumentFieldCount::ZeroOrMore);
@@ -322,4 +323,42 @@ fn legacy_all_arguments_is_unchanged_until_profile_opts_in() {
         "synthetic-transfer -f --help",
     );
     assert_eq!(b.form_id.as_str(), "show_help");
+}
+
+#[test]
+fn temporal_attachments_own_only_proven_scalar_suffixes() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    for (command, expected_gap) in [
+        (r#"date --date="@$TIME""#, false),
+        (r#"date -d@"$TIME""#, false),
+        (r#"touch --date="$(date)" target.txt"#, false),
+        (r#"touch -d@"$TIME" target.txt"#, false),
+        (r#"touch -d"$TIME" target.txt"#, false),
+        (r#"touch -t"$TIME" target.txt"#, false),
+        (r#"touch -d"$TIME" target.txt other.txt"#, true),
+        (r#"touch -d"$TIME" -- target.txt"#, true),
+        (r#"touch -d"$TIME" "$FILE""#, true),
+        (r#"date -d"$TIME" target.txt"#, true),
+        (r#"touch --date=$TIME target.txt"#, true),
+        (r#"touch --date="$@" target.txt"#, true),
+        (r#"touch --reference="$FILE" target.txt"#, true),
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let record = resolve_invocation_artifact_with_bindings(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::new(),
+            &SessionBindings::new(),
+        );
+        match record {
+            ResolveInvocationArtifactResult::Resolved(resolved) => assert_eq!(
+                unresolved(&resolved.bound),
+                expected_gap,
+                "{command}: {:?}",
+                resolved.bound.residuals
+            ),
+            ResolveInvocationArtifactResult::SelectionError { .. } if expected_gap => {}
+            other => panic!("{command}: {other:#?}"),
+        }
+    }
 }

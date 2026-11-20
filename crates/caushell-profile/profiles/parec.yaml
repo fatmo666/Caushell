@@ -1,0 +1,48 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: parec, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: record_raw_stdout
+    selector: {kind: all, items: [{kind: no_dash_dash}, {kind: no_positional_args}]}
+    operation_semantics_unresolved: true
+    effects:
+      # libpulse can select a local or remote server and recording source.
+      # A missing daemon can also trigger configuration-dependent startup.
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: network_endpoint, target: {kind: none}}
+      - {kind: execute_payload, target: {kind: configured_path, sources: [], missing: unknown, purpose: script_source}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+
+modifiers:
+  - {id: raw, matcher: {kind: any_flag, flags: [--raw]}}
+  - id: channels
+    matcher: {kind: any_flag, flags: [--channels]}
+    parameters:
+      - name: channels
+        semantic: {kind: plain_value}
+        binding: &value {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        value_constraints: &decimal [{kind: require_match, pattern: '^[0-9]+$'}]
+  - id: latency
+    matcher: {kind: any_flag, flags: [--latency]}
+    parameters:
+      - name: latency_bytes
+        semantic: {kind: plain_value}
+        binding: *value
+        cardinality: required_many
+        value_constraints: *decimal
+
+extensions:
+  caushell.profile/source_research:
+    - https://raw.githubusercontent.com/pulseaudio/pulseaudio/v16.1/src/utils/pacat.c
+    - https://raw.githubusercontent.com/pulseaudio/pulseaudio/v16.1/src/pulse/client-conf.c
+    - https://raw.githubusercontent.com/pulseaudio/pulseaudio/v16.1/src/pulse/context.c
+  caushell.profile/known_limitations:
+    - Models raw capture to stdout with optional channel count and latency in bytes. Explicit filenames, servers, devices and other modes remain opaque.
+    - The recording source comes from the selected service. Client configuration, the server and potential autospawn code remain unverified.

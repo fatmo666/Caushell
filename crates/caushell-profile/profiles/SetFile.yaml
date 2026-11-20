@@ -1,0 +1,45 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: SetFile, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: update_timestamps
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: timestamp}
+        - {kind: no_dash_dash}
+        - {kind: has_positional_at, index: 0}
+        - kind: not
+          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^-'}}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - name: path_targets
+        semantic: {kind: path, role: metadata_mutation, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+    effects:
+      - {kind: metadata_mutation, target: {kind: slot, name: path_targets}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+
+modifiers:
+  - id: timestamp
+    matcher: {kind: any_flag, flags: [-d, -m]}
+    parameters:
+      - name: timestamp_values
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        value_constraints:
+          - {kind: require_match, pattern: '^(?:\.|[0-9]{1,2}/[0-9]{1,2}/(?:[0-9]{2}|[0-9]{4})(?:[ \t]+[0-9]{1,2}:[0-9]{2}(?::[0-9]{2})?(?:[ \t]+(?:AM|PM))?)?)$'}
+
+extensions:
+  caushell.profile/source_research: [macOS SetFile(1), Xcode Command Line Tools SetFile]
+  caushell.profile/known_limitations:
+    - Only leading, separate timestamp options and ordinary file operands are modeled. Timestamp values are syntax-checked, with no promise about the exact date applied.
+    - Default access follows symlinks. The symlink override, Finder attributes, other flags, and lower-case command lookup are unresolved.

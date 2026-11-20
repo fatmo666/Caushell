@@ -1,0 +1,41 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: xgettext, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: extract_default_catalog
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(?:-|$)'}}}
+    parameters:
+      - name: source_files
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+        value_constraints:
+          - {kind: require_match, pattern: '^[^-][\s\S]*\.(c|h|php|phtml)$'}
+    remaining_selector: {kind: no_positional_args}
+    # GNU builds may load ITS locating rules at startup and consult VCS
+    # history to compute the generated header's creation timestamp.
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: source_files}}
+      - {kind: write_path, target: {kind: tool_convention_path, path: messages.po, convention: xgettext.default_catalog, purpose: generic_operand}}
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: execute_payload, target: {kind: configured_path, sources: [], missing: unknown, purpose: script_source}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/gettext/manual/html_node/xgettext-Invocation.html
+    - https://raw.githubusercontent.com/autotools-mirror/gettext/master/gettext-tools/src/xgettext.c
+  caushell.profile/known_limitations:
+    - Covers the default catalog mode for named C and PHP source operands. Standard input, explicit output and other options remain unresolved.
+    - ITS locating rules and possible VCS helper execution are not proved by the input filename or an omitted option.

@@ -105,6 +105,49 @@ fn allowed(command: &str, view: Namespace) {
     assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
 }
 #[test]
+fn bash_pid_redirect_keeps_the_directory_proof_and_namespace_checks() {
+    for (command, root) in [
+        ("printf fixture >> /tmp/$$", "/tmp"),
+        ("printf fixture >> /tmp/.$$", "/tmp"),
+        (r#"printf fixture > "/workspace/out-$$.txt""#, "/workspace"),
+        ("printf fixture > src/name-$$.log", "/workspace/src"),
+    ] {
+        let result = check(command, Namespace::ordinary());
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|target| {
+            target.operation == PathTargetOperation::Write
+                && matches!(&target.resolution,
+                    SemanticResolution::Resolved {
+                        value: PathResolution::BoundedPathSet { roots, may_escape: false }
+                    } if roots == &[root.to_string()])
+        }), "{command}: {:?}", result.reasons);
+    }
+
+    let link = FilesystemEntry::Symlink { target: "/outside/secret".into() };
+    let result = check("printf fixture >> /tmp/$$", Namespace::ordinary().set("/tmp/123", link));
+    assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+
+    for command in [
+        "printf fixture >> /outside/$$",
+        "printf fixture >> /tmp/$$-$OUT",
+        "printf fixture >> /tmp/$$/child",
+        "printf fixture >> /tmp/.link/../$$",
+        "printf fixture >> /tmp/.$$.",
+        "printf fixture >> /tmp/$$*",
+    ] {
+        let result = check(command, Namespace::ordinary());
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+
+    let quoted = check("printf fixture >> '/tmp/$$'", Namespace::ordinary());
+    assert_eq!(quoted.decision, Decision::Allow, "{:?}", quoted.reasons);
+    assert!(quoted.decision_trace.path_targets.iter().any(|target| {
+        target.operation == PathTargetOperation::Write
+            && target.lexical.concrete_path() == Some("/tmp/$$")
+    }));
+}
+
+#[test]
 fn removing_an_ordinary_leaf_preserves_its_parent_lookup() {
     for present in [false, true] {
         let mut ns = Namespace::ordinary();
@@ -112,6 +155,136 @@ fn removing_an_ordinary_leaf_preserves_its_parent_lookup() {
             ns = ns.set("/workspace/temp", FilesystemEntry::File);
         }
         allowed("grep -v pattern file > temp && mv temp file", ns);
+    }
+}
+
+#[test]
+fn a_metadata_reference_preserves_the_shared_regular_file_namespace() {
+    let command = "touch /tmp/stamp; touch -acmr src/input /tmp/stamp";
+    for present in [false, true] {
+        let mut view = Namespace::ordinary();
+        if present {
+            view = view.set("/tmp/stamp", FilesystemEntry::File);
+        }
+        let result = check(command, view);
+        assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+        let writes: Vec<_> = result
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|target| target.operation == PathTargetOperation::Write)
+            .collect();
+        assert_eq!(writes.len(), 2);
+        assert!(writes.iter().all(|target| {
+            matches!(&target.resolution,
+                SemanticResolution::Resolved { value }
+                    if value.concrete_path() == Some("/tmp/stamp"))
+                && target.namespace_proofs.iter().any(|proof| {
+                    proof.effect == PathNamespaceEffect::RegularFileWrite
+                        && proof.path == "/tmp/stamp"
+                        && proof.producer_node_id != target.source_node_id
+                })
+        }));
+    }
+}
+
+#[test]
+fn metadata_reference_does_not_authorize_unproved_or_external_writes() {
+    let command = "touch /tmp/stamp; touch -r src/input /tmp/stamp";
+    let link = FilesystemEntry::Symlink {
+        target: "/outside/secret".into(),
+    };
+    let linked = check(command, Namespace::ordinary().set("/tmp/stamp", link));
+    assert_ne!(linked.decision, Decision::Allow);
+    assert!(
+        linked
+            .decision_trace
+            .path_targets
+            .iter()
+            .all(|target| target.namespace_proofs.is_empty())
+    );
+
+    let external = check(
+        "touch /outside/stamp; touch -r src/input /outside/stamp",
+        Namespace::ordinary(),
+    );
+    assert_ne!(external.decision, Decision::Allow);
+
+    let opaque = check(
+        "touch /tmp/stamp; touch -r src/input /tmp/stamp; unmodeled-fixture",
+        Namespace::ordinary(),
+    );
+    assert_ne!(opaque.decision, Decision::Allow);
+    assert!(
+        opaque
+            .decision_trace
+            .path_targets
+            .iter()
+            .all(|target| target.namespace_proofs.is_empty())
+    );
+}
+
+#[test]
+fn mv_into_current_directory_tracks_the_landing_entry() {
+    for target in [".", "./", "./."] {
+        let command = format!("mv src/input {target}");
+        let result = check(&command, Namespace::ordinary());
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+        let mutations: Vec<_> = result
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|fact| {
+                matches!(
+                    fact.operation,
+                    PathTargetOperation::MoveSource | PathTargetOperation::Write
+                )
+            })
+            .map(|fact| {
+                let SemanticResolution::Resolved { value } = &fact.resolution else {
+                    panic!("unresolved path: {fact:?}");
+                };
+                (fact.operation, value.concrete_path())
+            })
+            .collect();
+        assert_eq!(mutations.len(), 2, "{command}: {mutations:?}");
+        assert!(mutations.contains(&(
+            PathTargetOperation::MoveSource,
+            Some("/workspace/src/input")
+        )));
+        assert!(mutations.contains(&(PathTargetOperation::Write, Some("/workspace/input"))));
+    }
+}
+
+#[test]
+fn mv_into_current_directory_still_checks_links_and_other_modes() {
+    let symlink = || FilesystemEntry::Symlink {
+        target: "/outside/secret".into(),
+    };
+    let destination = Namespace::ordinary().set("/workspace/input", symlink());
+    assert_ne!(check("mv src/input .", destination).decision, Decision::Allow);
+    let source = Namespace::ordinary().set("/workspace/src/input", symlink());
+    assert_ne!(
+        check("mv src/input .; printf x > input", source).decision,
+        Decision::Allow
+    );
+    for command in [
+        "mv /outside/secret .",
+        "mv src/input ..",
+        "mv src/input ./../.",
+        "mv -b src/input .",
+        "mv -T src/input .",
+    ] {
+        assert_ne!(
+            check(command, Namespace::ordinary()).decision,
+            Decision::Allow,
+            "{command}"
+        );
     }
 }
 #[test]
@@ -195,11 +368,11 @@ fn symlinked_or_unobserved_families_do_not_receive_a_closed_tree_proof() {
 
 #[test]
 fn backup_modes_keep_known_effects_but_cannot_certify_hidden_output_names() {
-    for command in [
-        "mv -b temp file",
-        "mv --backup=numbered temp file",
-        "mv -S '~' temp file",
-        "mv -b -t dest temp",
+    for (command, backup_slot) in [
+        ("mv -b temp file", "effect_2"),
+        ("mv --backup=numbered temp file", "effect_2"),
+        ("mv -S '~' temp file", "effect_2"),
+        ("mv -b -t dest temp", "effect_1"),
     ] {
         let r = check(
             command,
@@ -231,6 +404,41 @@ fn backup_modes_keep_known_effects_but_cannot_certify_hidden_output_names() {
                 .any(|f| f.operation == PathTargetOperation::MoveSource),
             "{command}"
         );
+        let writes: Vec<_> = r
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|f| f.operation == PathTargetOperation::Write)
+            .collect();
+        assert_eq!(writes.len(), 2, "{command}: {writes:?}");
+        assert!(
+            writes.iter().any(|f| {
+                f.slot_name == backup_slot
+                    && matches!(f.lexical, PathResolution::UnsupportedDynamicText { .. })
+            }),
+            "{command}: {writes:?}"
+        );
+    }
+}
+
+#[test]
+fn ordinary_and_information_moves_have_no_implicit_backup_write() {
+    for (command, count) in [
+        ("mv temp file", 1),
+        ("mv -t dest temp", 1),
+        ("mv -- temp -b", 1),
+        ("mv --help -b temp file", 0),
+        ("mv --version -b temp file", 0),
+        ("mv -b temp", 0),
+    ] {
+        let r = check(command, Namespace::ordinary());
+        let writes = r
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|f| f.operation == PathTargetOperation::Write)
+            .count();
+        assert_eq!(writes, count, "{command}: {:?}", r.reasons);
     }
 }
 #[test]
@@ -316,4 +524,74 @@ fn removal_certificates_do_not_survive_as_current_observations_after_restore() {
             .iter()
             .all(|f| f.namespace_proofs.is_empty())
     );
+}
+
+#[test]
+fn batched_find_rename_excludes_unmatchable_literal_dialect() {
+    let command = "find . -name '*.item.cache' -exec rename -v 's/\\.cache$//' '{}' +";
+    let result = check(command, Namespace::ordinary());
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    let relocations: Vec<_> = result
+        .decision_trace
+        .path_targets
+        .iter()
+        .filter(|target| {
+            matches!(
+                target.operation,
+                PathTargetOperation::MoveSource | PathTargetOperation::Write
+            )
+        })
+        .collect();
+    assert_eq!(relocations.len(), 2);
+    assert!(relocations.iter().all(|target| matches!(
+        target.resolution,
+        SemanticResolution::Resolved {
+            value: PathResolution::BoundedPathSet { may_escape: false, .. }
+        }
+    )));
+}
+
+#[test]
+fn batched_find_rename_retains_unproved_and_outside_mutations() {
+    for command in [
+        "find dir//child -name '*.item.cache' -exec rename -v 's/\\.cache$//' '{}' +",
+        "find . -name '*.item.cache' -exec rename 's/\\.cache$/.out/' '{}' +",
+        "find . -name '*.cache' -exec rename 's/\\.cache$//' '{}' +",
+        "find /outside -name '*.item.cache' -exec rename 's/\\.cache$//' '{}' +",
+        "find -L . -name '*.item.cache' -exec rename 's/\\.cache$//' '{}' +",
+        "find . -name '*.item.cache' -exec rename --symlink 's/\\.cache$//' '{}' +",
+    ] {
+        let view = Namespace::ordinary()
+            .set("/workspace/dir", FilesystemEntry::Directory)
+            .set("/workspace/dir/child", FilesystemEntry::Directory);
+        let result = check(command, view);
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+}
+
+#[test]
+fn utility_rename_cannot_match_a_slash_in_plain_leaf_globs() {
+    for command in [
+        "rename.ul 'peach/tree' berries berry*",
+        "rename.ul 'peach/tree' berry*",
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_eq!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+        assert!(response.decision_trace.path_targets.iter().all(|target| {
+            !matches!(target.operation, PathTargetOperation::MoveSource | PathTargetOperation::Write)
+        }));
+    }
+
+    for command in [
+        "rename.ul 'peach/tree' berries peach/tree*",
+        "rename.ul 'peach/tree' berries \"$unobserved\"",
+        "rename.ul 'berry' berries berry*",
+        "rename 's/^berry/peach/' berry*",
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}: {:?}", response.reasons);
+        assert!(response.decision_trace.path_targets.iter().any(|target| {
+            matches!(target.operation, PathTargetOperation::MoveSource | PathTargetOperation::Write)
+        }));
+    }
 }

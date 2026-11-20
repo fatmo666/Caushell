@@ -8,9 +8,9 @@ use caushell_passes::{
 use caushell_profile::ProfileRegistry;
 use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
 use caushell_types::{
-    CheckRequest, CommandSequenceNo, Decision, PathResolution, ResolvedPathRole, RuleId,
-    RuntimeMetadata, SessionId, SessionSummary, ShellKind, ShellRuntimeCapabilities,
-    ShellStateSnapshot,
+    CheckRequest, CommandSequenceNo, Decision, PathResolution, PathTargetOperation,
+    ResolvedPathRole, RuleId, RuntimeMetadata, SemanticResolution, SessionId, SessionSummary,
+    ShellKind, ShellRuntimeCapabilities, ShellStateSnapshot,
 };
 
 fn request(command: &str) -> CheckRequest {
@@ -91,11 +91,6 @@ fn source_forms_resolve_and_record_only_the_documented_file_operands() {
             "check_raid --extra-opts=@/opt/shared/options.ini",
             "/opt/shared/options.ini",
         ),
-        ("bbot -d -cy /opt/shared/rules.yar", "/opt/shared/rules.yar"),
-        (
-            "ksshell -i /opt/shared/kickstart.cfg",
-            "/opt/shared/kickstart.cfg",
-        ),
         ("7z a -ttar -an -so /opt/shared/input", "/opt/shared/input"),
     ];
     for (command, path) in cases {
@@ -140,6 +135,53 @@ fn source_forms_resolve_and_record_only_the_documented_file_operands() {
     );
     let graph = staged_graph("terraform console -var-file=/opt/shared/vars");
     assert!(has_path(&graph, ResolvedPathRole::Read, "/opt/shared/vars"));
+}
+
+#[test]
+fn bbot_custom_rules_preserve_source_and_require_approval_for_scan_startup() {
+    for flag in ["-cy", "--custom-yara-rules"] {
+        let path = "/opt/shared/fixture-rule.yar";
+        let command = format!("bbot --debug {flag} {path}");
+        let response = ShellQueryCore::new().check(request(&command));
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+        let graph = staged_graph(&command);
+        assert!(has_path(&graph, ResolvedPathRole::Read, path), "{command}");
+
+        assert!(response.decision_trace.path_targets.iter().any(|target| {
+            target.operation == PathTargetOperation::Write
+                && matches!(target.resolution, SemanticResolution::Unresolved { .. })
+        }));
+        assert!(
+            response
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| { finding.rule_id == RuleId::OutsideWorkspaceMutation })
+        );
+    }
+}
+
+#[test]
+fn ksshell_seed_preprocessing_keeps_input_and_unproved_temp_write() {
+    for flag in ["-i", "--input"] {
+        let path = "/opt/shared/fixture-seed.cfg";
+        let command = format!("ksshell {flag} {path}");
+        let response = ShellQueryCore::new().check(request(&command));
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+        assert!(
+            response
+                .decision_trace
+                .path_targets
+                .iter()
+                .any(|target| target.operation == PathTargetOperation::Write
+                    && matches!(target.resolution, SemanticResolution::Unresolved { .. }))
+        );
+        assert!(has_path(
+            &staged_graph(&command),
+            ResolvedPathRole::Read,
+            path
+        ));
+    }
 }
 
 #[test]

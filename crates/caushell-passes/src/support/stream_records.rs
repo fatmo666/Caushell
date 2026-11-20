@@ -1,5 +1,5 @@
 //! Record routing and symbolic domains follow selected Profile contracts.
-use caushell_parse::{ParsedCommandArtifact, RedirectionKind};
+use caushell_parse::{CommandFact, ParseStatus, ParsedCommandArtifact, PipelinePosition, RedirectionKind};
 use caushell_profile::{
     BoundArgumentMaterialization, BoundValue, ResolvedInvocationArtifact, SemanticValueRef,
     SemanticValueResolution, StdoutRecordProjection, StreamRecordSeparator,
@@ -203,6 +203,7 @@ pub(crate) fn stdin_path_records(
                             .iter()
                             .any(|m| resolved.bound.applied_modifiers.contains(m)),
                         basename_suffix: None,
+                        no_adjacent_slashes: false,
                     },
                     separator,
                 });
@@ -235,6 +236,31 @@ pub(crate) fn stdout_route_is_plain(parsed: &ParsedCommandArtifact, index: usize
                         .is_some_and(|t| t.node_kind == "process_substitution")
                     && matches!(r.operator.as_deref(), Some(">" | ">>" | ">|")))
         })
+}
+
+/// Prove that fd 1 at a direct pipeline stage is a pipe. A redirect to an
+/// arbitrary path or inherited descriptor could point to a terminal.
+pub(crate) fn stdout_is_direct_pipeline(
+    parsed: &ParsedCommandArtifact,
+    index: usize,
+    command: &CommandFact,
+) -> bool {
+    let scope = &command.top_level_span;
+    parsed.status == ParseStatus::Complete
+        && parsed.commands.get(index) == Some(command)
+        && matches!(
+            command.pipeline_position,
+            Some(PipelinePosition::First | PipelinePosition::Middle)
+        )
+        && command.pipeline_span.as_ref().is_some_and(|pipeline| {
+            scope.start_byte <= pipeline.start_byte && pipeline.end_byte <= scope.end_byte
+        })
+        && !parsed.redirections.iter().any(|redirect| {
+            redirect.span.start_byte < scope.end_byte
+                && scope.start_byte < redirect.span.end_byte
+                && redirect.parent_command_span.is_none()
+        })
+        && stdout_route_is_plain(parsed, index)
 }
 
 pub(crate) fn stdin_observed_records(
@@ -345,6 +371,7 @@ mod tests {
                         roots: vec!["./src".into(), "/opt/shared".into()],
                         may_escape: false,
                         basename_suffix: None,
+                        no_adjacent_slashes: false,
                     }
                 })
             );
@@ -355,6 +382,7 @@ mod tests {
                 roots: vec![".".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }
         );
     }
@@ -368,6 +396,7 @@ mod tests {
                 roots: vec!["/home/alice/Library".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }
         );
         let record = proof("arbitrary_paths '~/Library' | consumer", 8).unwrap();
@@ -377,6 +406,7 @@ mod tests {
                 roots: vec!["~/Library".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }
         );
         assert!(proof("arbitrary_paths ~/$UNKNOWN | consumer", 8).is_none());

@@ -25,6 +25,7 @@ fn tail(root: &str) -> ProjectedArg {
         roots: vec![root.into()],
         may_escape: false,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     });
     a
 }

@@ -241,6 +241,7 @@ impl ParameterPattern {
                             roots,
                             may_escape: false,
                             basename_suffix: None,
+                            no_adjacent_slashes: false,
                         }
                         .substitute_into(template, marker),
                     );
@@ -266,6 +267,7 @@ impl ParameterPattern {
                     roots: outputs,
                     may_escape: false,
                     basename_suffix: None,
+                    no_adjacent_slashes: false,
                 })
             }
             _ => None,

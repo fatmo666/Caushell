@@ -74,3 +74,44 @@ fn selected_count_forms_preserve_existing_decisions() {
         assert_eq!(ShellQueryCore::new().check(request(command)).decision, Decision::Allow, "{command}");
     }
 }
+
+#[test]
+fn mixed_shell_operands_and_native_records_close_read_effects_without_bytes() {
+    let command = r#"find . -name "$name" -type f -print0 | xargs -0 grep -i "$pattern""#;
+    let response = ShellQueryCore::new().check(request(command));
+    assert_eq!(response.decision, Decision::Allow, "{response:#?}");
+    assert!(response.decision_trace.evidence.iter().any(|e| matches!(
+        &e.kind,
+        EvidenceKind::NativeInputEffect(proof) if proof.control_envelope
+    )));
+    assert!(response.decision_trace.evidence.iter().any(|e| matches!(
+        &e.kind,
+        EvidenceKind::StdoutRecords(records) if !records.complete && records.records.is_empty()
+    )));
+
+}
+
+#[test]
+fn mixed_shell_operands_keep_unowned_controls_and_writes_guarded() {
+    for child in [
+        r#"grep -e "$pattern""#,
+        r#"grep "$pattern" -i"#,
+        r#"grep needle "$pattern""#,
+        r#"touch -- "$pattern""#,
+    ] {
+        let command = format!(r#"find . -name "$name" -type f -print0 | xargs -0 {child}"#);
+        let response = ShellQueryCore::new().check(request(&command));
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+        assert!(!response.decision_trace.evidence.iter().any(|e| matches!(
+            &e.kind,
+            EvidenceKind::NativeInputEffect(proof) if proof.control_envelope
+        )), "{command}");
+    }
+
+    let command = r#"find . -name "$name" -type f -print0 | xargs -0 grep -- "$pattern""#;
+    let response = ShellQueryCore::new().check(request(command));
+    assert!(!response.decision_trace.evidence.iter().any(|e| matches!(
+        &e.kind,
+        EvidenceKind::NativeInputEffect(proof) if proof.control_envelope
+    )), "{command}");
+}

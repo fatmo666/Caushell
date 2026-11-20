@@ -536,6 +536,7 @@ modifiers:
                 roots: vec!["/work".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }),
         }];
         target.missing = ConfiguredPathMissing::IncidentalCache;

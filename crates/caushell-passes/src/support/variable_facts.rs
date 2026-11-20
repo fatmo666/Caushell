@@ -133,6 +133,18 @@ pub(super) fn assignment(
                 && parameter_numeric(&value.text, bindings));
     if numeric {
         result.scalar_shape = Some(StdoutScalarShape::ArithmeticText);
+    } else if let Some(registry) = registry
+        && !matches!(value.node_kind.as_str(), "raw_string" | "ansi_c_string")
+        && let [capture] = value.command_substitutions.as_slice()
+        && value.text == capture.text
+        && let Some(shape) = super::substitution_shape::encoded_stdout_shape(
+            registry,
+            shell,
+            &capture.body_text,
+            bindings,
+        )
+    {
+        result.scalar_shape = Some(shape);
     } else if !matches!(value.node_kind.as_str(), "raw_string" | "ansi_c_string")
         && !value.command_substitutions.is_empty()
         && value.command_substitutions.len() <= 16

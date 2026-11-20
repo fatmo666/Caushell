@@ -1,0 +1,74 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: getconf, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: print_integer_width
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(LONG|WORD)_BIT$'}}
+        - {kind: not, item: {kind: has_modifier, modifier: enumerate}}
+    parameters:
+      - {name: variable, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    remaining_selector: {kind: no_positional_args}
+    # Some glibc builds consult their default ABI selection before reading
+    # the variable. The selected installation and helper are unobserved.
+    operation_semantics_unresolved: true
+    effects:
+      - &abi_config {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - &abi_helper {kind: execute_payload, target: {kind: configured_path, sources: [], missing: unknown, purpose: script_source}}
+    stream_contract: &opaque_output {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+
+  - id: list_configuration
+    selector:
+      kind: all
+      items:
+        - &listing {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -a}}
+        - &no_delimiter {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 0}
+        - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: &any_argument {kind: regex_pattern, pattern: '[\s\S]*'}}}
+    operation_semantics_unresolved: true
+    effects:
+      - *abi_config
+      - *abi_helper
+      # glibc can query pathname limits at / even without a pathname operand.
+      - {kind: read_path, target: {kind: tool_convention_path, path: '/', convention: default_input, purpose: generic_operand}}
+    stream_contract: *opaque_output
+
+  - id: list_path_configuration
+    selector:
+      kind: all
+      items:
+        - *listing
+        - *no_delimiter
+        - {kind: exact_positional_count, count: 1}
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^[^-][\s\S]*$'}}
+        - {kind: not, item: {kind: has_argument_at_matching, index: 2, matcher: *any_argument}}
+    parameters:
+      - {name: pathname, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    remaining_selector: {kind: no_positional_args}
+    operation_semantics_unresolved: true
+    effects:
+      - *abi_config
+      - *abi_helper
+      - {kind: read_path, target: {kind: slot, name: pathname}}
+    stream_contract: *opaque_output
+
+modifiers:
+  - {id: enumerate, matcher: {kind: any_flag, flags: [-a]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/apple-oss-distributions/system_cmds/blob/main/getconf/getconf.c
+    - https://github.com/apple-oss-distributions/system_cmds/blob/main/getconf/limits.gperf
+    - https://github.com/bminor/glibc/blob/glibc-2.36/posix/getconf.c
+  caushell.profile/known_limitations:
+    - Supports integer-width queries and the shared leading -a forms with an optional ordinary pathname. A single named pathname variable and explicit ABI selection remain unresolved.
+    - Builds that select a default ABI can read configuration and delegate to an installation-specific helper even without an explicit option. The executable, configuration, and helper selection are not proved.
+    - The width depends on the native ABI. Enumeration scope and output vary by implementation. No output value or downstream argument shape is certified.

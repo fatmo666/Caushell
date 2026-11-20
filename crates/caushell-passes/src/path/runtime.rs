@@ -22,6 +22,29 @@ pub(crate) enum RootMembership {
 pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<RuntimePathBounds<'_>> {
     match domain {
         RuntimeArgumentDomain::Unbounded | RuntimeArgumentDomain::TextTemplate { .. } => None,
+        RuntimeArgumentDomain::ArithmeticTemplate { prefix, suffix } => {
+            let (parent, basename_prefix) = match prefix.rsplit_once('/') {
+                Some(("", leaf)) => ("/", leaf),
+                Some((directory, leaf)) => (directory, leaf),
+                None => (".", prefix.as_str()),
+            };
+            // The capture can be empty. Require a real basename even in
+            // that case and leave the existing namespace resolver in charge.
+            let empty_capture = format!("{basename_prefix}{suffix}");
+            if prefix.len() + suffix.len() > 4096
+                || prefix.contains('\0')
+                || suffix.contains(['/', '\0'])
+                || prefix.split('/').any(|component| component == "..")
+                || matches!(empty_capture.as_str(), "" | "." | "..")
+            {
+                return None;
+            }
+            Some(RuntimePathBounds {
+                roots: Cow::Owned(vec![directory_anchor(parent.into())]),
+                may_escape: false,
+                root_membership: RootMembership::StrictDescendants,
+            })
+        }
         RuntimeArgumentDomain::GeneratedFileName { prefix, suffix } => {
             if prefix.len() + suffix.len() > 4096
                 || prefix.contains('\0')
@@ -139,6 +162,7 @@ mod tests {
                 roots: vec![root.into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             };
             assert_eq!(
                 runtime_path_bounds(&domain).unwrap().root_membership,

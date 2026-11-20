@@ -83,8 +83,9 @@ fn filters_and_depth_do_not_rewrite_native_spellings() {
 #[test]
 fn unsupported_actions_controls_patterns_and_partial_formats_have_no_plan() {
     for args in [
-        vec!["-L", "input"],
-        vec!["input", "-follow"],
+        vec!["input", "-L"],
+        vec!["-L", "-P", "-print0"],
+        vec!["-follow", "input"],
         vec!["input", "-name", "a?"],
         vec!["input", "-name", "[a-z]"],
         vec!["input", "-fprint", "out"],

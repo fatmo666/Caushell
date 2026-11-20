@@ -1,0 +1,54 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: pigz, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+opaque_on_unresolved: true
+
+forms:
+  - id: list_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: list}
+        - &stdin_route
+          kind: all
+          items:
+            # After "--", a dash identifies a named file.
+            - {kind: no_dash_dash}
+            - kind: any
+              items:
+                - {kind: no_positional_args}
+                - kind: all
+                  items:
+                    - {kind: exact_positional_count, count: 1}
+                    - {kind: has_positional_at_matching, index: 0, matcher: &stdin_marker {kind: literal, value: '-'}}
+    remaining_selector: {kind: no_positional_args}
+    parameters: &stdin_parameters
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: *stdin_marker}, cardinality: optional_one}
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+  - id: transform_stdin
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: list}}
+        - *stdin_route
+    remaining_selector: {kind: no_positional_args}
+    parameters: *stdin_parameters
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+
+modifiers:
+  - {id: list, matcher: {kind: any_flag, flags: [-l, --list]}}
+  - {id: verbosity, matcher: {kind: any_flag, flags: [-v, --verbose, -q, --quiet, --silent]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/madler/pigz/blob/v2.8/pigz.c
+    - https://github.com/madler/pigz/blob/v2.6/pigz.c
+  caushell.profile/known_limitations:
+    - GZIP and PIGZ option defaults are parsed before argv and cannot add filenames or clear an explicit list flag. Explicit listing of stdin either lists or tests input and exits before a file output is opened.
+    - GZIP and PIGZ can select another stream mode, so this profile does not infer an output format or the presence of output.
+    - Named-file lookup and extra command-line switches are outside this contract.

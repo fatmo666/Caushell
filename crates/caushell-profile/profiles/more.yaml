@@ -17,6 +17,19 @@ platform:
   shell_families: []
   requires_features: []
 
+# Some systems ship less under this command name. Its input-file hooks may
+# run before output is copied to a pipe. Model them as native control data
+# without substituting the filename or reconstructing the command template.
+environment_inputs:
+  - name: input_preprocessor
+    environment: {name: LESSOPEN, empty_is_unset: true}
+    require_observation: true
+    semantic: &input_hook {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: input_postprocessor
+    environment: {name: LESSCLOSE, empty_is_unset: true}
+    require_observation: true
+    semantic: *input_hook
+
 forms:
   - id: interactive_read
     selector:
@@ -58,5 +71,9 @@ extensions:
   caushell.profile/source_research:
     - command-frequency/D4-security-bash/analysis.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
+    - https://github.com/apple-oss-distributions/less/blob/main/less/main.c
+    - https://github.com/apple-oss-distributions/less/blob/main/less/filename.c
+    - https://kernel.googlesource.com/pub/scm/utils/util-linux/util-linux/+/refs/tags/v2.41.3/text-utils/more.c
   caushell.profile/known_limitations:
     - FILE value "-" is treated as a non-path stdin sentinel, but the profile does not yet materialize mixed stdin-plus-file input as an explicit implicit input fact.
+    - The profile does not determine whether more is standalone or less-compatible, resolve lesskey files, or prove that input preprocessing was disabled or used. LESSCLOSE is conservatively retained when present.

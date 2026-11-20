@@ -313,14 +313,15 @@ extensions: {}
 
         assert_eq!(profile.primary_name(), "bash");
         assert_eq!(profile.identity.aliases.len(), 1);
-        assert_eq!(profile.forms.len(), 7);
-        assert_eq!(profile.modifiers.len(), 4);
+        assert_eq!(profile.forms.len(), 8);
+        assert_eq!(profile.modifiers.len(), 5);
 
         let form_ids: Vec<&str> = profile.forms.iter().map(|form| form.id.as_str()).collect();
         assert_eq!(
             form_ids,
             vec![
                 "command_string",
+                "command_string_with_startup_shopt",
                 "script_file",
                 "stdin_script_explicit",
                 "stdin_script_implicit",
@@ -330,14 +331,21 @@ extensions: {}
             ]
         );
 
-        match &profile.forms[0].selector {
-            SelectorExpr::Predicate(SelectorPredicate::HasFlag(flag_name)) => {
-                assert_eq!(flag_name.as_str(), "-c")
-            }
-            other => panic!("unexpected selector predicate: {other:?}"),
-        }
+        let [command_string, startup_shopt, script_file, ..] = profile.forms.as_slice() else {
+            panic!("expected inline, startup option and script file forms");
+        };
+        assert!(matches!(
+            &command_string.selector,
+            SelectorExpr::All(items) if items.iter().any(|item| {
+                matches!(item, SelectorExpr::Predicate(SelectorPredicate::HasFlag(flag))
+                    if flag.as_str() == "-c")
+            })
+        ));
+        assert!(startup_shopt.operation_semantics_unresolved);
+        assert_eq!(startup_shopt.parameters, command_string.parameters);
+        assert_eq!(startup_shopt.effects, command_string.effects);
 
-        match &profile.forms[1].parameters[0].semantic {
+        match &script_file.parameters[0].semantic {
             SemanticType::Path(semantic) => {
                 assert_eq!(semantic.role, PathRole::Read);
                 assert_eq!(semantic.purpose, Some(PathPurpose::ScriptSource));
@@ -346,11 +354,11 @@ extensions: {}
         }
 
         assert_eq!(
-            profile.forms[0].parameters[0].binding,
+            command_string.parameters[0].binding,
             BindingSpec::NextPositional
         );
         assert_eq!(
-            profile.forms[1].parameters[0].binding,
+            script_file.parameters[0].binding,
             BindingSpec::NextPositional
         );
         assert_eq!(

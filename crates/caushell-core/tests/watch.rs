@@ -139,6 +139,30 @@ fn unresolved_programs_options_and_real_child_interaction_still_ask() {
 }
 
 #[test]
+fn shell_callback_identifies_an_unprofiled_explicit_executable() {
+    let explicit = check("watch -d ./fixture_tool", Decision::NeedApproval);
+    let detail = "an explicit executable path has no registered profile";
+    assert!(
+        explicit.reasons.iter().any(|reason| {
+            reason.contains("command watch") && reason.contains(detail)
+        }),
+        "{:?}",
+        explicit.reasons
+    );
+    assert!(explicit.decision_trace.path_targets.iter().any(|fact| {
+        fact.operation == PathTargetOperation::ExecuteFile
+            && fact.lexical.concrete_path() == Some("/workspace/project/fixture_tool")
+    }));
+
+    let bare = check("watch fixture_tool", Decision::NeedApproval);
+    assert!(bare.reasons.iter().any(|reason| {
+        reason.contains("native child analysis is incomplete") && !reason.contains(detail)
+    }));
+    let modeled = check("watch 'printf fixture'", Decision::Allow);
+    assert!(modeled.reasons.is_empty());
+}
+
+#[test]
 fn shell_reinterpretation_and_child_environment_use_existing_scope_rules() {
     let r = check(
         "PROGRAM='rm /opt/shared/file'; watch \"$PROGRAM\"",

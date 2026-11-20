@@ -373,12 +373,16 @@ impl<'a> NumericFacts<'a> {
             return false;
         };
         let within = |start: usize| start >= span.start_byte && start < span.end_byte;
-        if self.parsed.declaration_commands.iter().any(|d| d.span.start_byte < span.end_byte
-            && super::super::state_visible(&d.shell_scope_span, site.input.span.start_byte)
-            && super::super::declaration_uses_nameref(d))
-            || self.parsed.shell_evaluations.iter().any(|s| within(s.input.span.start_byte)
+        if self.parsed.declaration_commands.iter().any(|d| {
+            d.span.start_byte < span.end_byte
+                && super::super::state_visible(&d.shell_scope_span, site.input.span.start_byte)
+                && super::super::declaration_uses_nameref(d)
+                && !self.nameref_is_disjoint_from_counter(d, name, span)
+        }) || self.parsed.shell_evaluations.iter().any(|s| {
+            within(s.input.span.start_byte)
                 && matches!(&s.kind, ShellEvaluationKind::ArrayElementAssignment { name: n, .. } if n == name)
-                && !self.word(&s.input, s.input.span.start_byte, 0)) {
+                && !self.word(&s.input, s.input.span.start_byte, 0)
+        }) {
             return false;
         }
         !self
@@ -409,6 +413,84 @@ impl<'a> NumericFacts<'a> {
                 .iter()
                 .any(|d| within(d.span.start_byte) && d.names.iter().any(|n| n == name))
             && self.preserves(name, span.start_byte, span.end_byte, 0)
+    }
+
+    fn nameref_is_disjoint_from_counter(
+        &self,
+        declaration: &caushell_parse::DeclarationCommandFact,
+        counter: &str,
+        span: &caushell_parse::SourceSpan,
+    ) -> bool {
+        use caushell_types::{ShellReferenceTarget, StructuredShellValue as V};
+
+        if declaration.span.end_byte > span.start_byte
+            || declaration.kind != caushell_parse::DeclarationCommandKind::Local
+            || declaration.conditional_execution
+            || declaration.options != ["-n"]
+            || !declaration.names.is_empty()
+        {
+            return false;
+        }
+        let [assignment] = declaration.assignments.as_slice() else {
+            return false;
+        };
+        let alias = &assignment.name;
+        let entry = self.at(span.start_byte);
+        if alias == counter
+            || entry.shell_state_uncertainty().is_some()
+            || entry.runtime_variable_target_is_unresolved(alias)
+            || entry.runtime_variable_target_is_unresolved(counter)
+            || matches!(
+                entry.get(counter).map(|b| b.value),
+                Some(SessionValue::Structured(_))
+            )
+            || super::super::variable_facts::declaration_has_shadow(
+                declaration,
+                &self.at(declaration.span.start_byte),
+            )
+        {
+            return false;
+        }
+        let Some(SessionValue::Structured(V::NameReference {
+            target: ShellReferenceTarget::Variable { name: target },
+        })) = entry.get(alias).map(|b| b.value)
+        else {
+            return false;
+        };
+        if target == counter
+            || entry.runtime_variable_target_is_unresolved(&target)
+            || !matches!(
+                entry.get(&target).map(|b| b.value),
+                Some(SessionValue::Structured(V::IndexedArray { .. } | V::AssociativeArray { .. }))
+            )
+        {
+            return false;
+        }
+
+        // A second reference in the incoming frame may be inherited.
+        // Its writes are outside this declaration's proof.
+        if entry.variable_names().any(|other| {
+            other != alias
+                && matches!(
+                    entry.get(other).map(|b| b.value),
+                    Some(SessionValue::Structured(V::NameReference { .. } | V::Unknown { .. }))
+                )
+        }) {
+            return false;
+        }
+
+        // The proof relies on both bindings remaining in this frame. A
+        // declaration, assignment, or runtime write may invalidate that fact.
+        let inside = |start| (span.start_byte..span.end_byte).contains(&start);
+        let writes_binding = |name: &str| name == alias || name == target;
+        !self.parsed.declaration_commands.iter().any(|d| {
+            inside(d.span.start_byte)
+                && (d.names.iter().any(|name| writes_binding(name))
+                    || d.assignments.iter().any(|a| writes_binding(&a.name)))
+        }) && !self.parsed.assignment_commands.iter().any(|c| {
+            inside(c.span.start_byte) && c.assignments.iter().any(|a| writes_binding(&a.name))
+        }) && self.preserves(alias, span.start_byte, span.end_byte, 0)
+            && self.preserves(&target, span.start_byte, span.end_byte, 0)
     }
 
     fn preserves(&self, name: &str, start: usize, end: usize, depth: usize) -> bool {

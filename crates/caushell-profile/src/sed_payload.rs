@@ -200,6 +200,18 @@ impl Parser<'_> {
     }
     fn substitution(&mut self, offset: usize) -> Result<()> {
         let delimiter = self.take()?;
+        let remaining = &self.text.as_bytes()[self.pos..];
+        if matches!(delimiter, b' ' | b'\t')
+            && !remaining.is_empty()
+            && remaining.iter().all(u8::is_ascii_graphic)
+            && !remaining.ends_with(b"\\")
+        {
+            // A blank immediately after s is the delimiter. This terminal
+            // pattern cannot close or reach any flags. Retain the effects
+            // already seen, including output files opened during compilation.
+            self.pos = self.text.len();
+            return Ok(());
+        }
         self.delimited(delimiter, true)?;
         self.delimited(delimiter, false)?;
         loop {
@@ -334,6 +346,18 @@ mod tests {
     use super::*;
     fn parse(s: &str) -> Result<SedTargets> {
         decode(s, 65536, 4096)
+    }
+    #[test]
+    fn unterminated_blank_pattern_retains_only_preceding_effects() {
+        for script in ["/x/s /x//g", "/x/s\t/x//g"] {
+            assert_eq!(parse(script).unwrap(), SedTargets::default());
+        }
+        let targets = parse("w retained\n/x/s /x//g").unwrap();
+        assert_eq!(targets.writes, vec![(0, "retained".into())]);
+        let targets = parse("s A B w retained").unwrap();
+        assert_eq!(targets.writes, vec![(0, "retained".into())]);
+        assert!(parse("s /x//g\\").is_err());
+        assert!(parse("s /x//g\nw retained").is_err());
     }
     #[test]
     fn ordinary_programs_and_effect_like_data_have_no_hidden_effects() {

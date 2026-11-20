@@ -8,8 +8,9 @@ use caushell_passes::{
 use caushell_profile::ProfileRegistry;
 use caushell_runner::{PassRunner, RunnerContext, SessionView, StagedSession};
 use caushell_types::{
-    CheckRequest, CommandSequenceNo, Decision, ResolvedPathRole, RuleId, RuntimeMetadata,
-    SessionId, ShellKind, ShellRuntimeCapabilities, ShellStateSnapshot,
+    CheckRequest, CommandSequenceNo, Decision, PathTargetOperation, ResolvedPathRole, RuleId,
+    RuntimeMetadata, SemanticResolution, SessionId, ShellKind, ShellRuntimeCapabilities,
+    ShellStateSnapshot,
 };
 
 fn request(command: &str, id: &str) -> CheckRequest {
@@ -77,6 +78,47 @@ fn has_rule(response: &caushell_types::CheckResponse, rule: RuleId) -> bool {
         .findings
         .iter()
         .any(|f| f.rule_id == rule)
+}
+
+#[test]
+fn xpad_import_retains_input_and_requires_approval_for_the_unproven_store() {
+    for (index, (command, input)) in [
+        ("xpad -f /path/to/input-file", "/path/to/input-file"),
+        ("xpad --new-from-file=notes.txt", "/tmp/project/notes.txt"),
+        (
+            "XDG_CONFIG_HOME=/tmp/project/config xpad -f notes.txt",
+            "/tmp/project/notes.txt",
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        inspect(
+            command,
+            &format!("xpad-import-{index}"),
+            |graph, response| {
+                assert_eq!(
+                    response.decision,
+                    Decision::NeedApproval,
+                    "{command}: {response:#?}"
+                );
+                assert!(has_path(graph, input, ResolvedPathRole::Read), "{command}");
+                assert!(
+                    has_rule(response, RuleId::OutsideWorkspaceMutation),
+                    "{command}"
+                );
+                assert!(
+                    response.decision_trace.path_targets.iter().any(|target| {
+                        target.operation == PathTargetOperation::Write
+                            && matches!(&target.resolution, SemanticResolution::Unresolved { .. })
+                    }),
+                    "{command}: {response:#?}"
+                );
+            },
+        );
+    }
+    let viewer = ShellQueryCore::new().check(request("xmore notes.txt", "xpad-viewer-control"));
+    assert_eq!(viewer.decision, Decision::Allow);
 }
 
 #[test]

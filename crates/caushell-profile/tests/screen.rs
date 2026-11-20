@@ -67,6 +67,26 @@ fn explicit_inspection_forms_and_option_operands_are_not_launches() {
     }
 }
 #[test]
+fn standalone_multiattach_owns_only_its_optional_session_word() {
+    let owned = operation("screen -x fixture -p 1 -X title demo", Op::Control);
+    let attachment = owned
+        .bound_parameters
+        .iter()
+        .find(|p| p.name.as_str() == "attach_session_name")
+        .unwrap();
+    assert!(
+        matches!(&attachment.values[..], [BoundValue::Argument { text, .. }] if text == "fixture")
+    );
+    let default_session = operation("screen -x -X title demo", Op::Control);
+    assert!(
+        !default_session
+            .bound_parameters
+            .iter()
+            .any(|p| { p.name.as_str() == "attach_session_name" && !p.values.is_empty() })
+    );
+}
+
+#[test]
 fn query_admission_is_case_sensitive_and_argumentless() {
     for command in [
         "screen -Q title new-title",

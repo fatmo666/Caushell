@@ -1,0 +1,20 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: let, aliases: [], execution_domain: shell_builtin}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [bash], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+
+forms:
+  - id: evaluate_arithmetic
+    selector: {kind: all, items: []}
+    parameters:
+      - {name: expressions, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/bash/manual/html_node/Bash-Builtins.html
+  caushell.profile/known_limitations:
+    - The shell execution pass must own arithmetic analysis for every source operand before this form can contribute a complete result.

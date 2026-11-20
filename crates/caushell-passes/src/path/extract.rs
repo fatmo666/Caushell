@@ -185,7 +185,8 @@ fn runtime_input_path_depends_on_cwd(
 ) -> bool {
     use caushell_types::RuntimeArgumentDomain;
     match domain {
-        Some(RuntimeArgumentDomain::GeneratedFileName { prefix, .. }) => !prefix.starts_with('/'),
+        Some(RuntimeArgumentDomain::GeneratedFileName { prefix, .. }
+             | RuntimeArgumentDomain::ArithmeticTemplate { prefix, .. }) => !prefix.starts_with('/'),
         Some(RuntimeArgumentDomain::PathSet { roots, .. }) => {
             roots.is_empty() || roots.iter().any(|root| !root.starts_with('/'))
         }
@@ -893,7 +894,15 @@ pub(crate) fn collect_redirection_path_fact(
 ) -> Option<RedirectionPathFactCandidate> {
     let mut fact = redirection.clone();
     let mut domain = None;
-    if let (Some(bindings), Some(target)) = (bindings, fact.target.as_mut()) {
+    let bash_file_output = shell_kind == caushell_types::ShellKind::Bash
+        && fact.kind == RedirectionKind::File
+        && fact
+            .operator
+            .as_deref()
+            .is_some_and(is_file_write_redirection_operator);
+    if (bindings.is_some() || bash_file_output)
+        && let Some(target) = fact.target.as_mut()
+    {
         let argument = caushell_profile::ProjectedArg {
             word_context: Default::default(),
             text: target.text.clone(),
@@ -908,8 +917,15 @@ pub(crate) fn collect_redirection_path_fact(
             node_kind: target.node_kind.clone(),
             span: target.span.clone(),
         };
-        domain = caushell_profile::materialize_argument_domain(&argument, bindings);
-        if domain.is_none() {
+        domain = bindings.and_then(|bindings| {
+            caushell_profile::materialize_argument_domain(&argument, bindings)
+        });
+        if domain.is_none() && bash_file_output {
+            domain = caushell_profile::bash_pid_redirection_path_domain(&argument);
+        }
+        if domain.is_none()
+            && let Some(bindings) = bindings
+        {
             let projection = caushell_profile::ProjectedInvocation {
                 shell_kind,
                 option_prefixes: Default::default(),
@@ -3295,6 +3311,7 @@ mod tests {
                         roots: vec![".".into()],
                         may_escape: false,
                         basename_suffix: None,
+                        no_adjacent_slashes: false,
                     },
                     "/tmp",
                     false,
@@ -3304,6 +3321,7 @@ mod tests {
                         roots: vec!["/tmp/project/".into()],
                         may_escape: false,
                         basename_suffix: None,
+                        no_adjacent_slashes: false,
                     },
                     "/tmp",
                     false,
@@ -3706,6 +3724,7 @@ mod tests {
                 roots: vec!["$ROOT/~/out".to_string(), "/tmp/../var/data".to_string()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }),
             "/workspace/project",
         );

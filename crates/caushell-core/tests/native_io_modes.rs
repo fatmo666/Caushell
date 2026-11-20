@@ -39,12 +39,14 @@ fn comparison_fd_reads_and_dash_inputs_keep_real_provenance() {
     for prefix in [
         "comm /dev/fd/3 public 3<.env",
         "join /dev/fd/3 public 3<.env",
+        "join -o 1.1 1.2 /dev/fd/3 public 3<.env",
         "cmp -l /dev/fd/3 public 3<.env",
         "diff -u /dev/fd/3 public 3<.env",
         "split -n 1/1 /dev/fd/3 3<.env",
         "file /dev/fd/3 3<.env",
         "cat .env | comm - public",
         "cat .env | join public -",
+        "cat .env | join -o 1.1 1.2 public -",
         "cat .env | cmp -l - public",
         "cat .env | cmp public",
         "cat .env | diff -u public -",
@@ -66,6 +68,7 @@ fn comparison_fd_reads_and_dash_inputs_keep_real_provenance() {
     for prefix in [
         "comm /dev/fd/3 public 3<public-input",
         "join /dev/fd/3 public 3<public-input",
+        "join -o 1.1 1.2 /dev/fd/3 public 3<public-input",
         "cmp -l /dev/fd/3 public 3<public-input",
         "diff -u /dev/fd/3 public 3<public-input",
         "split -n 1/1 /dev/fd/3 3<public-input",

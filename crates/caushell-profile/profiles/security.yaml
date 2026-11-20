@@ -1,0 +1,38 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: security, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: list_public_certificates_pem
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 1}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: find-certificate}}
+        - {kind: has_modifier, modifier: all_certificates}
+        - {kind: has_modifier, modifier: pem_output}
+    parameters:
+      - {name: subcommand, semantic: {kind: plain_value}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+    effects:
+      - kind: state_operation
+        state_operation: {domain: host_identity, operation: inspect}
+        target: {kind: none}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stdout_dependency: unknown, stderr_mode: opaque}
+
+modifiers:
+  - {id: all_certificates, matcher: {kind: any_flag, flags: [-a]}}
+  - {id: pem_output, matcher: {kind: any_flag, flags: [-p]}}
+
+extensions:
+  caushell.profile/source_research:
+    - security(1)
+    - https://github.com/apple-oss-distributions/Security/blob/main/SecurityTool/macOS/keychain_find.c
+  caushell.profile/known_limitations:
+    - Only the certificate search of the default keychain list with PEM stdout is profiled. Certificate provenance and output shape are not known.
+    - Other subcommands, keychain path operands, extra options and interactive mode remain unresolved.

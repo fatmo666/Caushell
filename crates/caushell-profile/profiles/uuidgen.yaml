@@ -1,0 +1,42 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: uuidgen, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: explicit_random
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: random}
+        - {kind: exact_positional_count, count: 0}
+        - {kind: no_dash_dash}
+        - kind: has_argument_at_matching
+          index: 0
+          matcher: {kind: regex_pattern, pattern: '\A(?:-r|--random)\z'}
+        - kind: not
+          item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '(?s)\A.*\z'}}
+    stream_contract: &output {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+
+  - id: default_generation
+    selector: {kind: no_arguments}
+    # util-linux can fall back to time-based generation that uses the
+    # local UUID daemon or the shared clock-state file.
+    operation_semantics_unresolved: true
+    stream_contract: *output
+
+modifiers:
+  - {id: random, matcher: {kind: any_flag, flags: [-r, --random]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/util-linux/util-linux/blob/master/misc-utils/uuidgen.c
+    - https://github.com/util-linux/util-linux/blob/master/libuuid/src/gen_uuid.c
+    - macOS uuidgen(1)
+  caushell.profile/known_limitations:
+    - The explicit random form does not promise a UUID on implementations that reject the option.
+    - Default generation retains an unresolved operation without proof of the native implementation and fallback.

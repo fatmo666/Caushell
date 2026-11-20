@@ -111,6 +111,7 @@ pub(crate) use payload_hard_deny::{
 };
 pub(crate) use pipeline::command_has_pipeline_execution_unit;
 pub(crate) use pipeline::{collect_pipeline_groups, pipeline_has_upstream};
+pub(crate) use stream_records::stdout_is_direct_pipeline;
 pub(crate) use redirection::{
     EffectiveStdinSource, effective_stdin_source, redirection_targets_stdin_payload,
 };

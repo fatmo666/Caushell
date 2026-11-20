@@ -7,11 +7,23 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
 forms:
   - id: discover_processes
-    selector: {kind: all, items: []}
-    parameters:
+    selector: &ordinary_query
+      kind: all
+      items:
+        - {kind: has_positional_at, index: 0}
+        - {kind: not, item: {kind: has_modifier, modifier: selection}}
+        - {kind: not, item: {kind: has_modifier, modifier: omit}}
+        - {kind: not, item: {kind: has_modifier, modifier: separator}}
+    parameters: &programs
       - {name: programs, semantic: {kind: process_target, target_kind: process_pattern, broad_match: true}, binding: {kind: remaining_positionals}, cardinality: optional_many}
-    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
-    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+    effects: &query_effects [{kind: transform_data, target: {kind: none}}]
+    stdout_scalar: arithmetic_text
+  - id: process_query_with_options_or_no_names
+    selector: {kind: not, item: *ordinary_query}
+    parameters: *programs
+    stream_contract: *query_stream
+    effects: *query_effects
 modifiers:
   - {id: selection, matcher: {kind: any_flag, flags: [-s, --single-shot, -c, --check-root, -q, --quiet, -w, --with-workers, -x, -t, --lightweight, -h, --help, -V, --version]}}
   - id: omit
@@ -24,7 +36,10 @@ modifiers:
       - {name: separator, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}
 subcommands: null
 extensions:
-  caushell.profile/sources: [https://gitlab.com/procps-ng/procps/-/blob/v4.0.4/src/pidof.c]
+  caushell.profile/sources:
+    - https://gitlab.com/procps-ng/procps/-/blob/v4.0.4/src/pidof.c
+    - https://github.com/slicer69/sysvinit/blob/3.06/src/killall5.c
   caushell.profile/review_scope:
     - Process discovery, not signaling or mutation. Program and omit operands are process filters, not filesystem input paths.
-    - No scalar/record/numeric/growth or total symbolic argv proof. Unsupported flags and ambiguous shell argv remain unresolved.
+    - Ordinary option-free queries print decimal process IDs separated by spaces, or no data. The shape fixes neither count nor identity.
+    - Options and nameless calls supply no scalar proof. Unsupported flags and ambiguous shell argv remain unresolved.

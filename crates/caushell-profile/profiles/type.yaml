@@ -1,0 +1,27 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: type, aliases: [], execution_domain: shell_builtin}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [bash], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+read_only_control_surface: true
+
+forms:
+  - id: describe_commands
+    selector: {kind: all, items: []}
+    parameters:
+      - {name: names, semantic: {kind: command_ref, dispatch: command_name}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    effects: [{kind: transform_data, target: {kind: none}}]
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+modifiers:
+  - {id: presentation, matcher: {kind: any_flag, flags: [-a, -f, -p, -P, -t]}}
+  - {id: information, matcher: {kind: any_flag, flags: [--help]}, ends_option_scope: true}
+
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/bash/manual/html_node/Bash-Builtins.html
+    - https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/type.def
+  caushell.profile/known_limitations:
+    - Lookup may produce a relative path, multiple lines, or descriptions of aliases and functions. No output shape or execution authority is certified.

@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: dscl, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: list_local_account_names
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 3}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: '.'}}
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^-?list$'}}
+        - {kind: has_argument_at_matching, index: 2, matcher: {kind: regex_pattern, pattern: '^/(Groups|Users)$'}}
+    parameters:
+      - {name: directory_route, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: record_type, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    remaining_selector: {kind: no_positional_args}
+    effects:
+      - kind: state_operation
+        state_operation: {domain: host_identity, operation: inspect}
+        target: {kind: none}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stdout_dependency: unknown, stderr_mode: opaque}
+
+extensions:
+  caushell.profile/source_research:
+    - macOS dscl(1), installed command usage
+  caushell.profile/known_limitations:
+    - Covers unadorned listing of basic record names in the explicit local domain. The directory paths identify Directory Service records, not filesystem operands.
+    - Additional attributes, alternate data sources, credentials, interactive and mutating commands remain unresolved.
+    - Actual names and downstream output shape are not certified.

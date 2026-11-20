@@ -61,6 +61,70 @@ fn unobserved_option_environment_still_requires_approval() {
 }
 
 #[test]
+fn missing_parent_configuration_is_not_a_child_analysis_gap() {
+    let result = check_with_state(
+        "tar -c --use-compress-program=pigz -f ./fixture.tar ./fixture.txt",
+        ShellStateSnapshot::new("/tmp/project"),
+    );
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:?}");
+    assert!(
+        result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("TAR_OPTIONS option environment is not observed")),
+        "{:?}",
+        result.reasons
+    );
+    assert!(
+        result
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|entry| {
+                entry.normalized_command_name == "pigz"
+                    && entry.form_id == "transform_stdin"
+                    && !entry.operation_semantics_unresolved
+            })
+    );
+    assert!(
+        !result
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("native child analysis is incomplete")),
+        "{:?}",
+        result.reasons
+    );
+}
+
+#[test]
+fn unmodeled_child_still_leaves_a_gap_on_its_dispatching_parent() {
+    let command =
+        "tar -c --use-compress-program=unmodeled_fixture_program -f ./fixture.tar ./fixture.txt";
+    for state in [
+        ShellStateSnapshot::new("/tmp/project"),
+        ShellStateSnapshot::new("/tmp/project")
+            .with_environment_observation("TAR_OPTIONS", ShellEnvironmentValue::Absent),
+    ] {
+        let result = check_with_state(command, state);
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .reasons
+                .iter()
+                .any(|reason| reason.contains("command tar")
+                    && reason.contains("native child analysis is incomplete")),
+            "{:?}",
+            result.reasons
+        );
+    }
+}
+
+#[test]
 fn checkpoints_reuse_real_shell_semantics_and_existing_mutation_guard() {
     for command in [
         "tar cf archive.tar input --checkpoint=1 --checkpoint-action='exec=rm /opt/shared/file'",

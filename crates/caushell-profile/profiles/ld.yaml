@@ -1,0 +1,30 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ld, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+
+forms:
+  - id: information_only
+    selector:
+      kind: all
+      items:
+        - kind: has_argument_at_matching
+          index: 0
+          matcher: {kind: regex_pattern, pattern: '\A(?:--verbose|--version|-v|-V)\z'}
+        - kind: not
+          item:
+            kind: has_argument_at_matching
+            index: 1
+            matcher: {kind: regex_pattern, pattern: '(?s)\A.*\z'}
+    parameters:
+      - {name: information_flag, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: required_one}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+
+extensions:
+  caushell.profile/source_research:
+    - https://sourceware.org/binutils/docs/ld/Scripts.html
+    - https://gnu.googlesource.com/binutils-gdb/+/75bd292bea53d6ce8de66f30d67c2edb4a558110/ld/ldmain.c
+  caushell.profile/known_limitations:
+    - Model only the single-argument GNU linker information invocation. The same option can accompany linking, linker scripts or plugins, which this form does not cover.

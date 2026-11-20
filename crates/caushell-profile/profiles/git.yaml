@@ -36,7 +36,7 @@ dispatch_overrides:
         effects_when:
           unless_forms: [help_information, help_through_viewer, help_through_pager]
           last_option_not_matching: {kind: literal, value: --no-verbose}
-        effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+        effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_stdout_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
     forms: &help_forms
       - id: help_through_viewer
         selector: &manual_help
@@ -78,7 +78,7 @@ dispatch_overrides:
                     - {kind: any, items: [{kind: has_flag, flag: '-a'}, {kind: has_flag, flag: --all}]}
                     - {kind: not, item: {kind: has_modifier, modifier: help_verbosity}}
         parameters: *help_parameters
-        effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+        effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_stdout_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
         stream_contract: *help_streams
       - id: help_listing_with_verbosity
         selector: &verbosity_help
@@ -160,7 +160,7 @@ modifiers:
     matcher: {kind: any_flag, flags: ['-p', --paginate, '-P', --no-pager]}
     effects_when:
       last_option_not_matching: {kind: regex_pattern, pattern: '^(-P|--no-pager)$'}
-    effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
+    effects: [{kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_stdout_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}]
   - {id: no_pager, matcher: {kind: any_flag, flags: ["-P", "--no-pager"]}}
 
 subcommands:
@@ -1118,7 +1118,7 @@ subcommands:
           effects:
             - {kind: read_path, target: {kind: none}}
             - {kind: transform_data, target: {kind: none}}
-            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_stdout_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
           stream_contract: *reflog_stream
       modifiers: &reflog_query_modifiers
         - {id: reflog_display, matcher: {kind: any_flag, flags: [--oneline, --abbrev-commit, --no-abbrev-commit, --no-decorate, --all, -g, --walk-reflogs]}}
@@ -1288,7 +1288,7 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
-            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_stdout_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
 
         - id: inspect_history
           selector:
@@ -1309,7 +1309,7 @@ subcommands:
             - kind: transform_data
               target:
                 kind: none
-            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
+            - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_stdout_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
       modifiers:
         - {id: history_modes, matcher: {kind: any_flag, flags: ["--oneline", "--all", "--no-decorate"]}}
         # Native -<number> is a read-only count spelling; every digit must be owned.
@@ -1450,10 +1450,8 @@ subcommands:
       aliases: []
       forms:
         - id: list_index_paths
-          selector:
-            kind: all
-            items: []
-          parameters:
+          selector: {kind: not, item: &modified_listing {kind: has_modifier, modifier: modified}}
+          parameters: &ls_files_pathspecs
             - name: pathspecs
               semantic:
                 kind: path
@@ -1467,18 +1465,38 @@ subcommands:
             stdout_mode: data
             stderr_mode: opaque
           effects:
-            - kind: read_path
+            - &ls_files_pathspec_read
+              kind: read_path
               target:
                 kind: slot
                 name: pathspecs
-            - kind: transform_data
+            - &ls_files_output
+              kind: transform_data
               target:
                 kind: none
-            - {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
-      modifiers: []
+            - &ls_files_index_read {kind: read_path, target: {kind: tool_convention_path, path: .git/index, convention: git.index, purpose: generic_operand}}
+        - id: list_modified_worktree_paths
+          selector: *modified_listing
+          parameters: *ls_files_pathspecs
+          stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+          effects:
+            - *ls_files_pathspec_read
+            - *ls_files_index_read
+            - *ls_files_output
+            # Index entries, rather than the pathspec spellings, determine
+            # the worktree files whose contents may be compared.
+            - {kind: read_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+      modifiers:
+        - {id: nul_terminated_output, matcher: {kind: any_flag, flags: ['-z']}}
+        - {id: modified, matcher: {kind: any_flag, flags: ['-m', '--modified']}}
       children: []
       default_behavior: reject_unknown
-      extensions: {}
+      extensions:
+        caushell.profile/source_research:
+          - https://git-scm.com/docs/git-ls-files
+          - https://raw.githubusercontent.com/git/git/v2.39.5/builtin/ls-files.c
+          - https://raw.githubusercontent.com/git/git/v2.39.5/read-cache.c
+          - https://raw.githubusercontent.com/git/git/v2.39.5/convert.c
 
     - name: add
       aliases: []

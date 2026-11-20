@@ -1,0 +1,29 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {execution_domain: shell_builtin, canonical_name: logout, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [bash], requires_features: []}
+opaque_on_unresolved: true
+
+forms:
+  - id: login_dependent_logout
+    selector: {kind: all, items: []}
+    parameters:
+      - name: arguments
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_args}
+        cardinality: optional_many
+    effects:
+      - {kind: load_config, target: {kind: none}}
+      - {kind: execute_hook, target: {kind: none}}
+    # A non-login shell returns to the caller. An eligible login shell may
+    # execute the user's and the build's system logout scripts before exit.
+    # Bash 3.2 can take this path even for a nonnumeric operand like --help.
+    operation_semantics_unresolved: true
+
+extensions:
+  caushell.profile/source_research:
+    - https://www.gnu.org/software/bash/manual/html_node/Bash-Startup-Files.html
+    - https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/exit.def
+    - https://github.com/apple-oss-distributions/bash/blob/main/bash-3.2/builtins/common.c
+    - https://sources.debian.org/patches/bash/5.2.15-2/deb-bash-config.diff/

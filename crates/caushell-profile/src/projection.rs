@@ -49,6 +49,18 @@ pub enum ProjectedArgKind {
     DashDash,
 }
 
+/// A proof issued against a particular original shell word.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SubstitutionOutputProof {
+    ScalarShape(crate::StdoutScalarShape),
+    ArithmeticField { prefix: String, suffix: String },
+    /// An unsigned line count followed by a literal q. Splitting may
+    /// still produce empty fields and additional input operands.
+    LineCountQuit,
+    /// Exact literal segments around one or two quoted day-of-month results.
+    SedDayTemplate { literal_parts: Vec<String> },
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProjectedArg {
     pub word_context: crate::WordContext,
@@ -69,6 +81,21 @@ pub struct ProjectedArg {
     pub quoted: bool,
     pub node_kind: String,
     pub span: SourceSpan,
+}
+
+impl ProjectedArg {
+    pub fn substitution_output_proof(&self) -> Option<SubstitutionOutputProof> {
+        if self.implicit_input_source == Some(caushell_types::ImplicitInputSource::CommandSubstitution)
+            && let Some(caushell_types::RuntimeArgumentDomain::ArithmeticTemplate { prefix, suffix }) =
+                &self.runtime_argument_domain
+        {
+            return Some(SubstitutionOutputProof::ArithmeticField {
+                prefix: prefix.clone(),
+                suffix: suffix.clone(),
+            });
+        }
+        self.substitution_shape.map(SubstitutionOutputProof::ScalarShape)
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -120,10 +147,8 @@ impl ProjectedInvocation {
         let mut before_dashdash = true;
 
         for (index, arg) in self.args.iter().enumerate() {
-            let template = matches!(
-                arg.runtime_argument_domain,
-                Some(caushell_types::RuntimeArgumentDomain::TextTemplate { .. })
-            )
+            let template = arg.runtime_argument_domain.as_ref()
+                .is_some_and(caushell_types::RuntimeArgumentDomain::is_spelling_template)
             .then(|| crate::argument_structure(arg));
             if let Some(structure) = &template {
                 shape.argument_templates.insert(index, structure.clone());

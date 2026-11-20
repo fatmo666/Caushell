@@ -1,0 +1,33 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: ioreg, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: list_properties
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: list}
+        - {kind: no_dash_dash}
+        - {kind: no_positional_args}
+    effects:
+      - kind: state_operation
+        state_operation: {domain: host_identity, operation: inspect}
+        target: {kind: none}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: unknown}
+
+modifiers:
+  - {id: list, matcher: {kind: any_flag, flags: [-l]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/apple-oss-distributions/IOKitTools/blob/main/ioreg.tproj/ioreg.8
+    - https://github.com/apple-oss-distributions/IOKitTools/blob/main/ioreg.tproj/ioreg.c
+  caushell.profile/known_limitations:
+    - Only the default-plane property listing is modeled. Other query and archive options remain unresolved.
+    - Registry properties can include device identifiers. The output has no trusted shape or input provenance.

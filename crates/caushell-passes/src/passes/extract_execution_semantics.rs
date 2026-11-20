@@ -10,7 +10,7 @@ use caushell_types::{
 
 use crate::support::{
     execution_semantics_node_id, graph_backed_execution_resolve_records,
-    implicit_startup_source_node_ids,
+    implicit_startup_source_node_ids, stdout_is_direct_pipeline,
 };
 
 pub struct ExtractExecutionSemanticsPass;
@@ -76,7 +76,19 @@ fn project_execution_semantics_mutation(
         _ => return None,
     };
 
-    let mut semantics = execution_semantics_for_bound(name, bound, has_implicit_startup_config);
+    let stdout_is_piped = !bound.operation_semantics_unresolved
+        && bound.effects.iter().any(|effect| {
+            effect
+                .interactive_escape_surface
+                .as_ref()
+                .is_some_and(|surface| surface.requires_stdout_tty)
+        })
+        && record.variable_frame().is_none()
+        && record.command().is_some_and(|command| {
+            stdout_is_direct_pipeline(record.parsed_scope(), record.command_index(), command)
+        });
+    let mut semantics =
+        execution_semantics_for_bound(name, bound, has_implicit_startup_config, stdout_is_piped);
     if bound.effects.iter().any(|e| {
         !e.resource_unless_modifiers.is_empty() || !e.resource_environment_absent.is_empty()
     }) {
@@ -122,6 +134,7 @@ fn execution_semantics_for_bound(
     normalized_command_name: &str,
     invocation: &BoundInvocation,
     has_implicit_startup_config: bool,
+    stdout_is_piped: bool,
 ) -> ExecutionSemantics {
     let mut semantics =
         ExecutionSemantics::new(normalized_command_name, invocation.form_id.as_str());
@@ -206,8 +219,8 @@ fn execution_semantics_for_bound(
     if let Some(surface) = invocation
         .effects
         .iter()
-        .find(|effect| effect.kind == EffectKind::OpenInteractiveEscapeSurface)
-        .and_then(|effect| effect.interactive_escape_surface.as_ref())
+        .filter_map(|effect| effect.interactive_escape_surface.as_ref())
+        .find(|surface| !(surface.requires_stdout_tty && stdout_is_piped))
     {
         semantics = semantics.opening_interactive_escape_surface(
             map_interactive_escape_surface_kind(surface.kind),
@@ -701,7 +714,7 @@ forms:
                 .effects
                 .push(Effect::new(kind).for_slot("maybe_program"));
             assert!(
-                execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                execution_semantics_for_bound("arbitrary-tool", &invocation, false, false)
                     .executes_payload
             );
             let mut p = BoundParameter::new(
@@ -717,7 +730,7 @@ forms:
             p.projected_values = Some(Vec::new());
             invocation.bound_parameters.push(p);
             assert!(
-                !execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                !execution_semantics_for_bound("arbitrary-tool", &invocation, false, false)
                     .executes_payload
             );
             assert_eq!(payload_mode_for_invocation(&invocation), None);
@@ -730,12 +743,12 @@ forms:
                 ),
             }]);
             assert!(
-                execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                execution_semantics_for_bound("arbitrary-tool", &invocation, false, false)
                     .executes_payload
             );
             invocation.bound_parameters[0].projected_values = None;
             assert!(
-                execution_semantics_for_bound("arbitrary-tool", &invocation, false)
+                execution_semantics_for_bound("arbitrary-tool", &invocation, false, false)
                     .executes_payload
             );
         }

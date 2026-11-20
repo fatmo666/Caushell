@@ -633,6 +633,7 @@ mod source_preservation_tests {
                     roots: vec!["/workspace".into()],
                     may_escape: false,
                     basename_suffix: None,
+                    no_adjacent_slashes: false,
                 }),
                 origin: None,
             };

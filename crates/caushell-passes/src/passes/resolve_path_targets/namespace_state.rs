@@ -1,8 +1,8 @@
 //! Scope invariants for abstract namespace states. No command-name checks,
 //! authorization policy, observed output creation, or execution-order guesses.
 use caushell_types::{
-    FilesystemEntry, FilesystemObservation, PathNamespaceEffect, PathNamespaceProof,
-    PathResolution, SemanticResolution,
+    FilesystemEntry, FilesystemObservation, PathNamespaceEffect, PathNamespaceProof, PathResolution,
+    PathTargetOperation, SemanticResolution,
 };
 
 use super::Input;
@@ -59,7 +59,7 @@ pub(super) fn stable_producers(
             {
                 return None;
             }
-            scope_preservation(&inputs[*i], &baselines[*i], &baselines[*i]).map(|_| *i)
+            scope_preservation(&inputs[*i], &baselines[*i], &inputs[*i], &baselines[*i]).map(|_| *i)
         })
         .collect();
     let mut dependents = vec![Vec::new(); inputs.len()];
@@ -76,7 +76,8 @@ pub(super) fn stable_producers(
                 continue;
             }
             if candidates.contains(other)
-                && scope_preservation(&inputs[*other], &baselines[*other], &baselines[producer])
+                && preserves_relocation_source(&inputs[producer], &inputs[*other], root.as_deref())
+                && scope_preservation(&inputs[*other], &baselines[*other], &inputs[producer], &baselines[producer])
                     .is_some()
             {
                 dependents[*other].push(producer);
@@ -93,6 +94,28 @@ pub(super) fn stable_producers(
     candidates
 }
 
+fn preserves_relocation_source(producer: &Input, sibling: &Input, root: Option<&str>) -> bool {
+    let Some(source) = producer.relocation_scope.as_ref()
+        .and_then(|scope| scope.ordinary_source.as_deref())
+    else {
+        return true;
+    };
+    if root.is_some_and(|root| {
+        !caushell_query::path_is_within_root(source, root)
+            && !caushell_query::path_is_within_root(root, source)
+    }) {
+        return true;
+    }
+    // A directory creation or a relocation of unknown entry types could turn
+    // an observed missing source into a directory, invalidating the leaf fact.
+    match sibling.namespace_effect {
+        Some(PathNamespaceEffect::RegularFileWrite | PathNamespaceEffect::EntryRemoval) => true,
+        Some(PathNamespaceEffect::EntryRelocation) => sibling.relocation_scope.as_ref()
+            .is_some_and(|scope| scope.ordinary_source.is_some()),
+        _ => false,
+    }
+}
+
 /// Close a typed namespace transformer over observed entry states. A removed
 /// ordinary leaf, a regular-file write, or a directory creation may fail; no
 /// proof asserts that it ran. Stable ancestors and the dependency fixed point
@@ -100,27 +123,46 @@ pub(super) fn stable_producers(
 pub(super) fn scope_preservation(
     writer: &Input,
     writer_state: &Baseline,
+    consumer: &Input,
     consumer_state: &Baseline,
 ) -> Option<PathNamespaceProof> {
-    if writer.namespace_effect == Some(PathNamespaceEffect::EntryRelocation) {
-        let root = writer.relocation_scope.as_ref()?;
-        // This is a containment invariant for a family, not a promise that a
-        // concrete spelling still denotes its previously observed object.
-        let SemanticResolution::Resolved {
-            value: PathResolution::BoundedPathSet { roots, may_escape: false },
-        } = &consumer_state.0 else { return None };
-        if roots.is_empty() || !roots.iter().all(|p| caushell_query::path_is_within_root(p, root)) {
+    if writer.namespace_effect == Some(PathNamespaceEffect::EntryRelocation)
+        && let Some(scope) = &writer.relocation_scope
+    {
+        // Matching transfer pairs share the two stationary anchors.
+        // A different invocation may enter a descendant that has moved.
+        if scope.disjoint_destination.is_some() && consumer.relocation_scope.as_ref() != Some(scope) {
             return None;
         }
+        let path = match &consumer_state.0 {
+            SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, may_escape: false },
+            } if !roots.is_empty()
+                && roots.iter().all(|p| caushell_query::path_is_within_root(p, &scope.root)
+                    || scope.disjoint_destination.as_ref()
+                        .is_some_and(|dest| caushell_query::path_is_within_root(p, dest))) =>
+            {
+                &scope.root
+            }
+            SemanticResolution::Resolved {
+                value: PathResolution::Concrete { path },
+            } if scope.ordinary_source.as_ref() == Some(path) => path,
+            _ => return None,
+        };
+        // An ordinary source stays a regular leaf or becomes absent. Neither
+        // this leaf invariant nor family containment preserves an inode.
         return Some(PathNamespaceProof {
             producer_node_id: writer.fact.source_node_id.clone(),
             producer_effect_key: writer.fact.effect_key.clone(),
-            path: root.clone(),
+            path: path.clone(),
             effect: PathNamespaceEffect::EntryRelocation,
-            additional_paths: Vec::new(),
+            additional_paths: scope.disjoint_destination.iter().cloned().collect(),
         });
     }
-    if writer.namespace_effect == Some(PathNamespaceEffect::EntryRemoval) {
+    if writer.namespace_effect == Some(PathNamespaceEffect::EntryRemoval)
+        || (writer.namespace_effect == Some(PathNamespaceEffect::EntryRelocation)
+            && writer.fact.operation == PathTargetOperation::MoveSource)
+    {
         let SemanticResolution::Resolved {
             value: PathResolution::Concrete { path },
         } = &writer_state.0
@@ -306,7 +348,7 @@ pub(super) fn scope_preservation(
     })
 }
 
-fn ordinary_leaf(path: &str, observations: &[FilesystemObservation]) -> bool {
+pub(super) fn ordinary_leaf(path: &str, observations: &[FilesystemObservation]) -> bool {
     observations.iter().any(|o| {
         o.path == path && matches!(o.entry, FilesystemEntry::File | FilesystemEntry::Missing)
     }) && observations.iter().all(|o| {

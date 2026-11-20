@@ -1,0 +1,51 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: elinks, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: dump_document
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: dump}
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 1}
+        - kind: has_positional_at_matching
+          index: 0
+          matcher: {kind: regex_pattern, pattern: '^(?:[^/:-][^:]*|/[^/][^:]*)$'}
+        - kind: not
+          item: {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^[01]$'}}
+    parameters:
+      - name: document
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '^(?:\./|\.\./|/[^/]).*$', group: 0}
+              target: {name: file_operand, semantic: {kind: path, role: read, purpose: generic_operand}}
+    # A dump may load settings and run pre-format hooks. Neither the selected
+    # document origin nor the hook implementation is inferred from a bare name.
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: file_operand}}
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: load_in_process_code, target: {kind: none}}
+      - {kind: transform_data, target: {kind: none}}
+    stream_contract: {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+
+modifiers:
+  - {id: dump, matcher: {kind: any_flag, flags: [-dump]}}
+extensions:
+  caushell.profile/source_research:
+    - https://raw.githubusercontent.com/rkd77/elinks/master/doc/man/man1/elinks.1.in
+    - https://raw.githubusercontent.com/rkd77/elinks/master/src/viewer/dump/dump.c
+    - https://raw.githubusercontent.com/rkd77/elinks/master/doc/lua-scripting.txt
+  caushell.profile/known_limitations:
+    - Only a single document operand and the bare -dump switch are modeled.
+    - Configuration, hook state, URI guessing and output remain unresolved.

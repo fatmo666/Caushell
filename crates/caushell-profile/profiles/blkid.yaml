@@ -1,0 +1,44 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: blkid, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: lookup_uuid
+    selector: {kind: has_modifier, modifier: uuid_lookup}
+    remaining_selector: {kind: no_positional_args}
+    # The effective libblkid configuration, device set, and privilege govern
+    # whether lookup probes block devices, flushes the cache, or sends an event.
+    operation_semantics_unresolved: true
+    effects:
+      - kind: load_config
+        target: {kind: tool_convention_path, path: /etc/blkid.conf, convention: libblkid.default_config, purpose: tool_config}
+      - kind: read_path
+        target: &probe_cache {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}
+      - kind: write_path
+        target: *probe_cache
+
+modifiers:
+  - id: uuid_lookup
+    matcher: {kind: any_flag, flags: [-U, --uuid]}
+    parameters:
+      - name: uuid
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/util-linux/util-linux/blob/v2.38.1/misc-utils/blkid.c
+    - https://github.com/util-linux/util-linux/blob/v2.38.1/libblkid/src/evaluate.c
+    - https://github.com/util-linux/util-linux/blob/v2.38.1/libblkid/src/config.c
+    - https://github.com/util-linux/util-linux/blob/v2.38.1/libblkid/src/cache.c
+    - https://github.com/util-linux/util-linux/blob/v2.38.1/lib/env.c
+  caushell.profile/known_limitations:
+    - The default configuration is represented as a conventional input. BLKID_CONF and BLKID_FILE apply conditionally at runtime, so neither establishes a proven path by itself.
+    - The fallback device scan may read and write the cache. Configuration, privilege, block-device reads, and possible udev notifications stay unresolved. No returned path or stdout shape is guaranteed.
+    - Other lookup, probe, and cache maintenance modes remain unresolved.

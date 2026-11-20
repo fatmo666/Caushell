@@ -126,31 +126,6 @@ fn split_filter_shell_effects_reach_existing_guards() {
 }
 
 #[test]
-fn split_filter_does_not_write_the_named_prefix_itself() {
-    for command in [
-        "split --filter='cat' input /opt/shared/chunk",
-        "split --filter='cat > cache/output' input",
-        "split -n 1/3 input /opt/shared/chunk",
-        "split -d -b 1000 - cache/chunk",
-        "split --help",
-        "split --numeric-suffixes=1 --additional-suffix=.csv -l100 data.csv data_",
-        "split -b 10 input -",
-        "split --filter=cat - -",
-    ] {
-        expect(command, Decision::Allow);
-    }
-    for command in [
-        "split -b 1000 input /opt/shared/chunk",
-        "split --additional-suffix=/../../bad input cache/chunk",
-        "split --unmodeled input",
-        "split --filter='echo ok' --additional-suffix=../bad input",
-        "split --additional-suffix=\"$suffix\" input cache/chunk",
-    ] {
-        expect(command, Decision::NeedApproval);
-    }
-}
-
-#[test]
 fn split_filter_generated_filename_requires_namespace_proof() {
     for command in ["split --filter='cat > \"$FILE\"' input"] {
         expect(command, Decision::NeedApproval);

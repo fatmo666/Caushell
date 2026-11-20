@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: kextfind, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: all_arguments
+opaque_on_unresolved: true
+
+forms:
+  - id: list_default_repositories
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 0}
+    effects:
+      - kind: read_path
+        target:
+          kind: tool_convention_path
+          path: /System/Library/Extensions
+          convention: kextfind.system_repository
+          purpose: generic_operand
+      - kind: read_path
+        target:
+          kind: tool_convention_path
+          path: /Library/Extensions
+          convention: kextfind.local_repository
+          purpose: generic_operand
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/apple-oss-distributions/kext_tools/blob/main/kextfind.8
+    - https://github.com/apple-oss-distributions/kext_tools/blob/main/kextfind_main.c
+  caushell.profile/known_limitations:
+    - Without arguments, inspect the documented macOS extension repositories and print the matched bundle paths. Treat reported paths and installed or loaded state as unverified data.
+    - Explicit roots, query predicates and report/command actions remain unresolved.

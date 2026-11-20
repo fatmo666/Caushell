@@ -342,21 +342,72 @@ fn literal(
     parts.push(SpellingPart::Literal(ch));
 }
 
+fn literal_pid_affixes(text: &str) -> Option<(&str, &str)> {
+    let (prefix, suffix) = text.split_once("$$")?;
+    // Only literal affixes and the shell's numeric PID. No value evaluation,
+    // assumed IFS, inherited prefix, glob, brace, or concatenated substitution.
+    if prefix.chars().chain(suffix.chars()).any(|c| {
+        matches!(c, '$' | '`' | '*' | '?' | '[' | '{' | '}' | '~' | '\'' | '"' | '\\')
+    }) {
+        return None;
+    }
+    Some((prefix, suffix))
+}
+
+/// Bound the target of a direct Bash output redirection using the same
+/// spelling proof as argv analysis. Only a one-field result can reach the
+/// open, so splitting can shorten/remove the digit run, but cannot move the
+/// literal directory prefix into another field of a successful redirection.
+pub fn bash_pid_redirection_path_domain(
+    arg: &ProjectedArg,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    if arg.runtime_data
+        || arg.implicit_input_source.is_some()
+        || !matches!(
+            (arg.quoted, arg.node_kind.as_str()),
+            (true, "string") | (false, "word" | "simple_expansion" | "concatenation")
+        )
+    {
+        return None;
+    }
+    let (prefix, suffix) = literal_pid_affixes(&arg.text)?;
+    if prefix.len() + suffix.len() > 4096
+        || prefix.starts_with("//")
+        || prefix.split('/').any(|component| component == "..")
+        || suffix.contains('/')
+        || !prefix
+            .bytes()
+            .chain(suffix.bytes())
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-' | b'/'))
+        || ["/dev/fd/", "/dev/tcp/", "/dev/udp/"]
+            .iter()
+            .any(|path| prefix.starts_with(path))
+    {
+        return None;
+    }
+    let (directory, basename_prefix) = match prefix.rsplit_once('/') {
+        Some(("", basename)) => ("/", basename),
+        Some((directory, basename)) => (directory, basename),
+        None => (".", prefix),
+    };
+    if format!("{basename_prefix}{suffix}") == ".." {
+        return None;
+    }
+    // The inclusive scope also covers an empty numeric field. Namespace
+    // checking still has to close this directory before a write is allowed.
+    Some(caushell_types::RuntimeArgumentDomain::PathSet {
+        roots: vec![directory.to_owned()],
+        may_escape: false,
+        basename_suffix: None,
+        no_adjacent_slashes: false,
+    })
+}
+
 fn pid_field_bounds(arg: &ProjectedArg) -> Option<ArgumentStructure> {
     if arg.quoted {
         return None;
     }
-    let (prefix, suffix) = arg.text.split_once("$$")?;
-    // Only literal affixes and the shell's numeric PID. No value evaluation,
-    // assumed IFS, inherited prefix, glob, brace, or concatenated substitution.
-    if prefix.chars().chain(suffix.chars()).any(|c| {
-        matches!(
-            c,
-            '$' | '`' | '*' | '?' | '[' | '{' | '}' | '~' | '\'' | '"' | '\\'
-        )
-    }) {
-        return None;
-    }
+    let (prefix, suffix) = literal_pid_affixes(&arg.text)?;
     // Every split field uses this alphabet, but only the first may retain the
     // prefix. This deliberately does NOT claim that /tmp/stamp$$ is one path.
     let allowed = format!("0123456789{prefix}{suffix}");
@@ -547,6 +598,16 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                         .collect(),
                 );
             }
+            Some(caushell_types::RuntimeArgumentDomain::ArithmeticTemplate { prefix, suffix }) => {
+                structure.static_prefix = prefix.clone();
+                structure.static_suffix = suffix.clone();
+                structure.spelling = Some(prefix.chars().map(SpellingPart::Literal)
+                    .chain(std::iter::once(SpellingPart::CharacterRun(
+                        caushell_types::ARITHMETIC_STDOUT_CHARS.into(),
+                    )))
+                    .chain(suffix.chars().map(SpellingPart::Literal))
+                    .collect());
+            }
             Some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix }) => {
                 structure.static_prefix = prefix.clone();
                 structure.static_suffix = suffix.clone();
@@ -644,7 +705,7 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
             static_suffix: String::new(),
             exact: false,
             spelling: Some(vec![SpellingPart::CharacterRun(
-                "0123456789+- \t\n\r\x0b\x0c".into(),
+                caushell_types::ARITHMETIC_STDOUT_CHARS.into(),
             )]),
             pathname_generation: false,
         };

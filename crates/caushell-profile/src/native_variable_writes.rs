@@ -8,6 +8,7 @@ pub(crate) fn attach(
     argv: &MaterializedProjectedInvocation,
     domain: &CommandLookupDomain,
     shell: ShellKind,
+    bindings: &SessionBindings,
     bound: &mut BoundInvocation,
 ) {
     let Some(NativeVariableWrites::Printf) = profile.native_variable_writes else {
@@ -34,7 +35,19 @@ pub(crate) fn attach(
             let target_free = shape.fields == ArgumentFieldCount::ExactlyOne
                 && (separated || !shape.may_start_with("-"))
                 && args.len() == 0;
-            if !target_free {
+            // Hexadecimal and standard Base64 contain no option prefix, format
+            // directive, escape, or glob characters, even after word splitting.
+            let encoded_format = shell == ShellKind::Bash
+                && profile.trust.source == ProfileSourceKind::BuiltIn
+                && argv.invocation.args.len() == 1
+                && !arg.runtime_data
+                && arg.implicit_input_source.is_none()
+                && !matches!(arg.node_kind.as_str(), "raw_string" | "ansi_c_string")
+                && matches!(exact_shell_parameter_reference(&arg.text),
+                    Some(ShellParameterReference::Variable(name))
+                        if matches!(bindings.variable_facts(&name).scalar_shape,
+                            Some(StdoutScalarShape::PlainHexText | StdoutScalarShape::RawBase64Text)));
+            if !target_free && !encoded_format {
                 targets.push(None);
             }
             break None;

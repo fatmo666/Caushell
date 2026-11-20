@@ -351,8 +351,22 @@ modifiers:
         - "--recursive"
         - "-R"
         - "--dereference-recursive"
-    extensions:
-      caushell.profile/implicit_cwd_read_when_no_input_paths: true
+    effects_when:
+      unless_forms:
+        - show_help
+        - explicit_pattern_search_stdin
+        - explicit_pattern_search_quiet_stdin
+        - positional_pattern_search_stdin
+        - positional_pattern_search_quiet_stdin
+    effects:
+      - kind: read_path
+        path_scope: {kind: subtree, escape_modifiers: [dereference_recursive]}
+        target:
+          kind: configured_path
+          sources: [{slot: input_paths, projection: {kind: identity}}]
+          only_when_sources_absent: true
+          default_value: '.'
+          purpose: generic_operand
 
   - id: include_glob
     matcher:
@@ -486,5 +500,4 @@ extensions:
     - command-frequency/D4-security-bash/weaponizable_overlap.csv
   caushell.profile/known_limitations:
     - Short option clusters with operands, such as -m5, are not split by the current projection layer.
-    - grep -r PATTERN without explicit FILE reads the current directory; the current path fact layer does not yet materialize implicit cwd reads.
     - FILE value "-" and -f - are treated as non-path stdin sentinels, but the profile does not yet materialize mixed stdin-plus-file input as an explicit implicit input fact.

@@ -18,6 +18,23 @@ platform:
   requires_features: []
 
 forms:
+  # A proven zero destination count is a usage error. A symbolic batch
+  # that might supply an operand must still take the network probe branch.
+  - id: missing_destination
+    selector:
+      kind: all
+      items:
+        - {kind: exact_positional_count, count: 0}
+        - kind: any
+          items:
+            - {kind: exact_argument_count, count: 0}
+            - kind: all
+              items:
+                - {kind: exact_argument_count, count: 2}
+                - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: '-c'}}
+                - {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^[0-9]+$'}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+
   - id: probe_host
     selector:
       kind: has_positional_at
@@ -63,4 +80,6 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://github.com/iputils/iputils/blob/20221126/ping/ping.c#L536-L553
+    - https://github.com/apple-oss-distributions/network_cmds/blob/main/ping.tproj/ping.c
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md

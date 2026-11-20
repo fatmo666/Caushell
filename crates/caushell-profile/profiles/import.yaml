@@ -1,0 +1,50 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: import, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: capture_root_to_raster_file
+    selector:
+      kind: all
+      items:
+        - {kind: exact_argument_count, count: 3}
+        - {kind: has_modifier, modifier: window}
+        - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: root}}
+        - kind: has_argument_at_matching
+          index: 2
+          matcher: {kind: regex_pattern, pattern: '^[a-zA-Z0-9_./][a-zA-Z0-9_./-]*\.(?i:png|jpe?g)$'}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - name: capture_file
+        semantic: {kind: path, role: write, purpose: generic_operand}
+        binding: {kind: next_positional}
+        cardinality: required_one
+    # The operand is explicit. The display, capture authority, and
+    # ImageMagick configuration are still unknown.
+    operation_semantics_unresolved: true
+    effects:
+      - {kind: write_path, target: {kind: slot, name: capture_file}}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: unknown}
+
+modifiers:
+  - id: window
+    matcher: {kind: any_flag, flags: [-window]}
+    parameters:
+      - name: window_id
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+
+extensions:
+  caushell.profile/source_research:
+    - https://imagemagick.org/import/
+    - https://github.com/ImageMagick/ImageMagick6/blob/main/wand/import.c
+    - https://github.com/ImageMagick/ImageMagick/blob/main/MagickWand/import.c
+  caushell.profile/known_limitations:
+    - Covers only one plain PNG or JPEG filename with an explicit root window.
+    - Other window selectors, display selection, encoded or generated names, and other output sinks remain unresolved.

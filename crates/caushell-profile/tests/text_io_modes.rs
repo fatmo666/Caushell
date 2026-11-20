@@ -33,6 +33,27 @@ fn values(r: &ResolvedInvocationArtifact, slot: &str) -> Vec<String> {
 }
 
 #[test]
+fn xgettext_default_mode_binds_source_content_and_catalog_output() {
+    let r = resolved("xgettext ./fixture.php ./template.phtml ./another.c");
+    assert_eq!(
+        values(&r, "source_files"),
+        ["./fixture.php", "./template.phtml", "./another.c"]
+    );
+    assert!(r.bound.effects.iter().any(|effect| {
+        effect.kind == EffectKind::ReadPath
+            && effect.path_access == Some(PathAccessKind::ContentOpen)
+            && matches!(&effect.target, EffectTarget::Slot(slot) if slot.as_str() == "source_files")
+    }));
+    assert!(r.bound.effects.iter().any(|effect| {
+        effect.kind == EffectKind::WritePath
+            && matches!(&effect.target, EffectTarget::ToolConventionPath(target)
+                if target.path == "messages.po")
+    }));
+    assert!(r.bound.operation_semantics_unresolved);
+    assert!(r.proven_stream_contract().is_none());
+}
+
+#[test]
 fn named_text_inputs_ignore_stdin_while_content_reads_remain_explicit() {
     for tool in [
         "base32",

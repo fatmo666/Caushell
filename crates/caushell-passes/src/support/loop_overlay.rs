@@ -229,6 +229,7 @@ fn path_domain(mut roots: Vec<String>) -> Option<RuntimeArgumentDomain> {
         roots,
         may_escape: false,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     })
 }
 
@@ -281,6 +282,7 @@ mod tests {
                 roots: vec!["123".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             },
         );
         assert!(

@@ -1,0 +1,25 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {execution_domain: shell_builtin, canonical_name: trap, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [bash], requires_features: []}
+option_scope: leading_options
+opaque_on_unresolved: true
+
+forms:
+  - id: possible_debug_handler_registration
+    selector:
+      kind: all
+      items:
+        - {kind: exact_positional_count, count: 2}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '(?s)^.+$'}}
+        - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+        - {kind: has_positional_at_matching, index: 1, matcher: {kind: literal, value: DEBUG}}
+    parameters:
+      - {name: handler, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - {name: event, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - {kind: state_operation, state_operation: {domain: shell_trap, operation: control}, target: {kind: none}}
+    # A dynamic handler can change the option or registration state. Retain
+    # the possible control effect without claiming that the handler ran.
+    operation_semantics_unresolved: true

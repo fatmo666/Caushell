@@ -1,7 +1,33 @@
 use caushell_parse::{
-    ParseStatus, ShellEvaluationKind, parse_command, parse_command_substitutions,
+    ParseStatus, ShellEvaluationKind, constant_arithmetic_word, parse_command,
+    parse_command_substitutions,
 };
 use caushell_types::ShellKind;
+
+#[test]
+fn folds_only_bounded_decimal_arithmetic_with_no_shell_inputs() {
+    for (word, value) in [
+        ("$((1024*1024))", 1048576),
+        ("$((10-2*3))", 4),
+        ("$(((10 - 2) * 3))", 24),
+        ("$((-7 / 2))", -3),
+        ("$((-7 % 2))", -1),
+    ] {
+        assert_eq!(constant_arithmetic_word(word), Some(value), "{word}");
+    }
+    for word in [
+        "$((016))",
+        "$((1/0))",
+        "$((2147483647*2))",
+        "$((n+1))",
+        "$((n=1))",
+        "$((1<<2))",
+        "$((1))suffix",
+        "$((1+))",
+    ] {
+        assert_eq!(constant_arithmetic_word(word), None, "{word}");
+    }
+}
 
 #[test]
 fn complete_arithmetic_words_keep_original_bytes_and_substitution_boundaries() {

@@ -1009,8 +1009,14 @@ pub(super) fn refresh(
                 value: ConfiguredExecutionValue::Unknown { detail: "Git attribute-selected external diff/textconv applicability is not proven; native driver configuration remains executable".into() } });
         }
     }
+    // Checking worktree modifications can hash the file through the same
+    // Git attributes-selected content conversion used by diff and status.
+    let checks_modified_paths = bound.subcommand_path == ["ls-files"]
+        && bound.form_id.as_str() == "list_modified_worktree_paths";
     if !no_repository
-        && (bound.subcommand_path == ["diff"] || bound.subcommand_path == ["status"])
+        && (bound.subcommand_path == ["diff"]
+            || bound.subcommand_path == ["status"]
+            || checks_modified_paths)
         && (!state.conversion_filter_keys().is_empty() || !state.is_complete())
     {
         sources.push(ConfiguredExecutionSource { id: "git-config:conversion_filter".into(), may_execute: true,
@@ -1328,7 +1334,11 @@ pub(super) fn refresh(
     }
     ctx.add_evidence(caushell_types::Evidence {
         rule_id: caushell_types::RuleId::SelectionError,
-        summary: "Git execution sources resolved at the canonical invocation".into(),
+        summary: if inputs.evidence.complete {
+            "Git execution sources resolved at the canonical invocation".into()
+        } else {
+            "Git execution sources are incomplete at the canonical invocation".into()
+        },
         kind: caushell_types::EvidenceKind::ToolConfigParse(inputs.evidence),
     });
 }
@@ -1410,10 +1420,12 @@ pub(super) fn frontier_entries(
         }
         let mut bindings = base_bindings.clone();
         let (language, input, payload_source, config_path, positional) = match &source.value {
-            ConfiguredExecutionValue::Unknown { detail } => (
+            // The reason is retained by ToolConfigParseEvidence. It is not program text.
+            ConfiguredExecutionValue::Unknown { .. } => (
                 PayloadLanguage::Opaque,
-                RecursivePayloadInput::LiteralText {
-                    text: detail.clone(),
+                RecursivePayloadInput::ImplicitInput {
+                    source: caushell_profile::ImplicitInputSource::ToolConfiguration,
+                    domain: None,
                 },
                 PayloadSource::DynamicReference,
                 source.config_source.clone(),
@@ -1479,8 +1491,9 @@ pub(super) fn frontier_entries(
                     ),
                     None => (
                         PayloadLanguage::Opaque,
-                        RecursivePayloadInput::LiteralText {
-                            text: "Git configured program content/cwd is unknown".into(),
+                        RecursivePayloadInput::ImplicitInput {
+                            source: caushell_profile::ImplicitInputSource::ToolConfiguration,
+                            domain: None,
                         },
                         PayloadSource::DynamicReference,
                         spelling,

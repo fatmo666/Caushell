@@ -344,3 +344,69 @@ fn alias_expansion_does_not_duplicate_a_namespace_mutation() {
     let response = core.check(request(2, "clone input output"));
     assert_eq!(response.decision, Decision::Allow, "{response:#?}");
 }
+
+#[test]
+fn ln_into_current_directory_tracks_each_entry() {
+    for (command, expected) in [
+        ("ln -s source/alpha .", vec!["/workspace/alpha"]),
+        ("ln -sv -- source/alpha .//.", vec!["/workspace/alpha"]),
+        (
+            "ln -s -- source/alpha -f .",
+            vec!["/workspace/alpha", "/workspace/-f"],
+        ),
+        (
+            "ln source/alpha source/beta ./",
+            vec!["/workspace/alpha", "/workspace/beta"],
+        ),
+    ] {
+        let result = core(Arc::new(MemoryFilesystem::default())).check(request(1, command));
+        assert_eq!(result.decision, Decision::Allow, "{command}: {result:#?}");
+        let paths: Vec<_> = result
+            .decision_trace
+            .path_targets
+            .iter()
+            .filter(|effect| effect.operation == PathTargetOperation::Write)
+            .map(|effect| effect.lexical.concrete_path())
+            .collect();
+        assert_eq!(
+            paths,
+            expected.into_iter().map(Some).collect::<Vec<_>>(),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn ln_current_directory_keeps_ownership_and_namespace_checks() {
+    for command in ["ln -s \"$unknown\" .", "cd /outside; ln -s source/alpha ."] {
+        let result = core(Arc::new(MemoryFilesystem::default())).check(request(1, command));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {result:#?}"
+        );
+    }
+    let view = Arc::new(MemoryFilesystem::default());
+    view.link("/workspace/alpha", "/outside/file");
+    let result = core(view).check(request(1, "ln -sf source/alpha ."));
+    assert_eq!(result.decision, Decision::NeedApproval, "{result:#?}");
+
+    for command in [
+        "ln -sT source/alpha .",
+        "ln -s source/alpha link",
+        "ln -s source/alpha . -f",
+        "ln -s source/alpha -f .",
+        "ln -s source/alpha -- .",
+    ] {
+        let result = core(Arc::new(MemoryFilesystem::default())).check(request(1, command));
+        assert!(
+            !result
+                .decision_trace
+                .path_targets
+                .iter()
+                .any(|effect| effect.operation == PathTargetOperation::Write
+                    && matches!(effect.lexical, PathResolution::DerivedConcrete { .. })),
+            "{command}: {result:#?}"
+        );
+    }
+}

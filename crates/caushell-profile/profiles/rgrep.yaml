@@ -1,0 +1,28 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: rgrep, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [linux], shell_families: [], requires_features: []}
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: recursive_grep
+    selector: {kind: all, items: []}
+    parameters:
+      - {name: grep_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}
+    effects:
+      - kind: dispatch_command
+        target:
+          kind: dispatch
+          command_literal: grep
+          lookup_domain: external
+          argv_prefix: ['-r']
+          argv: [grep_arguments]
+          stdin_from_parent: true
+          stdout_to_parent: true
+
+extensions:
+  caushell.profile/source_research:
+    - Debian grep package rgrep wrapper
+    - https://www.gnu.org/software/grep/manual/html_node/File-and-Directory-Selection.html

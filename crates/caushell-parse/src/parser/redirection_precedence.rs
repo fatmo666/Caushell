@@ -49,6 +49,27 @@ pub(super) fn trailing_redirect_scope(command: Node<'_>) -> Option<Node<'_>> {
     None
 }
 
+fn same_argument(original: &CommandToken, projected: &CommandToken, source: &[u8]) -> bool {
+    if original == projected {
+        return true;
+    }
+    // Descriptor repair classifies an adjacent signed decimal as a word.
+    // With the redirect elided, the grammar may classify the same argv span
+    // as a number. Keep the original token and require all other facts to agree.
+    if original.node_kind != "word"
+        || projected.node_kind != "number"
+        || original.quoted
+        || source
+            .get(original.span.start_byte..original.span.end_byte)
+            .is_none_or(|bytes| bytes != original.text.as_bytes() || !is_signed_decimal_word(bytes))
+    {
+        return false;
+    }
+    let mut projected = projected.clone();
+    projected.node_kind.clone_from(&original.node_kind);
+    *original == projected
+}
+
 pub(super) fn restore(
     artifact: &mut ParsedCommandArtifact,
     root: Node<'_>,
@@ -58,6 +79,9 @@ pub(super) fn restore(
     let mut sites = Vec::new();
     walk(root, &mut |node| {
         if node.kind() == "redirected_statement"
+            // Commands and redirects owned by a substitution or function
+            // are extracted when its body is parsed in a separate scope.
+            && !is_nested_shell_substructure(node)
             && node
                 .child_by_field_name("body")
                 .is_some_and(|body| matches!(body.kind(), "list" | "pipeline"))
@@ -185,7 +209,12 @@ fn try_restore(
         let Some(topology) = commands.iter().find(|candidate| {
             candidate.span.start_byte == command.span.start_byte
                 && candidate.command_name == command.command_name
-                && candidate.tokens == command.tokens
+                && candidate.tokens.len() == command.tokens.len()
+                && command
+                    .tokens
+                    .iter()
+                    .zip(&candidate.tokens)
+                    .all(|(original, projected)| same_argument(original, projected, source))
                 && candidate.prefix_assignments == command.prefix_assignments
         }) else {
             return false;
@@ -519,6 +548,50 @@ mod tests {
                     .all(|r| r.parent_command_span.is_none())
             );
         }
+    }
+
+    #[test]
+    fn list_redirects_are_restored_in_their_owning_shell_scope() {
+        let body = "printf payload | cat > ./out";
+        for source in [
+            format!("if $({body}); then printf ok; fi"),
+            format!("cat <({body})"),
+            format!("emit() {{ {body}; }}"),
+        ] {
+            let outer = parse_command(&source, ShellKind::Bash).unwrap();
+            assert_eq!(
+                outer.status,
+                ParseStatus::Complete,
+                "{source}: {:?}",
+                outer.diagnostics
+            );
+            assert!(outer.redirections.is_empty(), "{source}");
+        }
+
+        let outer = parse_command(
+            &format!("printf '%s' \"$({body})\" | cat > ./outer"),
+            ShellKind::Bash,
+        )
+        .unwrap();
+        assert_eq!(
+            outer.status,
+            ParseStatus::Complete,
+            "{:?}",
+            outer.diagnostics
+        );
+        let [outer_redirect] = outer.redirections.as_slice() else {
+            panic!("only the outer redirect belongs to this scope");
+        };
+        assert_eq!(outer_redirect.target.as_ref().unwrap().text, "./outer");
+        assert_eq!(outer_redirect.parent_command_name.as_deref(), Some("cat"));
+
+        let inner = parse_command(body, ShellKind::Bash).unwrap();
+        assert_eq!(inner.status, ParseStatus::Complete);
+        assert_eq!(
+            inner.redirections[0].parent_command_name.as_deref(),
+            Some("cat")
+        );
+        assert_eq!(inner.redirections[0].target.as_ref().unwrap().text, "./out");
     }
 
     #[test]

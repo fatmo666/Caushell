@@ -108,6 +108,7 @@ fn bounded_scalar_and_batch_domains_keep_source_scope_and_field_width() {
                 roots: roots.into_iter().map(String::from).collect(),
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             };
             let p = native(kind, Some(domain.clone()));
             let b = bind_projection(&profile(), &p);
@@ -130,16 +131,19 @@ fn unbounded_or_control_capable_domains_are_not_matched_as_empty_placeholders() 
             roots: vec![],
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         }),
         Some(RuntimeArgumentDomain::PathSet {
             roots: vec![".".into(), "-n".into()],
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         }),
         Some(RuntimeArgumentDomain::PathSet {
             roots: vec![".".into()],
             may_escape: true,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         }),
     ] {
         for kind in [
@@ -199,6 +203,7 @@ fn exact_exceptions_and_constraints_do_not_widen_unknown_values() {
                 roots: vec![".".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }),
         ),
     );
@@ -239,6 +244,7 @@ fn literal_regex_bindings_retain_their_previous_known_value_contract() {
                 roots: vec![".".into()],
                 may_escape: false,
                 basename_suffix: None,
+                no_adjacent_slashes: false,
             }),
         ),
     );

@@ -103,6 +103,7 @@ fn bounded_native_batch_is_not_an_unknown_option_just_because_its_width_varies()
         roots: vec!["htdocs".into(), "cgi-bin".into()],
         may_escape: false,
         basename_suffix: None,
+        no_adjacent_slashes: false,
     });
     assert!(!argument_structure(arg).may_start_with("-"));
     let selection = select_invocation(&p, &projected).unwrap();

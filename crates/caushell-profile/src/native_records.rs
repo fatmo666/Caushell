@@ -37,6 +37,14 @@ impl ResolvedInvocationArtifact {
     /// The adapter validates its full native argv; symbolic record conditions
     /// are a separate proof and cannot certify concrete output bytes.
     pub fn native_stdout_record_plan(&self) -> Option<Result<NativePathOutputPlan, String>> {
+        self.native_stdout_record_plan_with_variant(None)
+    }
+
+    /// Variant evidence must describe this invocation's executable.
+    pub fn native_stdout_record_plan_with_variant(
+        &self,
+        native_variant: Option<&str>,
+    ) -> Option<Result<NativePathOutputPlan, String>> {
         let syntax = self.bound.stdout_records.as_ref()?.native?;
         Some((|| {
             self.proven_stream_contract()
@@ -50,7 +58,9 @@ impl ResolvedInvocationArtifact {
                 .collect::<Option<Vec<_>>>()
                 .ok_or("producer argv is incomplete")?;
             match syntax {
-                StdoutRecordSyntax::Find => NativePathOutputPlan::find(&argv),
+                StdoutRecordSyntax::Find => {
+                    NativePathOutputPlan::find_with_variant(&argv, native_variant)
+                }
             }
             .map_err(String::from)
         })())
@@ -59,7 +69,11 @@ impl ResolvedInvocationArtifact {
 
 impl NativePathOutputPlan {
     pub fn find(argv: &[String]) -> Result<Self, &'static str> {
-        let parsed = native_find_expression::parse(argv)?;
+        Self::find_with_variant(argv, None)
+    }
+
+    fn find_with_variant(argv: &[String], native_variant: Option<&str>) -> Result<Self, &'static str> {
+        let parsed = native_find_expression::parse(argv, native_variant == Some("apple_find"))?;
         Ok(Self {
             roots: parsed.roots,
             min_depth: parsed.min_depth,
@@ -77,6 +91,10 @@ impl NativePathOutputPlan {
         !self.expression.output_reachability().1
     }
 
+    pub fn stays_on_device(&self) -> bool {
+        self.expression.stays_on_device()
+    }
+
     pub fn needs_case_locale(&self) -> bool {
         self.expression.needs_case_locale()
     }
@@ -84,7 +102,7 @@ impl NativePathOutputPlan {
     /// A completed observation only short-circuited these metadata tests.
     /// It did not establish the metadata needed for the producer's full domain.
     pub fn contains_metadata_test(&self) -> bool {
-        self.expression.contains_metadata_test()
+        self.expression.contains_metadata_test(None)
     }
 
     /// One evaluation owns both predicate control flow and the bytes/actions it
@@ -112,10 +130,20 @@ impl NativePathOutputPlan {
         depth: usize,
         case_fold_proven: bool,
     ) -> Result<NativeFindEvaluation, &'static str> {
+        if kind == DirectoryEntryKind::Symlink && self.expression.follows_symlinks() {
+            // The directory evidence describes the link entry, not its
+            // referent, its type, or the subtree that find could traverse.
+            return Err("followed symlink target is not observed");
+        }
         let mut result = NativeFindEvaluation::default();
         if depth >= self.min_depth {
             self.expression
                 .evaluate(path, relative, name, kind, case_fold_proven, &mut result)?;
+        }
+        // find parses reference dates before traversal, even on a branch
+        // that the expression evaluator never reaches.
+        if result.emitted && self.expression.contains_metadata_test(Some("-newermt")) {
+            return Err("native reference date parsing is unproved");
         }
         Ok(result)
     }

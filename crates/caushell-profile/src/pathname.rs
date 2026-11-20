@@ -1,4 +1,5 @@
 use crate::{ProjectedArg, WordContext};
+use caushell_types::ShellKind;
 
 pub(crate) fn snapshot(
     state: &caushell_types::ShellStateSnapshot,
@@ -166,7 +167,7 @@ impl PathnamePattern {
 
     /// Quote removal and wildcard activity only; variables and substitutions
     /// remain with the ordinary materializer until their field shape is proved.
-    pub fn from_argument(arg: &ProjectedArg) -> Result<Option<Self>, String> {
+    pub fn from_argument(arg: &ProjectedArg, shell: ShellKind) -> Result<Option<Self>, String> {
         if arg.runtime_data
             || arg.implicit_input_source.is_some()
             || arg.word_context != WordContext::ShellArgument
@@ -177,6 +178,23 @@ impl PathnamePattern {
                 )
         {
             return Ok(None);
+        }
+        if shell == ShellKind::Bash {
+            // Whole arithmetic and exit-status expansions own their lexical
+            // metacharacters and cannot produce glob syntax. Keep the normal
+            // checks for evaluation, word splitting, and adjacent glob text.
+            let integer_expansion = match arg.node_kind.as_str() {
+                "arithmetic_expansion" => {
+                    arg.text.starts_with("$[") && arg.text.ends_with(']')
+                        || arg.text.starts_with("$((") && arg.text.ends_with("))")
+                }
+                "simple_expansion" => arg.text == "$?",
+                "expansion" => arg.text == "${?}",
+                _ => false,
+            };
+            if integer_expansion {
+                return Ok(None);
+            }
         }
         let mut quote = None;
         let mut units = Vec::new();
@@ -307,7 +325,7 @@ mod tests {
             )
             .unwrap();
             let projected = crate::project_invocation(&p.commands[0], Default::default());
-            PathnamePattern::from_argument(&projected.args[0])
+            PathnamePattern::from_argument(&projected.args[0], projected.shell_kind)
         };
         for word in ["'*'", "\\*", "\"*\""] {
             assert_eq!(parse(word).unwrap(), None);

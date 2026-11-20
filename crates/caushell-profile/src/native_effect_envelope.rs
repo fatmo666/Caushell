@@ -61,6 +61,199 @@ fn native_surface_is_direct(profile: &CommandProfile) -> bool {
         && profile.selection_failure_effects.is_empty()
 }
 
+/// The lone decimal word following pv's rate option can be absent, be the
+/// rate, or also yield input filenames. Close that transfer's effect union
+/// without assigning the actual argv or dropping any possible content read.
+pub(crate) fn retain_pv_read_effects_for_split_rate(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    projection: &crate::ProjectedInvocation,
+    selection: &crate::InvocationSelection<'_>,
+    bindings: &crate::SessionBindings,
+    bound: &mut crate::BoundInvocation,
+) {
+    use crate::*;
+    let contract = NativeArgvEffectEnvelope::ContentRead;
+    if profile.primary_name() != "pv"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || profile.native_variable_writes.is_some()
+        || projection.shell_kind != caushell_types::ShellKind::Bash
+        || !command.prefix_assignments.is_empty()
+        || observed_ifs_value(bindings).is_some()
+        || bound.form_id.as_str() != "transfer_stream"
+        || !bound.operation_semantics_unresolved
+        || bound.residuals.len() != 1
+        || bound.residuals != selection.residuals
+        || !selection.option_scope.as_ref().is_some_and(|scope| {
+            scope.ownership_unresolved && scope.error.is_none()
+        })
+        || !bound.effects.iter().all(|effect| native_effect_contract_allows_effect(contract, effect))
+        || !profile.forms.iter().any(|form| {
+            form.id.as_str() == "transfer_files"
+                && !form.operation_semantics_unresolved
+                && form.payload_projections.is_empty()
+                && form.effects.iter().all(|effect| native_effect_contract_allows_effect(contract, effect))
+        })
+    {
+        return;
+    }
+    let [flag, argument] = projection.args.as_slice() else {
+        return;
+    };
+    if !matches!(argument_structure(flag).exact_value(), Some("-L" | "--rate-limit"))
+        || argument.node_kind != "arithmetic_expansion"
+        || argument.quoted
+        || argument.runtime_data
+        || argument.implicit_input_source.is_some()
+        || argument.runtime_argument_domain.is_some()
+    {
+        return;
+    }
+    let Some(value) = caushell_parse::constant_arithmetic_word(&argument.text)
+        .and_then(|number| u32::try_from(number).ok())
+    else {
+        return;
+    };
+    let Some(layouts) = crate::field_splitting::decimal_field_layouts(value) else {
+        return;
+    };
+
+    // The option's first field is its rate, never a filename. Missing/empty
+    // rates and empty pathnames add no successful content open. Including the
+    // later nonempty fields of every layout is a conservative read union.
+    let paths: std::collections::BTreeSet<_> = layouts.into_iter()
+        .flat_map(|fields| fields.into_iter().skip(1).filter(|field| !field.is_empty()))
+        .collect();
+    if !paths.is_empty() {
+        let slot = SlotName::new("possible_input_files");
+        let mut parameter = BoundParameter::new(
+            slot.clone(),
+            SemanticType::Path(PathSemantic {
+                role: PathRole::Read,
+                purpose: Some(PathPurpose::GenericOperand),
+            }),
+        );
+        parameter.values.extend(paths.into_iter().map(|path| {
+            BoundValue::argument(path, false, argument.span.clone(), ArgumentBindingSource::RemainingArg)
+                .with_materialization(BoundArgumentMaterialization::RuntimeData)
+        }));
+        let mut read = Effect::new(EffectKind::ReadPath).for_slot(slot.as_str());
+        read.path_access = Some(PathAccessKind::ContentOpen);
+        bound.bound_parameters.push(parameter);
+        bound.effects.push(read);
+    }
+    bound.form_id = FormId::new("__symbolic_argv_effect_envelope__");
+    bound.operation_semantics_unresolved = false;
+    bound.residuals.clear();
+    retain_symbolic_argv_stream_contract(bound, contract);
+}
+
+/// Close the known effects of a single sed operand with a proved expansion.
+pub(crate) fn retain_sed_substitution(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    projection: &crate::ProjectedInvocation,
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
+    bound: &mut crate::BoundInvocation,
+) {
+    use crate::*;
+    let [argument] = projection.args.as_slice() else {
+        return;
+    };
+    let [(source, proof)] = proofs else {
+        return;
+    };
+    if profile.primary_name() != "sed"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || profile.native_variable_writes.is_some()
+        || projection.shell_kind != caushell_types::ShellKind::Bash
+        || command.command_name_runtime_data
+        || !command.prefix_assignments.is_empty()
+        || argument.runtime_data
+        || argument.implicit_input_source.is_some()
+        || argument.span != *source
+        || bound.form_id.as_str() != "positional_script_transform_stdin"
+    {
+        return;
+    }
+    if let SubstitutionOutputProof::SedDayTemplate { literal_parts } = proof {
+        if sed_day_template_only_transforms(literal_parts) {
+            let mut transform = BoundInvocation::new(
+                bound.command_name.clone(),
+                FormId::new("__symbolic_argv_effect_envelope__"),
+            );
+            let mut stdin = Effect::new(EffectKind::ConsumeStdin);
+            stdin.target = EffectTarget::ImplicitInput(ImplicitInputSource::StdinData);
+            transform.effects.push(stdin);
+            transform.bound_implicit_inputs.push(BoundImplicitInput::new(
+                ImplicitInputSource::StdinData,
+                SemanticType::PlainValue,
+            ));
+            transform.effects.push(Effect::new(EffectKind::TransformData));
+            retain_symbolic_argv_stream_contract(&mut transform, NativeArgvEffectEnvelope::DataOnly);
+            *bound = transform;
+        }
+        return;
+    }
+    if argument.quoted || !matches!(proof, SubstitutionOutputProof::LineCountQuit) {
+        return;
+    }
+    // Splitting a decimal count plus q can add filenames or leave an
+    // invalid script. It cannot introduce options or sed instructions.
+    let mut reads = BoundInvocation::new(
+        bound.command_name.clone(),
+        FormId::new("__symbolic_argv_effect_envelope__"),
+    );
+    let slot = "possible_input_files";
+    let mut parameter = BoundParameter::new(
+        SlotName::new(slot),
+        SemanticType::Path(PathSemantic {
+            role: PathRole::Read,
+            purpose: Some(PathPurpose::GenericOperand),
+        }),
+    );
+    parameter.values.push(BoundValue::argument_with_node_kind(
+        argument.text.clone(), false, argument.node_kind.clone(), argument.span.clone(),
+        ArgumentBindingSource::RemainingArg,
+    ));
+    reads.bound_parameters.push(parameter);
+    let mut file_read = Effect::new(EffectKind::ReadPath).for_slot(slot);
+    file_read.path_access = Some(PathAccessKind::ContentOpen);
+    reads.effects.push(file_read);
+    retain_symbolic_argv_stream_contract(&mut reads, NativeArgvEffectEnvelope::ContentRead);
+    *bound = reads;
+}
+
+fn sed_day_template_only_transforms(literal_parts: &[String]) -> bool {
+    let [first, suffixes @ ..] = literal_parts else {
+        return false;
+    };
+    if !first.starts_with("s/")
+        || !(1..=2).contains(&suffixes.len())
+        || literal_parts.iter().map(String::len).sum::<usize>() > 256
+    {
+        return false;
+    }
+    // Each capture can fail independently. An empty pattern or a changed
+    // parse in any expansion must also pass the same lexical effect decoder.
+    let days: Vec<_> = std::iter::once(String::new())
+        .chain((1..=31).map(|day| format!("{day:02}")))
+        .collect();
+    let mut scripts = vec![first.clone()];
+    for suffix in suffixes {
+        scripts = scripts.iter()
+            .flat_map(|prefix| days.iter().map(move |day| format!("{prefix}{day}{suffix}")))
+            .collect();
+    }
+    scripts.iter().all(|script| {
+        crate::sed_payload::decode(script, 260, 16).is_ok_and(|targets| {
+            targets.reads.is_empty() && targets.writes.is_empty() && targets.executions.is_empty()
+        })
+    })
+}
+
 pub fn native_effect_contract_is_closed(
     profile: &CommandProfile,
     contract: NativeArgvEffectEnvelope,

@@ -743,6 +743,32 @@ mod tests {
     }
 
     #[test]
+    fn fixed_find_child_layouts_contribute_stdout_provenance() {
+        for action in ["-exec", "-execdir", "-ok", "-okdir"] {
+            let command = format!(
+                r"find ./fixture -type f {action} grep -qi needle {{}} \; -print0 | wc -c"
+            );
+            let ctx = run_pass(&command);
+            let children = stdout_edges(&ctx);
+            assert_eq!(children.len(), 2, "{command}");
+            let child = ctx.execution_unit_resolve_records().iter().find(|record| {
+                record.origin_kind == caushell_runner::ExecutionUnitOriginKind::Dispatch
+            }).expect("find callback resolved");
+            assert!(children.iter().any(|edge| matches!(edge,
+                PendingMutation::AddProvenanceArtifact {
+                    source_node_id, relation: EdgeKind::Produces, ..
+                } if source_node_id == &child.source_node_id)));
+            assert!(children.iter().any(|edge| matches!(edge,
+                PendingMutation::AddProvenanceArtifact {
+                    source_node_id, relation: EdgeKind::Consumes, ..
+                } if source_node_id == &child.parent_execution_node_id)));
+        }
+
+        let no_callback = run_pass("find ./fixture -type f -print0 | wc -c");
+        assert!(stdout_edges(&no_callback).is_empty());
+    }
+
+    #[test]
     fn finite_find_child_layouts_all_contribute_stdout_provenance() {
         let ctx = run_pass(r"find . -exec grep $(printf '\15') -l {} + | wc -l");
         let edges = stdout_edges(&ctx);

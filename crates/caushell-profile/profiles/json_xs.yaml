@@ -1,0 +1,43 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: json_xs, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: format_standard_json
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: no_positional_args}
+        - kind: not
+          item: {kind: has_argument_at_matching, index: 1, matcher: &any_argument {kind: regex_pattern, pattern: '[\s\S]*'}}
+        - kind: any
+          items:
+            - {kind: not, item: {kind: has_argument_at_matching, index: 0, matcher: *any_argument}}
+            - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -v}}
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    operation_semantics_unresolved: true
+    effects:
+      # Perl can load installation and environment-selected startup code
+      # before the formatter consumes any JSON. Its sources are unverified.
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: execute_payload, target: {kind: configured_path, sources: [], missing: unknown, purpose: script_source}}
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stdout_dependency: inputs, stderr_mode: opaque}
+
+modifiers:
+  - {id: verbose, matcher: {kind: any_flag, flags: [-v]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://metacpan.org/dist/JSON-XS/view/bin/json_xs
+    - https://perldoc.perl.org/perlrun
+    - https://raw.githubusercontent.com/Perl/perl5/blead/INSTALL
+  caushell.profile/known_limitations:
+    - Only the default JSON stream conversion and its single verbose switch are modeled. Explicit formats, evaluation and all other arguments remain opaque.
+    - Script, interpreter, module search and installation startup sources are not attested by the command name alone.
+    - The formatter does not certify a restricted set of output characters or a downstream argument boundary.

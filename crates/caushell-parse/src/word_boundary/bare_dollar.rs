@@ -6,7 +6,8 @@ use tree_sitter::{Node, Parser, Tree};
 use super::{heredoc_data, parse_escaped_blanks};
 use crate::ParseError;
 
-pub(crate) fn literal_punctuation(character: char) -> bool {
+/// Recognizes the punctuation accepted after a literal dollar in shell words.
+pub fn is_literal_dollar_follower(character: char) -> bool {
     matches!(character, '.' | '/' | ':' | ',' | '%' | '+' | '=' | '^')
 }
 
@@ -104,7 +105,7 @@ fn punctuation_site(node: Node<'_>, source: &[u8]) -> Option<Site> {
     if !isolated_dollar(source, dollar)
         || !source
             .get(dollar + 1)
-            .is_some_and(|&b| literal_punctuation(char::from(b)))
+            .is_some_and(|&b| is_literal_dollar_follower(char::from(b)))
     {
         return None;
     }

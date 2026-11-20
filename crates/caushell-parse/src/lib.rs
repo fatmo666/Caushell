@@ -19,9 +19,11 @@ pub use artifact::{
 pub use error::ParseError;
 pub use parser::{
     ScalarArgumentPart, array_assignment_entries, assignment_dominates_use,
-    command_success_required_before, concatenated_argument_is_scalar, decode_static_shell_argument,
+    command_success_required_before, concatenated_argument_is_scalar, constant_arithmetic_word,
+    decode_static_shell_argument,
     exhaustive_case_assignment_values, observed_shell_variables,
     parse_argument_process_substitutions, parse_arithmetic_references, parse_command,
     parse_command_substitutions, parse_process_substitutions, referenced_shell_variables,
     scalar_argument_parts, scalar_word_parts, static_array_entry_values, static_array_values,
 };
+pub use word_boundary::is_literal_dollar_follower;

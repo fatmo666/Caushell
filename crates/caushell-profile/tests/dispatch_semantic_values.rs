@@ -273,6 +273,7 @@ fn unknown_projection_does_not_inherit_a_source_path_bound() {
             roots: vec!["/workspace".into()],
             may_escape: false,
             basename_suffix: None,
+            no_adjacent_slashes: false,
         }),
     };
     parameter.projected_values = Some(vec![ProjectedSemanticValue {

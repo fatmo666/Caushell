@@ -898,6 +898,7 @@ mod tests {
                     roots: vec!["/dev".to_string()],
                     may_escape: false,
                     basename_suffix: None,
+                    no_adjacent_slashes: false,
                 }),
             }],
             ..stdin_data.clone()

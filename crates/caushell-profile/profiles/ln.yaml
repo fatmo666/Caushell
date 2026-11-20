@@ -104,46 +104,52 @@ forms:
     remaining_selector: {"kind":"no_positional_args"}
   - id: "default_link"
     selector:
-      kind: "all"
+      kind: all
       items:
-        - {"kind":"not","item":{"kind":"has_modifier","modifier":"verbose"}}
-        - kind: "all"
+        - &quiet_link {kind: not, item: &verbose_link {kind: has_modifier, modifier: verbose}}
+        - &explicit_link
+          kind: all
           items:
-            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
-            - {"kind":"all","items":[{"kind":"has_positional_at","index":1},{"kind":"not","item":{"kind":"has_modifier","modifier":"target_directory"}}]}
-    parameters:
-      - name: "link_targets"
-        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
-        binding: {"kind":"remaining_positionals_before_last"}
-        cardinality: "required_many"
-      - name: "link_path"
-        semantic: {"kind":"path","role":"write","purpose":"generic_operand"}
-        binding: {"kind":"last_positional"}
-        cardinality: "required_one"
-    effects: [{"kind":"target_path","target":{"kind":"slot","name":"link_targets"}},{"kind":"write_path","target":{"kind":"slot","name":"link_path"}}]
-    stream_contract: {"stdin_mode":"ignored","stdout_mode":"opaque","stderr_mode":"opaque","stdout_dependency":"independent","stderr_dependency":"inputs"}
-    remaining_selector: {"kind":"no_positional_args"}
+            - {kind: not, item: {kind: has_modifier, modifier: information}}
+            - {kind: has_positional_at, index: 1}
+            - {kind: not, item: {kind: has_modifier, modifier: target_directory}}
+        - kind: not
+          item: &current_directory_link
+            kind: all
+            items:
+              # GNU may permute options. macOS treats them as operands once the sources start.
+              - {kind: options_before_positionals}
+              - {kind: not, item: {kind: has_modifier, modifier: no_target_directory}}
+              - {kind: last_positional_matches, matcher: {kind: regex_pattern, pattern: '^[.](?:/+[.])*/*$'}}
+    parameters: &explicit_link_operands
+      - {name: link_targets, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: remaining_positionals_before_last}, cardinality: required_many}
+      - {name: link_path, semantic: {kind: path, role: write, purpose: generic_operand}, binding: {kind: last_positional}, cardinality: required_one}
+    effects: &direct_link_effects
+      - &link_sources {kind: target_path, target: {kind: slot, name: link_targets}}
+      - {kind: write_path, target: {kind: slot, name: link_path}}
+    stream_contract: &quiet_link_streams {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: inputs}
+    remaining_selector: {kind: no_positional_args}
   - id: "default_link_reporting"
-    selector:
-      kind: "all"
-      items:
-        - {"kind":"has_modifier","modifier":"verbose"}
-        - kind: "all"
-          items:
-            - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
-            - {"kind":"all","items":[{"kind":"has_positional_at","index":1},{"kind":"not","item":{"kind":"has_modifier","modifier":"target_directory"}}]}
-    parameters:
-      - name: "link_targets"
-        semantic: {"kind":"path","role":"target","purpose":"generic_operand"}
-        binding: {"kind":"remaining_positionals_before_last"}
-        cardinality: "required_many"
-      - name: "link_path"
-        semantic: {"kind":"path","role":"write","purpose":"generic_operand"}
-        binding: {"kind":"last_positional"}
-        cardinality: "required_one"
-    effects: [{"kind":"target_path","target":{"kind":"slot","name":"link_targets"}},{"kind":"write_path","target":{"kind":"slot","name":"link_path"}}]
-    stream_contract: {"stdin_mode":"ignored","stdout_mode":"data","stderr_mode":"opaque","stdout_dependency":"inputs","stderr_dependency":"inputs"}
-    remaining_selector: {"kind":"no_positional_args"}
+    selector: {kind: all, items: [*verbose_link, *explicit_link, {kind: not, item: *current_directory_link}]}
+    parameters: *explicit_link_operands
+    effects: *direct_link_effects
+    stream_contract: &verbose_link_streams {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs, stderr_dependency: inputs}
+    remaining_selector: {kind: no_positional_args}
+  # A literal current-directory destination uses each source basename.
+  - id: link_into_current_directory
+    selector: {kind: all, items: [*quiet_link, *explicit_link, *current_directory_link]}
+    parameters: *explicit_link_operands
+    effects: &current_directory_effects
+      - *link_sources
+      - {kind: write_path, target: {kind: derived_path, source: {kind: slot, name: link_targets}, rule: {kind: basename}, purpose: generic_operand}}
+    stream_contract: *quiet_link_streams
+    remaining_selector: {kind: no_positional_args}
+  - id: link_into_current_directory_reporting
+    selector: {kind: all, items: [*verbose_link, *explicit_link, *current_directory_link]}
+    parameters: *explicit_link_operands
+    effects: *current_directory_effects
+    stream_contract: *verbose_link_streams
+    remaining_selector: {kind: no_positional_args}
 modifiers:
   - {"id":"information","matcher":{"kind":"any_flag","flags":["--help","--version"]},"ends_option_scope":true}
   - id: "target_directory"

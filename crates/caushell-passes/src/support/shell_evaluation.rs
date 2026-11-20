@@ -135,7 +135,16 @@ pub(crate) fn evaluate(
                 bindings,
             ) {
                 Some(value) => evaluator.expression(&value, false, 0),
-                None => evaluator.result.unresolved = true,
+                None => {
+                    // A whole numeric capture cannot introduce references at
+                    // the second evaluation. Its producer is still checked.
+                    evaluator.result.unresolved |= !matches!(
+                        site.input.command_substitutions.as_slice(),
+                        [capture] if parsed.shell_kind == caushell_types::ShellKind::Bash
+                            && capture.text == site.input.text
+                            && facts.stdout(&capture.body_text, bindings)
+                    );
+                }
             }
         }
     }

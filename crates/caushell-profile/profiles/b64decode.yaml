@@ -1,0 +1,41 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: b64decode, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: decode_raw_stdin
+    selector:
+      kind: all
+      items:
+        - &raw {kind: has_modifier, modifier: raw}
+        - {kind: no_positional_args}
+    effects:
+      - {kind: consume_stdin, target: {kind: none}}
+      - &decode {kind: transform_data, target: {kind: none}, extensions: {transform.kind: decode}}
+    stream_contract: {stdin_mode: data_required, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+  - id: decode_raw_file
+    selector:
+      kind: all
+      items:
+        - *raw
+        - {kind: exact_positional_count, count: 1}
+    parameters:
+      - {name: input_file, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: positional_at, index: 0}, cardinality: required_one}
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_file}}
+      - *decode
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+modifiers:
+  - {id: raw, matcher: {kind: any_flag, flags: [-r]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/apple-oss-distributions/text_cmds/blob/main/bintrans/uudecode.c
+  caushell.profile/known_limitations:
+    - Only raw stdout decoding of stdin or one file is modeled. Header-selected file writes, file output options, and multiple input files remain unresolved.

@@ -1,0 +1,50 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: samefile, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: leading_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: compare_stdin_filename_records
+    selector:
+      kind: all
+      items:
+        - {kind: no_dash_dash}
+        - {kind: no_positional_args}
+        - kind: any
+          items:
+            - kind: all
+              items:
+                - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -r}}
+                - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: &argument {kind: regex_pattern, pattern: '[\s\S]*'}}}
+            - kind: all
+              items:
+                - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -g}}
+                - {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '^[0-9]+$'}}
+                - {kind: not, item: {kind: has_argument_at_matching, index: 2, matcher: *argument}}
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: implicit_input, source: stdin_data}, path_list: {separator: newline}}
+      # The samesame implementation can write a spill file. The chosen
+      # executable, available memory and temporary targets are unobserved.
+      - {kind: write_path, target: &unproved_spill {kind: configured_path, sources: [], missing: unknown}}
+      - {kind: delete_path, target: *unproved_spill}
+    stream_contract: {stdin_mode: data_required, stdout_mode: opaque, stdout_dependency: inputs, stderr_mode: opaque}
+
+modifiers:
+  - {id: report_hard_links, matcher: {kind: any_flag, flags: [-r]}}
+  - id: minimum_size
+    matcher: {kind: any_flag, flags: [-g]}
+    parameters: [{name: bytes, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}]
+
+extensions:
+  caushell.profile/source_research:
+    - 'https://man.freebsd.org/cgi/man.cgi?manpath=FreeBSD+6.0-RELEASE+and+Ports&query=samefile&sektion=1'
+    - 'https://man.freebsd.org/cgi/man.cgi?manpath=FreeBSD+15.1-RELEASE+and+Ports.quarterly&query=samearchive&sektion=1'
+  caushell.profile/known_limitations:
+    - Only the individual hard-link reporting and numeric minimum-size forms are modeled.
+    - The same command name and these options apply to both implementations. Possible temporary storage and its lifetime remain unproved.
+    - Output pairs do not certify a new filename list.

@@ -59,6 +59,84 @@ fn ordinary_transfer_and_metadata_watch_are_allowed() {
         check(c, Decision::NeedApproval);
     }
 }
+
+#[test]
+fn constant_arithmetic_arguments_follow_the_observed_splitter() {
+    let limited = "pv -L $((1024*1024))";
+    let (_, result) = check(limited, Decision::Allow);
+    assert!(
+        result.decision_trace.execution_semantics.iter().any(|fact| {
+            fact.normalized_command_name == "pv" && fact.form_id == "transfer_stream"
+        })
+    );
+    let (_, result) = check("IFS=4; pv -L $((1024*1024))", Decision::Allow);
+    assert!(
+        result.decision_trace.execution_semantics.iter().any(|fact| {
+            fact.normalized_command_name == "pv" && fact.form_id == "transfer_files"
+        })
+    );
+}
+
+#[test]
+fn unknown_ifs_retains_all_possible_pv_input_effects() {
+    use caushell_profile::{
+        BoundValue, EffectKind, EffectTarget, InvocationRuntimeContext, ProfileRegistry,
+        ResolveInvocationArtifactResult, SessionBindings, StreamInputMode,
+        resolve_invocation_artifact_with_bindings,
+    };
+
+    let command = "pv -L $((1024*1024))";
+    let mut input = request(command);
+    input.shell_state_before.observability.variables = ShellStateKnowledge::Unknown;
+    let result = ShellQueryCore::new().check(input);
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.decision_trace);
+    assert!(result.decision_trace.execution_semantics.iter().any(|fact| {
+        fact.normalized_command_name == "pv"
+            && fact.form_id == "__symbolic_argv_effect_envelope__"
+            && !fact.operation_semantics_unresolved
+    }));
+    let parsed = caushell_parse::parse_command(command, ShellKind::Bash).unwrap();
+    let registry = ProfileRegistry::built_in().unwrap();
+    let ResolveInvocationArtifactResult::Resolved(resolved) = resolve_invocation_artifact_with_bindings(
+        &registry,
+        &parsed.commands[0],
+        InvocationRuntimeContext::new(),
+        &SessionBindings::new(),
+    ) else {
+        panic!("pv rate transfer did not resolve");
+    };
+    let paths = resolved.bound.bound_parameters.iter()
+        .find(|parameter| parameter.name.as_str() == "possible_input_files")
+        .expect("possible input files");
+    assert!(paths.values.iter().any(|value| {
+        matches!(value, BoundValue::Argument { text, .. } if text == "8576")
+    }));
+    assert!(resolved.bound.effects.iter().any(|effect| {
+        effect.kind == EffectKind::ReadPath
+            && matches!(&effect.target, EffectTarget::Slot(slot) if slot == &paths.name)
+    }));
+    assert_eq!(resolved.proven_stream_contract().unwrap().stdin_mode, StreamInputMode::DataOptional);
+}
+
+#[test]
+fn arithmetic_that_does_not_bound_the_complete_rate_argv_remains_unresolved() {
+    for command in [
+        "pv -L $((-17))",
+        "pv -L $((17+34)) $tail",
+        "pv -L $((17+34)) -o /opt/shared/fixture-output",
+    ] {
+        let mut input = request(command);
+        input.shell_state_before.observability.variables = ShellStateKnowledge::Unknown;
+        assert_eq!(ShellQueryCore::new().check(input).decision, Decision::NeedApproval, "{command}");
+    }
+    check("pv -L $((v=10))", Decision::NeedApproval);
+    check("pv -L $((2147483647*2))", Decision::NeedApproval);
+    check("pv -L $((104)) \"${IFS:=4}\"", Decision::NeedApproval);
+    check(
+        "IFS=4; pv -L $((1048576)) -o /etc/limited-output",
+        Decision::NeedApproval,
+    );
+}
 #[test]
 fn explicit_outputs_staging_pid_files_and_outer_redirects_keep_workspace_checks() {
     for c in [

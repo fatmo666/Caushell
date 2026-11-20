@@ -22,6 +22,7 @@ fn request(command: &str) -> CheckRequest {
 fn bounded_reflog_queries_use_existing_read_authority() {
     for source in [
         "git --no-pager reflog --date=iso | head -30",
+        "git reflog --date=iso | head -30",
         "git -P reflog show --date relative -30 HEAD",
         "git reflog list",
         "git reflog exists refs/heads/arbitrary",
@@ -38,7 +39,8 @@ fn bounded_reflog_queries_use_existing_read_authority() {
 #[test]
 fn pager_and_unmodeled_native_options_still_ask() {
     for source in [
-        "git reflog --date=iso | head -30",
+        "git reflog --date=iso",
+        "git reflog --date=iso 1>&2 | head -30",
         "git --no-pager --paginate reflog",
         "git --no-pager reflog --output=/outside/log",
         "git --no-pager reflog --ext-diff",

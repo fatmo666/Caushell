@@ -1,0 +1,37 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: objdump, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: inspect_all_headers
+    selector: {kind: has_modifier, modifier: all_headers}
+    # A file operand does not prove that the native implementation opens only
+    # that file. GNU symbol reporting can load linked debug information;
+    # a thin archive can reference other object files.
+    operation_semantics_unresolved: true
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - name: object_files
+        semantic: {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: remaining_positionals}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: '^[^-@][\s\S]*$'}]
+    effects:
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: object_files}}
+
+modifiers:
+  - {id: all_headers, matcher: {kind: any_flag, flags: [-x, --all-headers]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://sourceware.org/binutils/docs/binutils/objdump.html
+    - https://github.com/RTEMS/sourceware-mirror-binutils-gdb/blob/master/binutils/objdump.c
+    - https://llvm.org/docs/CommandGuide/llvm-objdump.html
+  caushell.profile/known_limitations:
+    - Response files, stdin, other option families, linked debug resources and external archive members do not have complete input evidence.
+    - This form gives no permission to read any additional input or to treat diagnostics or output as a trusted pathname list.

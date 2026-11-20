@@ -61,10 +61,13 @@ forms:
           kind: slot
           name: input_paths
       - &consume_input {kind: consume_stdin, target: {kind: slot, name: stdin_marker}}
+      # split appends a suffix to the prefix for every output chunk.
       - kind: write_path
         target:
-          kind: slot
-          name: output_prefix
+          kind: derived_path
+          source: {kind: slot, name: output_prefix}
+          rule: {kind: file_name_prefix}
+          purpose: generic_operand
     stream_contract: &file_streams {stdin_mode: declared_effects, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
 
   - id: split_default_prefix

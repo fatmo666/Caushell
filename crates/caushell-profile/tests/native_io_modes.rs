@@ -430,3 +430,66 @@ fn payload_output_proof_is_opt_in_and_never_uses_a_partial_decode() {
         );
     }
 }
+
+#[test]
+fn objdump_all_headers_opens_named_objects_without_closing_other_inputs() {
+    for command in [
+        "objdump -x ./first.o ./second.o",
+        "objdump --all-headers ./first.o",
+    ] {
+        let invocation = resolved(command);
+        assert!(invocation.bound.operation_semantics_unresolved, "{command}");
+        assert!(invocation.proven_stream_contract().is_none(), "{command}");
+        assert!(
+            invocation.bound.effects.iter().any(|effect| {
+                effect.kind == EffectKind::ReadPath
+                    && effect.path_access == Some(PathAccessKind::ContentOpen)
+                    && matches!(&effect.target, EffectTarget::Slot(slot) if slot.as_str() == "object_files")
+            }),
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn svn_status_retains_possible_configuration_tree_writes() {
+    for command in [
+        "svn status ./fixture",
+        "svn st --config-dir ./private-config ./fixture",
+    ] {
+        let invocation = resolved(command);
+        assert!(invocation.bound.operation_semantics_unresolved, "{command}");
+        assert!(invocation.proven_stream_contract().is_none(), "{command}");
+        assert!(invocation.bound.effects.iter().any(|effect| {
+            effect.kind == EffectKind::WritePath
+                && effect.namespace_effect
+                    == Some(caushell_types::PathNamespaceEffect::DirectoryTreeWrite)
+                && matches!(&effect.target, EffectTarget::ConfiguredPath(path)
+                    if path.missing == ConfiguredPathMissing::Unknown
+                    && path.default_value.is_none()
+                    && path.sources.iter().any(|source| source.slot.as_str() == "config_dir"))
+        }), "{command}");
+        assert!(invocation.bound.effects.iter().any(|effect| {
+            effect.kind == EffectKind::LoadConfig
+        }), "{command}");
+    }
+}
+
+#[test]
+fn blkid_uuid_lookup_keeps_privilege_dependent_inputs_unresolved() {
+    for command in ["blkid -U 1234-ABCD", "blkid --uuid 1234-ABCD"] {
+        let invocation = resolved(command);
+        assert!(invocation.bound.operation_semantics_unresolved, "{command}");
+        assert!(invocation.proven_stream_contract().is_none(), "{command}");
+        assert!(invocation.bound.effects.iter().any(|effect| {
+            effect.kind == EffectKind::LoadConfig
+                && matches!(&effect.target, EffectTarget::ToolConventionPath(path)
+                    if path.path == "/etc/blkid.conf")
+        }), "{command}");
+        assert!(invocation.bound.effects.iter().any(|effect| {
+            effect.kind == EffectKind::WritePath
+                && matches!(&effect.target, EffectTarget::ConfiguredPath(path)
+                    if path.missing == ConfiguredPathMissing::Unknown && path.default_value.is_none())
+        }), "{command}");
+    }
+}

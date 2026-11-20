@@ -29,22 +29,83 @@ forms:
     selector:
       kind: all
       items:
-        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - &running {kind: not, item: {kind: has_modifier, modifier: information}}
         - {kind: has_positional_at, index: 1}
         - {kind: not, item: {kind: has_positional_at, index: 2}}
     remaining_selector: {kind: no_positional_args}
-    parameters: &inputs
+    parameters:
       - {name: stdin_markers, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: {kind: literal, value: '-'}}, cardinality: optional_many}
       - name: input_paths
         semantic: {kind: path, role: read, purpose: generic_operand}
         binding: {kind: remaining_positionals}
         cardinality: optional_many
         value_constraints: [{kind: exclude_literal, value: '-'}]
-    effects: &effects
+    effects:
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: input_paths}}
       - {kind: consume_stdin, target: {kind: slot, name: stdin_markers}}
       - {kind: transform_data, target: {kind: none}}
-    stream_contract: {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stream_contract: &join_stream {stdin_mode: declared_effects, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
+  - id: join_legacy_output_fields
+    extensions: &legacy_ownership {caushell.form/require_proven_option_ownership: true}
+    selector:
+      kind: all
+      items:
+        - &legacy_fields
+          kind: all
+          items:
+            - *running
+            - {kind: no_dash_dash}
+            - {kind: has_positional_at, index: 2}
+            - kind: has_modifier_parameter_matching
+              modifier: output_format
+              parameter: output_format
+              matcher: {kind: regex_pattern, pattern: '^(?:0|[12]\.[1-9][0-9]*)(?:[ ,\t]+(?:0|[12]\.[1-9][0-9]*))*$'}
+            - kind: has_positional_at_matching
+              index: 0
+              matcher: &legacy_field {kind: regex_pattern, pattern: '^(?:0|[12]\.[1-9][0-9]*)$'}
+        - kind: not
+          item: &has_stdin
+            kind: has_positional_at_or_after_matching
+            index: 0
+            matcher: &stdin_marker {kind: literal, value: '-'}
+    remaining_selector: &no_remaining {kind: no_positional_args}
+    parameters:
+      # GNU join can retain a field-shaped word as a filename when the
+      # operand count does not force it into the output list. Keep its read
+      # effect alongside the two ordinary operands.
+      - &possible_input_paths
+        name: possible_input_paths
+        semantic: &input_path {kind: path, role: read, purpose: generic_operand}
+        binding: {kind: leading_positionals_while, matcher: *legacy_field}
+        cardinality: required_many
+      - &left_path
+        name: left_path
+        semantic: *input_path
+        binding: &next_operand {kind: next_positional}
+        cardinality: required_one
+      - {name: right_path, semantic: *input_path, binding: *next_operand, cardinality: required_one}
+    effects:
+      - &read_possible {kind: read_path, path_access: content_open, target: {kind: slot, name: possible_input_paths}}
+      - &read_left {kind: read_path, path_access: content_open, target: {kind: slot, name: left_path}}
+      - {kind: read_path, path_access: content_open, target: {kind: slot, name: right_path}}
+      - &transform {kind: transform_data, target: {kind: none}}
+    stream_contract: *join_stream
+
+  - id: join_legacy_output_fields_with_stdin
+    extensions: *legacy_ownership
+    selector: {kind: all, items: [*legacy_fields, *has_stdin]}
+    remaining_selector: *no_remaining
+    parameters:
+      - *possible_input_paths
+      - {name: stdin_marker, semantic: {kind: plain_value}, binding: {kind: positionals_matching, matcher: *stdin_marker}, cardinality: required_one}
+      - *left_path
+    effects:
+      - *read_possible
+      - *read_left
+      - {kind: consume_stdin, target: {kind: slot, name: stdin_marker}}
+      - *transform
+    stream_contract: *join_stream
 
 modifiers:
   - {id: information, matcher: {kind: any_flag, flags: [--help, --version]}}
@@ -68,5 +129,7 @@ modifiers:
 subcommands: null
 extensions:
   caushell.profile/source_research:
+    - https://git.savannah.gnu.org/cgit/coreutils.git/tree/src/join.c
+    - https://www.gnu.org/software/coreutils/manual/html_node/General-options-in-join.html
     - command-frequency/cross-validation/COMMAND_PROFILE_COVERAGE_PLAN.md
     - command-frequency/D4-security-bash/weaponizable_overlap.csv

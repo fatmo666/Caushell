@@ -1,7 +1,7 @@
 //! Certainty of declared value matchers over native argv spelling bounds.
-use crate::{ArgumentStructure, ValueMatcher};
+use crate::{ArgumentFieldCount, ArgumentStructure, ValueMatcher};
 use regex_automata::{
-    Anchored, Input,
+    Anchored, Input, MatchKind,
     dfa::{Automaton, StartKind, dense},
     nfa::thompson,
 };
@@ -12,14 +12,16 @@ use std::{
 };
 
 const MAX_PATTERNS: usize = 32;
-const MAX_PREFIX_BYTES: usize = 1024;
+const MAX_SPELLING_BYTES: usize = 1024;
 const MAX_DFA_BYTES: usize = 64 * 1024;
 const MAX_BUILD_BYTES: usize = 256 * 1024;
 const MAX_PREFIX_STATES: usize = 64;
 
+type BoundedDfa = dense::DFA<Vec<u32>>;
+
 enum PrefixPlan {
     Atom(Hir),
-    RejectOnly(dense::DFA<Vec<u32>>),
+    RejectOnly(BoundedDfa),
     Unknown,
 }
 
@@ -28,7 +30,7 @@ impl PrefixPlan {
         // nocaseglob may change the case of literal pathname components.
         // Reject only if every simple case variant is impossible. Non-ASCII
         // source prefixes and excessive state sets remain outside this proof.
-        if prefix.is_empty() || prefix.len() > MAX_PREFIX_BYTES || !prefix.is_ascii() {
+        if prefix.is_empty() || prefix.len() > MAX_SPELLING_BYTES || !prefix.is_ascii() {
             return None;
         }
         let Self::RejectOnly(dfa) = self else {
@@ -74,17 +76,7 @@ impl PrefixPlan {
         None
     }
 
-    fn compile(pattern: &str) -> Self {
-        let Ok(hir) = regex_syntax::ParserBuilder::new()
-            .nest_limit(32)
-            .build()
-            .parse(pattern)
-        else {
-            return Self::Unknown;
-        };
-        let HirKind::Concat(parts) = hir.kind() else {
-            return Self::Unknown;
-        };
+    fn compile(pattern: &str, parts: &[Hir]) -> Self {
         // Only an absolute start anchor permits rejecting every possible
         // completion from a prefix. Multiline or unanchored searches may start later.
         if !parts
@@ -100,25 +92,12 @@ impl PrefixPlan {
                 _ => false,
             }
         }
-        if let [_, atom] = parts.as_slice()
+        if let [_, atom] = parts
             && simple(atom)
         {
             return Self::Atom(atom.clone());
         }
-        let result = dense::Builder::new()
-            .configure(
-                dense::Config::new()
-                    .start_kind(StartKind::Anchored)
-                    .dfa_size_limit(Some(MAX_DFA_BYTES))
-                    .determinize_size_limit(Some(MAX_BUILD_BYTES)),
-            )
-            .syntax(regex_automata::util::syntax::Config::new().nest_limit(32))
-            .thompson(thompson::Config::new().nfa_size_limit(Some(MAX_DFA_BYTES)))
-            .build(pattern);
-        match result {
-            Ok(dfa) => Self::RejectOnly(dfa),
-            Err(_) => Self::Unknown,
-        }
+        bounded_dfa(pattern, false).map_or(Self::Unknown, Self::RejectOnly)
     }
 
     fn matches(&self, prefix: &str) -> Option<bool> {
@@ -126,7 +105,7 @@ impl PrefixPlan {
             Self::Atom(atom) => prefix_atom(atom, prefix),
             Self::Unknown => None,
             Self::RejectOnly(dfa) => {
-                if prefix.is_empty() || prefix.len() > MAX_PREFIX_BYTES {
+                if prefix.is_empty() || prefix.len() > MAX_SPELLING_BYTES {
                     return None;
                 }
                 let mut state = dfa
@@ -149,8 +128,84 @@ impl PrefixPlan {
     }
 }
 
-fn prefix_plan(pattern: &str) -> Option<Arc<PrefixPlan>> {
-    static CACHE: OnceLock<RwLock<BTreeMap<String, Arc<PrefixPlan>>>> = OnceLock::new();
+fn bounded_dfa(pattern: &str, reverse: bool) -> Option<BoundedDfa> {
+    let mut config = dense::Config::new()
+        .start_kind(StartKind::Anchored)
+        .dfa_size_limit(Some(MAX_DFA_BYTES))
+        .determinize_size_limit(Some(MAX_BUILD_BYTES));
+    if reverse {
+        config = config.match_kind(MatchKind::All);
+    }
+    dense::Builder::new()
+        .configure(config)
+        .syntax(regex_automata::util::syntax::Config::new().nest_limit(32))
+        .thompson(
+            thompson::Config::new()
+                .nfa_size_limit(Some(MAX_DFA_BYTES))
+                .reverse(reverse),
+        )
+        .build(pattern)
+        .ok()
+}
+
+struct RegexPlan {
+    prefix: PrefixPlan,
+    whole_argument: bool,
+    reverse: OnceLock<Option<BoundedDfa>>,
+}
+
+impl RegexPlan {
+    fn compile(pattern: &str) -> Self {
+        let parsed = regex_syntax::ParserBuilder::new()
+            .nest_limit(32)
+            .build()
+            .parse(pattern);
+        let parts = match parsed.as_ref().map(Hir::kind) {
+            Ok(HirKind::Concat(parts)) => parts.as_slice(),
+            _ => &[],
+        };
+        Self {
+            prefix: PrefixPlan::compile(pattern, parts),
+            whole_argument: parts
+                .first()
+                .is_some_and(|part| matches!(part.kind(), HirKind::Look(Look::Start)))
+                && parts
+                    .last()
+                    .is_some_and(|part| matches!(part.kind(), HirKind::Look(Look::End))),
+            reverse: OnceLock::new(),
+        }
+    }
+
+    fn match_suffix(&self, pattern: &str, suffix: &str) -> Option<bool> {
+        if !self.whole_argument
+            || suffix.is_empty()
+            || suffix.len() > MAX_SPELLING_BYTES
+            || !suffix.is_ascii()
+        {
+            return None;
+        }
+        let dfa = self
+            .reverse
+            .get_or_init(|| bounded_dfa(pattern, true))
+            .as_ref()?;
+        let input = Input::new(suffix).anchored(Anchored::Yes);
+        let mut state = dfa.start_state_reverse(&input).ok()?;
+        for byte in suffix.bytes().rev() {
+            state = dfa.next_state(state, byte);
+            if dfa.is_quit_state(state) || dfa.is_match_state(state) {
+                return None;
+            }
+            if dfa.is_dead_state(state) {
+                return Some(false);
+            }
+        }
+        // The unknown head of the argument may still complete the match.
+        None
+    }
+}
+
+fn regex_plan(pattern: &str) -> Option<Arc<RegexPlan>> {
+    static CACHE: OnceLock<RwLock<BTreeMap<String, Arc<RegexPlan>>>> = OnceLock::new();
     let cache = CACHE.get_or_init(|| RwLock::new(BTreeMap::new()));
     if let Some(plan) = cache.read().ok()?.get(pattern).cloned() {
         return Some(plan);
@@ -159,7 +214,7 @@ fn prefix_plan(pattern: &str) -> Option<Arc<PrefixPlan>> {
     if let Some(plan) = plans.get(pattern) {
         return Some(Arc::clone(plan));
     }
-    let plan = Arc::new(PrefixPlan::compile(pattern));
+    let plan = Arc::new(RegexPlan::compile(pattern));
     if plans.len() >= MAX_PATTERNS {
         plans.pop_first();
     }
@@ -183,11 +238,16 @@ pub(crate) fn matches(structure: &ArgumentStructure, matcher: &ValueMatcher) -> 
                 .then_some(false)
         }
         ValueMatcher::RegexPattern(pattern) if pattern.len() <= 4096 => {
-            let plan = prefix_plan(pattern)?;
+            let plan = regex_plan(pattern)?;
             if structure.has_pathname_generation() {
-                plan.matches_pathname_prefix(&structure.static_prefix)
+                plan.prefix
+                    .matches_pathname_prefix(&structure.static_prefix)
             } else {
-                plan.matches(&structure.static_prefix)
+                plan.prefix.matches(&structure.static_prefix).or_else(|| {
+                    (structure.fields == ArgumentFieldCount::ExactlyOne)
+                        .then(|| plan.match_suffix(pattern, &structure.static_suffix))
+                        .flatten()
+                })
             }
         }
         _ => None,
@@ -315,11 +375,51 @@ mod tests {
     }
 
     #[test]
+    fn fixed_suffix_rejects_impossible_whole_argument_matches() {
+        for (pattern, suffix) in [
+            (r"^[.](?:/+[.])*/*$", "_SUF"),
+            (r"\A(?:ab|cd)+\z", "foo"),
+            (r"^report:[0-9]+$", "end"),
+        ] {
+            assert_eq!(
+                matches(
+                    &shape("", suffix),
+                    &ValueMatcher::RegexPattern(pattern.into())
+                ),
+                Some(false),
+                "{pattern} {suffix:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn suffix_proof_keeps_possible_matches_and_unproved_anchors_unknown() {
+        for (pattern, suffix) in [
+            (r"^[.](?:/+[.])*/*$", "./"),
+            (r"^report:[0-9]+$", "1"),
+            (r"^report:", "_SUF"),
+            (r"report:$", "_SUF"),
+            (r"(?m)^report:$", "_SUF"),
+            (r"^report:$|^other:$", "_SUF"),
+            (r"^report:[0-9]+$", "猫"),
+        ] {
+            assert_eq!(
+                matches(
+                    &shape("", suffix),
+                    &ValueMatcher::RegexPattern(pattern.into())
+                ),
+                None,
+                "{pattern} {suffix:?}"
+            );
+        }
+    }
+
+    #[test]
     fn proof_limits_and_cached_failure_remain_unknown() {
         let pattern = r"^(ab|cd)+$";
         assert!(Arc::ptr_eq(
-            &prefix_plan(pattern).unwrap(),
-            &prefix_plan(pattern).unwrap()
+            &regex_plan(pattern).unwrap(),
+            &regex_plan(pattern).unwrap()
         ));
         for (pattern, prefix) in [
             ("^a{1000000}$".to_owned(), "x".to_owned()),
@@ -328,7 +428,7 @@ mod tests {
                 "x".to_owned(),
             ),
             (format!("^{}$", "a".repeat(4096)), "x".to_owned()),
-            (pattern.into(), "x".repeat(MAX_PREFIX_BYTES + 1)),
+            (pattern.into(), "x".repeat(MAX_SPELLING_BYTES + 1)),
         ] {
             let matcher = ValueMatcher::RegexPattern(pattern);
             assert_eq!(matches(&shape(&prefix, ""), &matcher), None);

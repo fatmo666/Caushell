@@ -1,0 +1,45 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: smbstatus, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: inspect_shares
+    selector:
+      kind: all
+      items:
+        - {kind: has_modifier, modifier: shares}
+        - {kind: no_dash_dash}
+        - {kind: has_argument_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(?:-S|--shares)$'}}
+        - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '[\s\S]*'}}}
+    remaining_selector: {kind: no_positional_args}
+    # The status database traversal is read-only. Messaging is initialized
+    # first and can create directories, lock files and a local socket.
+    operation_semantics_unresolved: true
+    effects:
+      - kind: state_operation
+        state_operation: {domain: service_manager, operation: inspect}
+        target: {kind: none}
+      - {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
+      - {kind: read_path, target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+      - {kind: write_path, target: &messaging_files {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}}
+      - {kind: delete_path, target: *messaging_files}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stdout_dependency: unknown, stderr_mode: opaque}
+
+modifiers:
+  - {id: shares, matcher: {kind: any_flag, flags: [-S, --shares]}}
+
+extensions:
+  caushell.profile/source_research:
+    - https://www.samba.org/samba/docs/current/man-html/smbstatus.1.html
+    - https://github.com/samba-team/samba/blob/samba-4.23.0/source3/utils/status.c
+    - https://github.com/samba-team/samba/blob/samba-4.23.0/source3/lib/cmdline_contexts.c
+    - https://github.com/samba-team/samba/blob/samba-4.23.0/source3/lib/messages.c
+    - https://github.com/samba-team/samba/blob/master/lib/messaging/messages_dgm.c
+  caushell.profile/known_limitations:
+    - Covers only the single share-listing switch. Additional flags and configuration overrides remain unresolved.
+    - The effective configuration, runtime privilege, local messaging paths and status output contents are not proved by the selector.

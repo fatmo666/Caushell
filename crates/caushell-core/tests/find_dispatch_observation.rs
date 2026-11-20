@@ -58,22 +58,30 @@ fn check(command: &str) -> CheckResponse {
 }
 
 fn check_with_directory(command: &str, with_file: bool) -> CheckResponse {
+    check_with_view(command, Arc::new(DirectoryFixture { with_file }))
+}
+
+fn check_with_view(command: &str, view: Arc<dyn FilesystemView>) -> CheckResponse {
     ShellQueryCore::new()
-        .with_filesystem_view(Arc::new(DirectoryFixture { with_file }))
-        .check(CheckRequest {
-            session_id: SessionId::new("empty-observation"),
-            sequence_no: CommandSequenceNo(1),
-            command: command.to_owned(),
-            shell_state_before: ShellStateSnapshot::new("/fixture"),
-            shell_kind: ShellKind::Bash,
-            home: None,
-            workspace_root: Some("/fixture".into()),
-            runtime: RuntimeMetadata {
-                runtime_name: "static-test".into(),
-                tool_name: Some("Bash".into()),
-                shell_runtime_capabilities: ShellRuntimeCapabilities::request_only(),
-            },
-        })
+        .with_filesystem_view(view)
+        .check(dispatch_request(command))
+}
+
+fn dispatch_request(command: &str) -> CheckRequest {
+    CheckRequest {
+        session_id: SessionId::new("empty-observation"),
+        sequence_no: CommandSequenceNo(1),
+        command: command.to_owned(),
+        shell_state_before: ShellStateSnapshot::new("/fixture"),
+        shell_kind: ShellKind::Bash,
+        home: None,
+        workspace_root: Some("/fixture".into()),
+        runtime: RuntimeMetadata {
+            runtime_name: "static-test".into(),
+            tool_name: Some("Bash".into()),
+            shell_runtime_capabilities: ShellRuntimeCapabilities::request_only(),
+        },
+    }
 }
 
 #[test]
@@ -159,4 +167,162 @@ fn external_printf_reader_does_not_inherit_shell_variable_writes() {
     assert!(result.decision_trace.evidence.iter().any(|e|
         matches!(&e.kind, EvidenceKind::NativeInputDecode(d) if d.complete)
     ), "{command}: external data-only dispatch lost its input proof");
+}
+
+struct MountFixture;
+
+impl FilesystemView for MountFixture {
+    fn entry(&self, path: &str) -> FilesystemEntry {
+        match path {
+            "/" | "/fixture" | "/fixture/cross" => FilesystemEntry::Directory,
+            "/fixture/same" | "/fixture/cross/other" => FilesystemEntry::File,
+            _ => FilesystemEntry::Missing,
+        }
+    }
+
+    fn read_directory(&self, path: &str, limits: DirectoryReadLimits) -> DirectoryRead {
+        let identity = |device, inode| FileContentIdentity {
+            device,
+            inode,
+            size: 0,
+            modified_seconds: 0,
+            modified_nanos: 0,
+            changed_seconds: 0,
+            changed_nanos: 0,
+        };
+        let (directory, entries) = match path {
+            "/fixture" => (
+                identity(1, 1),
+                vec![
+                    DirectoryEntry {
+                        name: "same".into(),
+                        kind: DirectoryEntryKind::File,
+                        identity: identity(1, 2),
+                    },
+                    DirectoryEntry {
+                        name: "cross".into(),
+                        kind: DirectoryEntryKind::Directory,
+                        identity: identity(2, 1),
+                    },
+                ],
+            ),
+            "/fixture/cross" => (
+                identity(2, 1),
+                vec![DirectoryEntry {
+                    name: "other".into(),
+                    kind: DirectoryEntryKind::File,
+                    identity: identity(2, 2),
+                }],
+            ),
+            _ => panic!("unexpected directory {path}"),
+        };
+        DirectoryRead::complete(self.source(), path, limits, directory, entries)
+    }
+}
+
+#[test]
+fn device_constraint_emits_the_boundary_and_uses_each_starting_point() {
+    for (expression, expected, reads_cross_device) in [
+        (". -print0", vec![".", "./cross", "./cross/other", "./same"], true),
+        (". -xdev -print0", vec![".", "./cross", "./same"], false),
+        (". -mount -print0", vec![".", "./cross", "./same"], false),
+        (r". \( -name unmatched -a -xdev \) -o -print0", vec![".", "./cross", "./same"], false),
+        (
+            ". ./cross -xdev -print0",
+            vec![".", "./cross", "./cross", "./cross/other", "./same"],
+            true,
+        ),
+    ] {
+        let command = format!("find {expression} | wc -c");
+        let response = check_with_view(&command, Arc::new(MountFixture));
+        let records = response.decision_trace.evidence.iter().find_map(|e| match &e.kind {
+            EvidenceKind::StdoutRecords(records) => Some(records),
+            _ => None,
+        }).expect("find producer evidence");
+        assert!(records.complete, "{command}: {:?}", records.gap);
+        assert_eq!(records.order, StreamRecordOrder::Unspecified, "{command}");
+        let mut names = records.records.iter().map(|entry| entry.path_spelling.as_str()).collect::<Vec<_>>();
+        names.sort_unstable();
+        assert_eq!(names, expected, "{command}");
+        assert_eq!(
+            records.directory_observations.iter().any(|directory| directory.path == "/fixture/cross"),
+            reads_cross_device,
+            "{command}"
+        );
+    }
+}
+
+#[test]
+fn leading_x_requires_a_current_apple_find_variant() {
+    let forms = [
+        (
+            "find -x . -print0 | wc -c",
+            Some("apple_find"),
+            Some(vec![".", "./cross", "./same"]),
+        ),
+        (
+            "find -P -x . ./cross -print0 | wc -c",
+            Some("apple_find"),
+            Some(vec![".", "./cross", "./cross", "./cross/other", "./same"]),
+        ),
+        ("find -x . -print0 | wc -c", None, None),
+        ("find -x . -print0 | wc -c", Some("gnu_findutils"), None),
+        (
+            "PATH=/elsewhere find -x . -print0 | wc -c",
+            Some("apple_find"),
+            None,
+        ),
+        ("find . -x -print0 | wc -c", Some("apple_find"), None),
+        ("find -x -print0 | wc -c", Some("apple_find"), None),
+        (
+            r#"find -x . -printf '%p\0' | wc -c"#,
+            Some("apple_find"),
+            None,
+        ),
+        ("find . -name -x -print0 | wc -c", None, Some(Vec::new())),
+    ];
+    for (command, variant, expected) in forms {
+        let mut request = dispatch_request(command);
+        if let Some(variant) = variant {
+            request.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+                binding: ExecutionFrameBinding::for_request(&request, "owner"),
+                environment: Vec::new(),
+                pathname: None,
+                variables: Vec::new(),
+                variable_values: Vec::new(),
+                integer_variables: Default::default(),
+                native_variants: [("find".into(), variant.into())].into(),
+            });
+        }
+        let result = ShellQueryCore::new()
+            .with_filesystem_view(Arc::new(MountFixture))
+            .check(request);
+        let evidence = result
+            .decision_trace
+            .evidence
+            .iter()
+            .find_map(|entry| {
+                if let EvidenceKind::StdoutRecords(records) = &entry.kind {
+                    Some(records)
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| panic!("{command}: no find producer evidence"));
+        if let Some(expected) = expected {
+            assert!(evidence.complete, "{command}: {:?}", evidence.gap);
+            let mut names = evidence
+                .records
+                .iter()
+                .map(|entry| entry.path_spelling.as_str())
+                .collect::<Vec<_>>();
+            names.sort_unstable();
+            assert_eq!(names, expected, "{command}");
+        } else {
+            assert!(
+                !evidence.complete && evidence.records.is_empty(),
+                "{command}"
+            );
+        }
+    }
 }

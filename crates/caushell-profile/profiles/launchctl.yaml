@@ -1,0 +1,35 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+identity: {canonical_name: launchctl, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [macos], shell_families: [], requires_features: []}
+opaque_on_unresolved: true
+
+forms:
+  - id: list_jobs
+    selector:
+      kind: all
+      items:
+        - kind: has_argument_at_matching
+          index: 0
+          matcher: {kind: literal, value: list}
+        - kind: not
+          item:
+            kind: has_argument_at_matching
+            index: 1
+            matcher: {kind: regex_pattern, pattern: '(?s)\A.*\z'}
+    parameters:
+      - {name: subcommand, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: required_one}
+    effects:
+      - kind: state_operation
+        state_operation: {domain: service_manager, operation: inspect}
+        target: {kind: none}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
+
+extensions:
+  caushell.profile/source_research:
+    - https://github.com/apple-oss-distributions/launchd/blob/main/man/launchctl.1
+    - https://github.com/apple-oss-distributions/launchd/blob/main/support/launchctl.c
+  caushell.profile/known_limitations:
+    - The argument-free list subcommand inspects jobs in the current launchd scope. It provides no proof of job identity, file paths, or the installed daemon state.
+    - Per-job details, interactive command input, and service control are outside this contract.

@@ -273,3 +273,70 @@ fn rev_literal_dash_and_ptx_files_keep_cross_action_provenance_after_restore() {
         );
     }
 }
+
+#[test]
+fn default_xgettext_extraction_models_its_catalog_write() {
+    use caushell_types::{PathTargetOperation, SemanticResolution};
+
+    let mut core = ShellQueryCore::new();
+    let command = "xgettext ./fixture.php ./another.c";
+    let result = core.check(request(command, 1, "xgettext-fixture"));
+    assert_eq!(
+        result.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        result.reasons
+    );
+    assert!(
+        result
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .any(|entry| {
+                entry.normalized_command_name == "xgettext"
+                    && entry.form_id == "extract_default_catalog"
+                    && entry.loads_tool_config
+                    && entry.executes_payload
+                    && entry.operation_semantics_unresolved
+            })
+    );
+    assert!(result.decision_trace.path_targets.iter().any(|target| {
+        target.operation == PathTargetOperation::Write
+            && target.spelling.as_deref() == Some("/bench/workspace/messages.po")
+            && matches!(target.resolution, SemanticResolution::Unresolved { .. })
+    }));
+
+    let mut outside = request(command, 1, "xgettext-outside");
+    outside.shell_state_before = ShellStateSnapshot::new("/outside");
+    let result = core.check(outside);
+    assert_eq!(
+        result.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        result.reasons
+    );
+    assert!(result.decision_trace.path_targets.iter().any(|target| {
+        target.operation == PathTargetOperation::Write
+            && target.spelling.as_deref() == Some("/outside/messages.po")
+            && matches!(target.resolution, SemanticResolution::Unresolved { .. })
+    }));
+}
+
+#[test]
+fn unproved_xgettext_modes_keep_approval() {
+    let mut core = ShellQueryCore::new();
+    for (index, command) in [
+        "xgettext",
+        "xgettext -",
+        "xgettext ./fixture.xml",
+        "xgettext ./fixture.php --output=/outside/catalog.po",
+        "xgettext --files-from=./names.txt",
+        "xgettext \"$files\"",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let r = core.check(request(command, 1, &format!("xgettext-unknown-{index}")));
+        assert_ne!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+    }
+}
