@@ -104,6 +104,9 @@ modifiers:
 
 subcommands: null
 extensions:
+  # Both native implementations diagnose a trailing missing pattern before
+  # comparing inputs when the flag owns the removed word.
+  caushell.profile/terminal_missing_option_operand_flags: [-x, --exclude]
   caushell.profile/source_research:
     - https://www.gnu.org/software/diffutils/manual/html_node/diff-Options.html
     - https://www.gnu.org/software/diffutils/manual/html_node/Line-Formats.html

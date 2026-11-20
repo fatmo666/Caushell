@@ -2992,14 +2992,28 @@ pub fn materialize_argument_domain(
     {
         return None;
     }
+    let reference = exact_shell_parameter_reference(&arg.text);
+    if whole_double_quoted
+        && bindings.shell_kind() == caushell_types::ShellKind::Bash
+        && let Some(ShellParameterReference::PatternSubstitution {
+            parameter,
+            pattern,
+            replacement,
+            ..
+        }) = &reference
+    {
+        return substitute_within_path_anchor(
+            parameter_argument_domain(bindings, parameter)?.clone(),
+            pattern,
+            replacement,
+        );
+    }
     if whole_double_quoted || ordinary_field_separators {
         if let Some(domain) = removal_argument_domain(arg, bindings, whole_double_quoted) {
             return Some(domain);
         }
     }
-    if let Some(ShellParameterReference::Variable(name)) =
-        exact_shell_parameter_reference(&arg.text)
-    {
+    if let Some(ShellParameterReference::Variable(name)) = reference {
         return bindings
             .argument_domain(&name)
             .filter(|domain| {
@@ -3118,6 +3132,49 @@ fn removal_argument_domain(
         _ => domain.substitute_into(&template, MARKER),
     };
     (quoted || result.unquoted_generated_field()).then_some(result)
+}
+
+fn substitute_within_path_anchor(
+    domain: caushell_types::RuntimeArgumentDomain,
+    pattern: &str,
+    replacement: &str,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    use caushell_types::RuntimeArgumentDomain::PathSet;
+
+    let PathSet {
+        roots,
+        may_escape: false,
+        no_adjacent_slashes,
+        ..
+    } = domain
+    else {
+        return None;
+    };
+    // A match and its replacement both stay within one path component.
+    // Every changed component retains an alphanumeric byte, so it cannot
+    // become empty, "." or "..". Check anchors even with nocasematch set.
+    let alphanumeric =
+        |text: &str| !text.is_empty() && text.bytes().all(|byte| byte.is_ascii_alphanumeric());
+    if !alphanumeric(pattern) || !alphanumeric(replacement) {
+        return None;
+    }
+    let pattern = pattern.to_ascii_lowercase();
+    if roots.is_empty()
+        || roots.iter().any(|root| {
+            root.is_empty()
+                || !root.is_ascii()
+                || root.contains('\0')
+                || root.to_ascii_lowercase().contains(&pattern)
+        })
+    {
+        return None;
+    }
+    Some(PathSet {
+        roots,
+        may_escape: false,
+        basename_suffix: None,
+        no_adjacent_slashes,
+    })
 }
 
 pub fn materialize_recursive_payload_candidate(

@@ -30,6 +30,23 @@ pub struct ResolvedInvocationArtifact {
 }
 
 impl ResolvedInvocationArtifact {
+    /// Close effects of a standalone symbolic link. The caller has checked
+    /// request structure, redirections, and shell execution boundaries. A
+    /// supplied span identifies a quoted source capture known to produce one
+    /// empty or non-option field.
+    pub fn retain_standalone_symbolic_link_effects(
+        &mut self,
+        profile: &CommandProfile,
+        positional_capture: Option<&caushell_parse::SourceSpan>,
+    ) {
+        crate::native_effect_envelope::retain_standalone_symbolic_link_effects(
+            profile,
+            &self.materialized_projection,
+            &mut self.bound,
+            positional_capture,
+        );
+    }
+
     /// Positive scalar contract; only explicitly declared shape inputs may
     /// influence this guarantee. Other values remain data to the selected form.
     pub fn proven_arithmetic_stdout(&self) -> bool {
@@ -523,6 +540,9 @@ fn resolve_invocation_with_proofs<'a>(
                     crate::SubstitutionOutputProof::ScalarShape(shape) => {
                         arg.substitution_shape = Some(*shape);
                     }
+                    crate::SubstitutionOutputProof::DecimalPidFields => {
+                        arg.substitution_shape = Some(crate::StdoutScalarShape::ArithmeticText);
+                    }
                     crate::SubstitutionOutputProof::ArithmeticField { prefix, suffix } => {
                         arg.implicit_input_source =
                             Some(caushell_types::ImplicitInputSource::CommandSubstitution);
@@ -535,7 +555,20 @@ fn resolve_invocation_with_proofs<'a>(
                         arg.runtime_data = true;
                         arg.node_kind = "runtime_scalar".into();
                     }
-                    crate::SubstitutionOutputProof::LineCountQuit
+                    crate::SubstitutionOutputProof::LocalFilenameFields
+                        if profile.primary_name() == "touch"
+                            && profile.trust.source == crate::ProfileSourceKind::BuiltIn =>
+                    {
+                        arg.implicit_input_source =
+                            Some(caushell_types::ImplicitInputSource::CommandSubstitution);
+                        arg.runtime_argument_domain =
+                            Some(caushell_types::RuntimeArgumentDomain::LocalFilenameOrEmpty);
+                        arg.runtime_data = true;
+                        arg.node_kind = "runtime_argument_list".into();
+                    }
+                    crate::SubstitutionOutputProof::LocalFilenameFields
+                    | crate::SubstitutionOutputProof::LocalMovePathFields
+                    | crate::SubstitutionOutputProof::LineCountQuit
                     | crate::SubstitutionOutputProof::SedDayTemplate { .. } => {}
                 }
             }
@@ -704,8 +737,20 @@ fn resolve_invocation_with_proofs<'a>(
                 crate::native_effect_envelope::retain_sed_substitution(
                     profile, command, &projection, proofs, &mut bound,
                 );
+                crate::native_effect_envelope::retain_move_path_fields(
+                    profile, command, &materialized_projection.invocation, proofs, &mut bound,
+                );
+                crate::native_effect_envelope::retain_top_batch_pid_fields(
+                    profile, command, &materialized_projection.invocation, bindings, proofs,
+                    &mut bound,
+                );
             }
             crate::native_effect_envelope::close_symbolic_shell_argv(profile, &materialized_projection, &mut bound);
+            if !candidate_argv_only && !materialized_projection.shell_expansion_unresolved {
+                crate::native_effect_envelope::retain_chgrp_single_field_effects(
+                    profile, &materialized_projection, &mut bound,
+                );
+            }
             if candidate_argv_only {
                 // Retain possible hazardous effects from legacy IFS recovery,
                 // but never promote an unobserved shell state into exact argv,

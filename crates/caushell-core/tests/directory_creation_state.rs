@@ -356,3 +356,114 @@ fn restored_sessions_reobserve_directory_families_instead_of_reusing_proofs() {
                 && matches!(o.entry, FilesystemEntry::Symlink { .. }))
     );
 }
+
+#[test]
+fn single_field_symbolic_links_keep_an_authorized_write_family() {
+    let response = check(r#"ln -s "$source""#, Files::new());
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(response.decision_trace.path_targets.iter().any(|fact| {
+        fact.operation == PathTargetOperation::Write
+            && matches!(&fact.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, may_escape: false },
+            } if roots == &["/workspace"])
+    }));
+}
+
+#[test]
+fn symbolic_link_write_family_requires_a_standalone_call_and_stable_granted_cwd() {
+    for command in [
+        r#"ln -s $source"#,
+        r#"ln -sf "$source""#,
+        r#"ln -s "$source" destination"#,
+        r#"ln -s "$source" > report"#,
+        r#"ln -s "$source"; cat fixture"#,
+        r#"ln -s "$source" | cat"#,
+    ] {
+        let response = check(command, Files::new());
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+    }
+    let mut inaccessible = Files::new();
+    inaccessible.unavailable = true;
+    let response = check(r#"ln -s "$source""#, inaccessible);
+    assert_eq!(response.decision, Decision::NeedApproval);
+
+    let mut outside_request = request(r#"ln -s "$source""#);
+    outside_request.shell_state_before = ShellStateSnapshot::new("/outside");
+    let response = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(Files::new()))
+        .check(outside_request);
+    assert_eq!(response.decision, Decision::NeedApproval);
+}
+
+#[test]
+fn quoted_find_records_keep_the_symbolic_link_in_the_current_directory() {
+    for files in [
+        Files::new(),
+        Files::new()
+            .entry("/workspace/fixtures", FilesystemEntry::Directory)
+            .entry("/workspace/fixtures/member.bin", FilesystemEntry::File),
+    ] {
+        let result = check(r#"ln -s "$(find fixtures -name '*.bin')" ."#, files);
+        assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.operation == PathTargetOperation::Write
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &["/workspace"])
+        }));
+    }
+}
+
+#[test]
+fn symbolic_link_capture_requires_one_plain_path_producer_and_exact_destination() {
+    for command in [
+        r#"ln -s $(find fixtures -name '*.bin') ."#,
+        r#"ln -sf "$(find fixtures -name '*.bin')" ."#,
+        r#"ln -s "$(find fixtures -name '*.bin')" /outside"#,
+        r#"ln -s "$(printf '%s' "$unknown")" ."#,
+        r#"ln -s "$(find fixtures -name '*.bin' 2>&1)" ."#,
+        r#"ln -s "$(find fixtures -name '*.bin' -printf '%f')" ."#,
+        r#"ln -s "$(find fixtures -name '*.bin'; printf '%s' "$unknown")" ."#,
+    ] {
+        let result = check(command, Files::new());
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+}
+
+#[test]
+fn xargs_hexadecimal_directory_records_keep_the_cwd_bound() {
+    let result = check(
+        r"seq 4 | xargs -n2 printf '%02x/%02x\n' | xargs mkdir -p",
+        Files::new(),
+    );
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert!(result.decision_trace.path_targets.iter().any(|fact| {
+        fact.operation == PathTargetOperation::Write
+            && matches!(&fact.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, may_escape: false },
+            } if roots == &["/workspace"])
+    }));
+}
+
+#[test]
+fn hexadecimal_directory_records_require_an_unmixed_native_pipeline() {
+    for command in [
+        r"true; seq 4 | xargs -n2 printf '%02x/%02x\n' | xargs mkdir -p",
+        r"seq 4 | xargs -n2 printf '%s/%s\n' | xargs mkdir -p",
+        r"seq 4 | xargs -n2 printf '/%02x/%02x\n' | xargs mkdir -p",
+        r"seq 4 | xargs -n2 printf '%02x/%02x\n' |& xargs mkdir -p",
+        r"seq 4 | xargs -n2 printf '%02x/%02x\n' | xargs -0 mkdir -p",
+    ] {
+        let response = check(command, Files::new());
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+    }
+    let files = Files::new().entry(
+        "/workspace/02",
+        FilesystemEntry::Symlink { target: "/outside".into() },
+    );
+    let response = check(
+        r"seq 4 | xargs -n2 printf '%02x/%02x\n' | xargs mkdir -p",
+        files,
+    );
+    assert_eq!(response.decision, Decision::NeedApproval);
+}

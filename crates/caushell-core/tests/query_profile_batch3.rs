@@ -17,7 +17,15 @@ fn check(text: &str) -> CheckResponse {
 fn exact_original_requests_show_actual_corrections_separately_from_removed_diagnostics() {
     let rows = originals(); assert_eq!(rows.len(), 13);
     for (id, r) in rows {
-        let expected = if ["U00035", "U00081", "U04310", "U04313", "U04314", "U06278"].contains(&id.as_str()) { Decision::Allow } else { Decision::NeedApproval };
+        let expected = if [
+            "U00035", "U00081", "U00322", "U00323", "U04310", "U04313", "U04314", "U06278",
+        ]
+        .contains(&id.as_str())
+        {
+            Decision::Allow
+        } else {
+            Decision::NeedApproval
+        };
         let result = ShellQueryCore::new().check(r);
         assert_eq!(result.decision, expected, "{id}: {result:#?}");
     }

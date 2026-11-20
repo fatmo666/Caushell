@@ -235,6 +235,16 @@ pub(crate) fn substitution_shapes(
             let [substitution] = token.command_substitutions.as_slice() else {
                 return None;
             };
+            if shell_kind == ShellKind::Bash
+                && command.command_name.as_deref() == Some("touch")
+                && command.tokens.len() == 1
+                && command.prefix_assignments.is_empty()
+                && !command.in_pipeline
+                && !command.guarded
+                && calendar_filename_fields(registry, token, substitution, bindings, aliases, false)
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::LocalFilenameFields));
+            }
             let quoted = token.quoted && token.node_kind == "string";
             if shell_kind == ShellKind::Bash
                 && !token.quoted
@@ -249,6 +259,16 @@ pub(crate) fn substitution_shapes(
             let field = (shell_kind == ShellKind::Bash)
                 .then(|| arithmetic_field(token, substitution, bindings))
                 .flatten();
+            if field.is_none()
+                && shell_kind == ShellKind::Bash
+                && command.command_name.as_deref() == Some("mv")
+                && command.tokens.len() == 2
+                && !command.in_pipeline
+                && !command.guarded
+                && calendar_filename_fields(registry, token, substitution, bindings, aliases, true)
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::LocalMovePathFields));
+            }
             let legacy_shape = if quoted {
                 token
                     .text
@@ -293,6 +313,21 @@ pub(crate) fn substitution_shapes(
                 return None;
             };
             let shape = resolved.proven_stdout_scalar()?;
+            if shell_kind == ShellKind::Bash
+                && command.command_name.as_deref() == Some("top")
+                && !token.quoted
+                && token.text == substitution.text
+                && name == "pidof"
+                && !producer.command_name_runtime_data
+                && resolved.normalized_command_name == "pidof"
+                && resolved.bound.form_id.as_str() == "discover_processes"
+                && shape == StdoutScalarShape::ArithmeticText
+                && registry.lookup(name).profile.is_some_and(|profile| {
+                    profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+                })
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::DecimalPidFields));
+            }
             let proof = match (shape, field) {
                 (StdoutScalarShape::ArithmeticText, Some(field)) => field,
                 // The legacy absolute-path proof allows empty stdout only
@@ -307,6 +342,162 @@ pub(crate) fn substitution_shapes(
             Some((token.span.clone(), proof))
         })
         .collect()
+}
+
+/// In the default calendar format, the only possible sign is before the
+/// first year digit. The literal prefix keeps it in the initial filename or
+/// IFS consumes it. Other fields contain digits, the literal extension, or
+/// no bytes. Neither pathname generation nor option parsing can take over.
+fn calendar_filename_fields(
+    registry: &ProfileRegistry,
+    token: &CommandToken,
+    capture: &CommandSubstitutionFact,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+    directory_prefix: bool,
+) -> bool {
+    if token.text.len() > 8192 || capture.body_text.len() > 8192 {
+        return false;
+    }
+    let Some((parts, marker)) = substitution_word_parts(token, capture) else {
+        return false;
+    };
+    let [
+        ScalarArgumentPart::Literal(prefix),
+        ScalarArgumentPart::UnquotedCommandSubstitution(word),
+        ScalarArgumentPart::Literal(suffix),
+    ] = parts.as_slice()
+    else {
+        return false;
+    };
+    let prefix_name = if directory_prefix {
+        let Some(name) = prefix.strip_suffix('/') else {
+            return false;
+        };
+        name
+    } else {
+        prefix.as_str()
+    };
+    let name_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    if word != marker
+        || !prefix_name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        || !prefix_name.bytes().all(name_byte)
+        || !suffix.strip_prefix('.').is_some_and(|s| !s.is_empty() && s.bytes().all(name_byte))
+    {
+        return false;
+    }
+    let Ok(parsed) = parse_command(&capture.body_text, ShellKind::Bash) else {
+        return false;
+    };
+    let Some(producer) = plain_single_producer(&parsed) else {
+        return false;
+    };
+    let Some(name @ ("date" | "/bin/date" | "/usr/bin/date")) =
+        producer.command_name.as_deref()
+    else {
+        return false;
+    };
+    if producer.command_name_runtime_data || aliases.contains_key(name)
+        || bindings.function_binding(name).is_some() || bindings.profile_has_alias_shadow(name)
+        || !registry.lookup(name).profile.is_some_and(|p| {
+            p.primary_name() == "date" && p.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+        })
+    {
+        return false;
+    }
+    let decode = |argument: &CommandToken| {
+        caushell_parse::decode_static_shell_argument(
+            &argument.text, argument.quoted, &argument.node_kind,
+        )
+    };
+    let format = match producer.tokens.as_slice() {
+        [format] => decode(format),
+        [flag, expression, format] if directory_prefix
+            && decode(flag).as_deref() == Some("-d")
+            && decode(expression).is_some() => decode(format),
+        _ => None,
+    };
+    let Some(format) = format else {
+        return false;
+    };
+    let Some(rest) = format.strip_prefix("+%Y") else {
+        return false;
+    };
+    let chunks = rest.as_bytes().chunks_exact(2);
+    if rest.is_empty() || !chunks.remainder().is_empty()
+        || !chunks.into_iter().all(|part| matches!(part, b"%m" | b"%d" | b"%H" | b"%M" | b"%S"))
+    {
+        return false;
+    }
+    matches!(
+        resolve_invocation_artifact_with_bindings(
+            registry, producer, InvocationRuntimeContext::default(), bindings,
+        ),
+        ResolveInvocationArtifactResult::Resolved(r) if r.proven_arithmetic_stdout()
+    )
+}
+
+/// A whole quoted capture of a portable find path listing keeps the
+/// starting-point spelling at the start of any nonempty stdout. Newlines
+/// inside or between emitted names do not become additional shell fields.
+/// This provides no proof of which paths exist or what the capture contains.
+pub(crate) fn quoted_find_positional_capture(
+    registry: &ProfileRegistry,
+    token: &CommandToken,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+) -> Option<SourceSpan> {
+    let [capture] = token.command_substitutions.as_slice() else {
+        return None;
+    };
+    if token.runtime_data
+        || token.implicit_input_source.is_some()
+        || capture.body_text.len() > 8192
+        || !matches!(
+            caushell_parse::scalar_argument_parts(&token.text, token.quoted, &token.node_kind)
+                .as_deref(),
+            Some([ScalarArgumentPart::CommandSubstitution(text)]) if text == &capture.text
+        )
+        || aliases.contains_key("find")
+        || bindings.function_binding("find").is_some()
+        || bindings.profile_has_alias_shadow("find")
+        || !registry.lookup("find").profile.is_some_and(|profile| {
+            profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+        })
+    {
+        return None;
+    }
+    let parsed = parse_command(&capture.body_text, ShellKind::Bash).ok()?;
+    let producer = plain_single_producer(&parsed)?;
+    if producer.command_name.as_deref() != Some("find") || producer.command_name_runtime_data {
+        return None;
+    }
+    let argv = producer.tokens.iter().map(|arg| {
+        caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
+    }).collect::<Option<Vec<_>>>()?;
+    let [root, predicate, _, rest @ ..] = argv.as_slice() else {
+        return None;
+    };
+    // Limit this proof to the shared GNU and BSD grammar for file-name tests
+    // with implicit or explicit -print.
+    if !root.as_bytes().first().is_some_and(|b| {
+        b.is_ascii_alphanumeric() || matches!(*b, b'/' | b'.' | b'_')
+    }) || predicate != "-name"
+        || !(rest.is_empty() || matches!(rest, [print] if print == "-print"))
+    {
+        return None;
+    }
+    let ResolveInvocationArtifactResult::Resolved(resolved) =
+        resolve_invocation_artifact_with_bindings(
+            registry, producer, InvocationRuntimeContext::default(), bindings,
+        )
+    else {
+        return None;
+    };
+    let plan = resolved.native_stdout_record_plan()?.ok()?;
+    (plan.roots == [root.clone()]
+        && plan.record_encoding() == caushell_types::StreamRecordEncoding::Lines)
+        .then(|| capture.span.clone())
 }
 
 fn quoted_sed_day_template(

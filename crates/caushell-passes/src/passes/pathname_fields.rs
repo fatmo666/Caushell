@@ -1,18 +1,20 @@
 use caushell_parse::{CommandFact, ParsedCommandArtifact};
 use caushell_profile::{
-    ArgumentFieldLayout, ArgumentFieldsProof, ArgumentOwnership, BoundInvocation, BoundParameter,
-    BoundValue, Effect, EffectKind, EffectTarget, InvocationRuntimeContext, PathnamePattern,
-    ProfileRegistry, ProjectedArg, ResolveInvocationArtifactResult, ResolvedInvocationArtifact,
-    SemanticType, SessionBindings, ValueProjection,
-    resolve_invocation_artifact_with_argument_proofs,
+    ArgumentBindingSource, ArgumentFieldLayout, ArgumentFieldsProof, ArgumentOwnership,
+    BoundArgumentMaterialization, BoundInvocation, BoundParameter, BoundValue, CommandProfile,
+    Effect, EffectKind, EffectTarget, InvocationRuntimeContext, PathnamePattern, ProfileRegistry,
+    ProjectedArg,
+    ResolveInvocationArtifactResult, ResolvedInvocationArtifact, SemanticType, SessionBindings,
+    ValueProjection, resolve_invocation_artifact_with_argument_proofs,
 };
 use caushell_runner::{EffectiveCwd, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
-    Decision, DirectoryReadLimits, Evidence, EvidenceKind, FilesystemEntry, PathTargetAccess,
-    PathnameFieldsEvidence, RuleId, SemanticResolution, ShellEnvironmentValue as V, ShellKind,
+    Decision, DirectoryEntryKind, DirectoryReadLimits, Evidence, EvidenceKind, FilesystemEntry,
+    FilesystemObservation, PathNamespaceEffect, PathTargetAccess, PathnameFieldsEvidence,
+    PathnameSingleMatchBound, RuleId, SemanticResolution, ShellEnvironmentValue as V, ShellKind,
 };
 
-use crate::path::namespace::NamespaceResolver;
+use crate::path::{checked_metadata_mutation_for_target, namespace::NamespaceResolver};
 
 pub(super) fn observe(
     ctx: &mut RunnerContext,
@@ -45,6 +47,7 @@ pub(super) fn observe(
             exact_fields_required,
             fields: Vec::new(),
             unmatched_literal: None,
+            single_match_bound: None,
             shell_options: bindings.pathname_options().cloned(),
             environment_observations: Vec::new(),
             namespace_observations: Vec::new(),
@@ -89,6 +92,7 @@ pub(super) fn observe(
             proof.exact_fields_required = true;
             proof.fields.clear();
             proof.unmatched_literal = None;
+            proof.single_match_bound = None;
             proof.gap = Some("pathname argv budget exceeded".into());
         }
     }
@@ -96,16 +100,18 @@ pub(super) fn observe(
 }
 
 /// Represent the possible target effects of a simple native invocation.
-/// Both argv layouts must bind normally. The failglob outcome has no native
+/// Every possible argv layout must bind normally. The failglob outcome has no native
 /// effects, and the enclosing shell and pipeline still use the usual analysis.
-pub(super) fn unmatched_effects(
+pub(super) fn possible_pathname_effects(
     registry: &ProfileRegistry,
     parsed: &ParsedCommandArtifact,
     command: &CommandFact,
     context: InvocationRuntimeContext,
     bindings: &SessionBindings,
     original: &ResolvedInvocationArtifact,
-    proofs: &[PathnameFieldsEvidence],
+    proofs: &mut [PathnameFieldsEvidence],
+    ctx: &mut RunnerContext,
+    writes_after_expansion: bool,
 ) -> Option<ResolvedInvocationArtifact> {
     if proofs.len() > 256
         || parsed.status != caushell_parse::ParseStatus::Complete
@@ -138,11 +144,21 @@ pub(super) fn unmatched_effects(
     {
         return None;
     }
-    // Apply one correlated option choice to every unmatched word in the invocation.
+    let mut single_matches = proofs.iter().enumerate().filter_map(|(index, proof)| {
+        proof.single_match_bound.as_ref().map(|bound| (index, bound))
+    });
+    let single_match = single_matches.next();
+    // Multiple matching words need additional correlated layouts. Retain their
+    // gap until every admissible layout and its effects can be represented.
+    if single_matches.next().is_some() {
+        return None;
+    }
     let mut layouts = proofs
         .iter()
         .map(|proof| {
-            let literal = proof.unmatched_literal.as_ref()?;
+            let literal = proof.unmatched_literal.as_ref().or_else(|| {
+                proof.single_match_bound.as_ref().map(|bound| &bound.literal)
+            })?;
             let arg = original.projection.args.iter().find(|arg| {
                 arg.span.start_byte == proof.start_byte
                     && arg.span.end_byte == proof.end_byte
@@ -155,8 +171,12 @@ pub(super) fn unmatched_effects(
             })
         })
         .collect::<Option<Vec<_>>>()?;
+    let missing_option_operand = |invocation: &ResolvedInvocationArtifact| {
+        parsed.commands.len() == 1
+            && terminal_missing_option_operand(profile, invocation, proofs)
+    };
     let resolve = |layouts: &[ArgumentFieldsProof]| {
-        let ResolveInvocationArtifactResult::Resolved(resolved) =
+        let ResolveInvocationArtifactResult::Resolved(mut resolved) =
             resolve_invocation_artifact_with_argument_proofs(
                 registry,
                 command,
@@ -177,22 +197,23 @@ pub(super) fn unmatched_effects(
             || !bound.payload_projections.is_empty()
             || !bound.argument_regions.is_empty()
             || !bound.bound_implicit_inputs.is_empty()
-            || !bound.effects.iter().all(supports_effect_union)
+            || !bound
+                .effects
+                .iter()
+                .all(|effect| {
+                    supports_effect_union(bound, effect, single_match.is_none())
+                        || (effect.kind == EffectKind::TransformData
+                            && effect.target == EffectTarget::None
+                            && (missing_option_operand(&resolved)
+                                || (single_match.is_none() && writes_after_expansion)))
+                })
         {
             return None;
         }
-        Some(resolved)
-    };
-    let mut retained = resolve(&layouts)?;
-    for layout in &mut layouts {
-        layout.layout = ArgumentFieldLayout::Exact(Vec::new());
-    }
-    let mut removed = resolve(&layouts)?;
-    // Ownership certificates for unresolved lexical paths are allocated only
-    // when needed. Keep the bound operands, and discard certificates that
-    // cannot represent an exact shared argv for both layouts.
-    for bound in [&mut retained.bound, &mut removed.bound] {
-        for value in bound
+        // Branch bindings use alternative argv coordinates. Their concrete
+        // targets are useful, but their ownership certificates are not shared.
+        for value in resolved
+            .bound
             .bound_parameters
             .iter_mut()
             .flat_map(|p| &mut p.values)
@@ -201,10 +222,52 @@ pub(super) fn unmatched_effects(
                 *ownership = ArgumentOwnership::Unproven;
             }
         }
+        Some(resolved)
+    };
+    let mut empty = layouts.clone();
+    for layout in &mut empty {
+        layout.layout = ArgumentFieldLayout::Exact(Vec::new());
     }
-    if !merge_target_effects(&mut retained.bound, &removed.bound) {
-        return None;
-    }
+    let mut retained = if let Some((index, bound)) = single_match {
+        // Bind an upper bound of path operands, then require each real argv
+        // branch to keep the same options and contribute only its targets.
+        let mut upper = layouts.clone();
+        upper[index].layout =
+            ArgumentFieldLayout::Exact(vec![bound.literal.clone(), bound.possible_match.clone()]);
+        let mut retained = resolve(&upper)?;
+        if !retained
+            .bound
+            .effects
+            .iter()
+            .all(|e| matches!(e.target, EffectTarget::Slot(_)))
+        {
+            return None;
+        }
+        for layout in [&mut layouts, &mut empty] {
+            if !merge_target_effects(&mut retained.bound, &resolve(layout)?.bound) {
+                return None;
+            }
+            // When the match survives dotglob/GLOBIGNORE, other unmatched
+            // words either keep their literals or disappear under nullglob.
+            layout[index].layout = ArgumentFieldLayout::Exact(vec![bound.possible_match.clone()]);
+            if !merge_target_effects(&mut retained.bound, &resolve(layout)?.bound) {
+                return None;
+            }
+        }
+        retained
+    } else {
+        let mut retained = resolve(&layouts)?;
+        if let Some(removed) = resolve(&empty) {
+            if !merge_target_effects(&mut retained.bound, &removed.bound) {
+                return None;
+            }
+        } else if !missing_option_operand(&retained) {
+            return None;
+        }
+        retained
+    };
+
+    confirm_leaf_targets(ctx, proofs, &retained.bound)?;
 
     // Neither native argv nor output shape is exact. Retain the original
     // projection and never pass a counterfactual argv downstream as observed.
@@ -218,19 +281,76 @@ pub(super) fn unmatched_effects(
     Some(retained)
 }
 
-fn supports_effect_union(effect: &Effect) -> bool {
+/// A reviewed native option can stop at a missing trailing operand. The full
+/// layout still supplies all possible input effects of the comparison.
+fn terminal_missing_option_operand(
+    profile: &CommandProfile,
+    invocation: &ResolvedInvocationArtifact,
+    proofs: &[PathnameFieldsEvidence],
+) -> bool {
+    let [proof] = proofs else {
+        return false;
+    };
+    let args = &invocation.materialized_projection.invocation.args;
+    let [.., flag, operand] = args.as_slice() else {
+        return false;
+    };
+    let Some(flags) = profile
+        .extensions
+        .get("caushell.profile/terminal_missing_option_operand_flags")
+        .and_then(serde_json::Value::as_array)
+    else {
+        return false;
+    };
+    let flag_shape = caushell_profile::argument_structure(flag);
+    let Some(flag_name) = flag_shape.exact_value() else {
+        return false;
+    };
+    let bound = &invocation.bound;
+    proof.unmatched_literal.as_deref() == Some(operand.text.as_str())
+        && proof.start_byte == operand.span.start_byte
+        && proof.end_byte == operand.span.end_byte
+        && flags.iter().any(|item| item.as_str() == Some(flag_name))
+        && args.iter().all(|arg| caushell_profile::argument_structure(arg).exact_value().is_some())
+        && bound.effects.iter().all(super::symbolic_native_inputs::read_effect)
+        && bound.bound_parameters.iter().any(|parameter| {
+            matches!(parameter.semantic, SemanticType::PlainValue)
+                && parameter.structured_projection.is_none()
+                && parameter.value_projection.is_none()
+                && parameter.values.iter().any(|value| {
+                    matches!(value, BoundValue::Argument {
+                        span,
+                        binding_source: ArgumentBindingSource::MatchedModifierFlag {
+                            flag_name: source, flag_span, ..
+                        }, ..
+                    } if *span == operand.span && *flag_span == flag.span && source.as_str() == flag_name)
+                })
+        })
+}
+
+fn supports_effect_union(bound: &BoundInvocation, effect: &Effect, all_unmatched: bool) -> bool {
     if effect.path_list.is_some()
         || effect.runtime_input_binding.is_some()
-        || effect.namespace_effect.is_some()
         || effect.resource_namespace.is_some()
     {
         return false;
+    }
+    if effect.namespace_effect.is_some() {
+        return all_unmatched
+            && bound.effects.len() == 1
+            && matches!(&effect.target, EffectTarget::Slot(_))
+            && is_regular_file_write(effect);
     }
     match (&effect.kind, &effect.target) {
         (
             EffectKind::ReadPath | EffectKind::ChangeMode | EffectKind::ConsumeStdin,
             EffectTarget::Slot(_),
         ) => true,
+        (
+            EffectKind::ChangeOwner | EffectKind::ChangeGroup | EffectKind::MetadataMutation,
+            EffectTarget::Slot(_),
+        ) => checked_metadata_mutation_for_target(bound, effect)
+            .is_some_and(|mutation| mutation.recursive),
         (EffectKind::ReadPath, EffectTarget::ConfiguredPath(target)) => {
             target.only_when_sources_absent
                 && target
@@ -248,6 +368,109 @@ fn supports_effect_union(effect: &Effect) -> bool {
         }
         _ => false,
     }
+}
+
+fn is_regular_file_write(effect: &Effect) -> bool {
+    effect.kind == EffectKind::WritePath
+        && effect.namespace_effect == Some(PathNamespaceEffect::RegularFileWrite)
+}
+
+/// Confirm that each recursive metadata or regular-file write target is a
+/// regular or absent leaf in the same snapshot that bounded the glob.
+fn confirm_leaf_targets(
+    ctx: &mut RunnerContext,
+    proofs: &mut [PathnameFieldsEvidence],
+    bound: &BoundInvocation,
+) -> Option<()> {
+    let slots = bound
+        .effects
+        .iter()
+        .filter_map(|effect| {
+            let EffectTarget::Slot(slot) = &effect.target else {
+                return None;
+            };
+            (is_regular_file_write(effect)
+                || checked_metadata_mutation_for_target(bound, effect)
+                    .is_some_and(|mutation| mutation.recursive))
+            .then_some(slot)
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    if slots.is_empty() {
+        return Some(());
+    }
+    let proof = proofs.first_mut()?;
+    let cwd = proof.cwd.as_deref()?;
+    let view = ctx.filesystem_view();
+    let (resolved, observations) =
+        NamespaceResolver::new(view.clone()).resolve(cwd, PathTargetAccess::Follow);
+    let SemanticResolution::Resolved { value } = resolved else {
+        return None;
+    };
+    if !observations
+        .iter()
+        .all(|o| proof.namespace_observations.contains(o))
+    {
+        return None;
+    }
+    let directory = value.concrete_path()?;
+    let read = ctx.read_directory(directory, 0);
+    if !proof.directory_observations.contains(&read.observation) {
+        return None;
+    }
+    let entries = read.complete_entries(directory, DirectoryReadLimits::default())?;
+    let mut leaf_observations = Vec::new();
+    for slot in slots {
+        let parameter = bound.bound_parameters.iter().find(|p| &p.name == slot)?;
+        if !matches!(parameter.semantic, SemanticType::Path(_))
+            || parameter.value_projection.is_some()
+            || parameter.structured_projection.is_some()
+            || parameter.structured_source.is_some()
+            || parameter.projected_values.is_some()
+            || parameter.values.is_empty()
+        {
+            return None;
+        }
+        for target in &parameter.values {
+            let BoundValue::Argument {
+                text,
+                quoted,
+                node_kind,
+                materialization,
+                ..
+            } = target
+            else {
+                return None;
+            };
+            let name = text.strip_prefix("./").unwrap_or(text);
+            if matches!(name, "" | "." | "..")
+                || name.contains(['/', '\0'])
+                || (*materialization == BoundArgumentMaterialization::Literal
+                    && caushell_profile::shell_word_structure(text, *quoted, node_kind)
+                        .exact_value() != Some(text.as_str()))
+            {
+                return None;
+            }
+            let path = format!("{}/{name}", directory.trim_end_matches('/'));
+            let entry = view.entry(&path);
+            // A spelling absent from the listing can still resolve to an
+            // existing entry on a case-insensitive filesystem.
+            let listed = entries.iter().find(|item| item.name == name);
+            if !matches!(
+                (listed.map(|item| item.kind), &entry),
+                (Some(DirectoryEntryKind::File), FilesystemEntry::File)
+                    | (None, FilesystemEntry::Missing)
+            ) {
+                return None;
+            }
+            leaf_observations.push(FilesystemObservation {
+                source: view.source(),
+                path,
+                entry,
+            });
+        }
+    }
+    proof.namespace_observations.extend(leaf_observations);
+    Some(())
 }
 
 fn merge_target_effects(retained: &mut BoundInvocation, removed: &BoundInvocation) -> bool {
@@ -354,8 +577,17 @@ fn expand(
             // An absent cwd or a metadata-only view can yield no paths
             // before pathname matching begins. Require a completed read in
             // the execution namespace before using the negative result.
-            if matches.is_empty() && !proof.directory_observations.is_empty() {
-                proof.unmatched_literal = Some(pattern.literal.clone());
+            if !proof.directory_observations.is_empty() {
+                match matches.as_slice() {
+                    [] => proof.unmatched_literal = Some(pattern.literal.clone()),
+                    [possible_match] => {
+                        proof.single_match_bound = Some(PathnameSingleMatchBound {
+                            literal: pattern.literal.clone(),
+                            possible_match: possible_match.clone(),
+                        });
+                    }
+                    _ => {}
+                }
             }
         }
         return Err("pathname shell options are not observed".into());
@@ -579,8 +811,10 @@ impl SessionTransformPass for ValidatePathnameFieldsPass {
             })
             .collect::<Vec<_>>();
         for proof in proofs {
-            let used_no_match_bound = proof.unmatched_literal.is_some() && proof.gap.is_none();
-            if !proof.complete && !proof.exact_fields_required && !used_no_match_bound {
+            let used_match_bound =
+                (proof.unmatched_literal.is_some() || proof.single_match_bound.is_some())
+                    && proof.gap.is_none();
+            if !proof.complete && !proof.exact_fields_required && !used_match_bound {
                 continue;
             }
             if let Err(reason) = proof

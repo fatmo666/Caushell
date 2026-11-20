@@ -25,6 +25,9 @@ forms:
     parameters: [{name: information_args, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent}
   - id: split_with_prefix
+    # Ordinary line splitting opens its named outputs after reading input.
+    # Numbered chunk modes and filters are outside this declaration.
+    extensions: {caushell.form/stdin_before_output_flags: ["-d", "-l", "--lines"]}
     remaining_selector: &running {kind: not, item: {kind: has_modifier, modifier: information}}
     selector:
       kind: all

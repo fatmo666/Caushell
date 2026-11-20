@@ -622,7 +622,9 @@ pub(crate) fn collect_invocation_mutation_targets(
                     implicit_incidental_cache: false,
                     operation: effect.kind,
                     slot_name: tool_convention_slot_name(effect_index, &target.convention),
-                    resolution: resolve_tool_convention_path(target, cwd),
+                    resolution: effect_path_scope(
+                        effect, bound, resolve_tool_convention_path(target, cwd),
+                    ),
                     cwd_dependent: !target.path.starts_with('/'),
                 });
             }
@@ -1261,7 +1263,9 @@ fn collect_effect_target_path_facts(
                 semantic_slot: None,
                 normalized_command_name: normalized_command_name.to_string(),
                 content_selector: None,
-                resolution: resolve_tool_convention_path(target, cwd),
+                resolution: effect_path_scope(
+                    effect, invocation, resolve_tool_convention_path(target, cwd),
+                ),
                 cwd_dependent: !target.path.starts_with('/'),
                 role,
                 purpose: target.purpose,

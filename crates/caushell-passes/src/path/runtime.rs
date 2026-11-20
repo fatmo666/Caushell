@@ -22,6 +22,12 @@ pub(crate) enum RootMembership {
 pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<RuntimePathBounds<'_>> {
     match domain {
         RuntimeArgumentDomain::Unbounded | RuntimeArgumentDomain::TextTemplate { .. } => None,
+        RuntimeArgumentDomain::HexadecimalRelativePath
+        | RuntimeArgumentDomain::LocalFilenameOrEmpty => Some(RuntimePathBounds {
+            roots: Cow::Owned(vec!["./".to_string()]),
+            may_escape: false,
+            root_membership: RootMembership::StrictDescendants,
+        }),
         RuntimeArgumentDomain::ArithmeticTemplate { prefix, suffix } => {
             let (parent, basename_prefix) = match prefix.rsplit_once('/') {
                 Some(("", leaf)) => ("/", leaf),

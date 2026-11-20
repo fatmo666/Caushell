@@ -377,3 +377,44 @@ fn bare_and_attached_temporal_layouts_keep_the_union_of_writes() {
     );
     assert!(!workspace.0.join("report.txt").exists());
 }
+
+#[test]
+fn split_calendar_output_keeps_all_touch_targets_in_the_workspace() {
+    let workspace = SubstitutionWorkspace::new();
+    for (command, ifs) in [
+        (r#"touch report_`/bin/date +%Y%m%d%H%M`.dat"#, None),
+        (r#"touch report_$(date +%Y%m%d%H%M).dat"#, Some("0-1")),
+    ] {
+        let result = workspace.check(command, ifs);
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|target| {
+            target.operation == PathTargetOperation::Write && matches!(
+                &target.resolution,
+                SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &[workspace.0.to_string_lossy().into_owned()]
+            )
+        }));
+    }
+}
+
+#[test]
+fn split_calendar_filenames_require_literal_anchors_and_a_stable_namespace() {
+    let workspace = SubstitutionWorkspace::new();
+    for command in [
+        r#"touch ../report_$(date +%Y%m%d).dat"#,
+        r#"touch $(date +%Y%m%d).dat"#,
+        r#"touch report_$(date +%Y/%m/%d).dat"#,
+        r#"touch report_$(date +%Y%m%d 2>&1).dat"#,
+        r#"touch report_$(date +%Y%m%d).dat /outside/other"#,
+    ] {
+        let result = workspace.check(command, None);
+        assert_ne!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/outside/file", workspace.0.join("report_1.dat")).unwrap();
+        let result = workspace.check("touch report_$(date +%Y%m%d).dat", None);
+        assert_ne!(result.decision, Decision::Allow);
+    }
+}

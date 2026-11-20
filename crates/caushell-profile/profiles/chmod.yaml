@@ -16,7 +16,6 @@ forms:
           items:
             - {"kind":"not","item":{"kind":"has_modifier","modifier":"reference"}}
             - {"kind":"not","item":{"kind":"has_modifier","modifier":"information"}}
-            - {"kind":"not","item":{"kind":"has_modifier","modifier":"recursive"}}
             - kind: "any"
               items:
                 - {"kind":"no_positional_args"}
@@ -133,6 +132,7 @@ modifiers:
     effects: [{"kind":"target_path","target":{"kind":"slot","name":"reference_path"}}]
   - id: "recursive"
     matcher: {"kind":"any_flag","flags":["-R","--recursive"]}
+    effects_when: {unless_forms: [missing_targets]}
     effects: [{"kind":"metadata_mutation","target":{"kind":"slot","name":"path_targets"},"extensions":{"metadata_mutation.recursive":true}}]
   - {"id":"quiet","matcher":{"kind":"any_flag","flags":["-f","--silent","--quiet"]}}
 subcommands: null

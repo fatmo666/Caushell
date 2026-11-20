@@ -25,6 +25,7 @@ struct Files {
     dirs: BTreeMap<String, Vec<DirectoryEntry>>,
     failure: Option<DirectoryReadStatus>,
     changed: bool,
+    case_insensitive: bool,
     calls: AtomicUsize,
 }
 impl Files {
@@ -35,10 +36,10 @@ impl Files {
                 .enumerate()
                 .map(|(i, n)| DirectoryEntry {
                     name: (*n).into(),
-                    kind: if *n == "sub" {
-                        DirectoryEntryKind::Directory
-                    } else {
-                        DirectoryEntryKind::File
+                    kind: match *n {
+                        "sub" => DirectoryEntryKind::Directory,
+                        ".link" => DirectoryEntryKind::Symlink,
+                        _ => DirectoryEntryKind::File,
                     },
                     identity: identity(i as u64 + 10),
                 })
@@ -51,6 +52,7 @@ impl Files {
             ]),
             failure: None,
             changed: false,
+            case_insensitive: false,
             calls: AtomicUsize::new(0),
         }
     }
@@ -63,10 +65,16 @@ impl FilesystemView for Files {
         for (parent, names) in &self.dirs {
             if let Some(entry) = names
                 .iter()
-                .find(|e| format!("{parent}/{}", e.name) == path)
+                .find(|e| {
+                    let spelling = format!("{parent}/{}", e.name);
+                    spelling == path || self.case_insensitive && spelling.eq_ignore_ascii_case(path)
+                })
             {
                 return match entry.kind {
                     DirectoryEntryKind::Directory => FilesystemEntry::Directory,
+                    DirectoryEntryKind::Symlink => FilesystemEntry::Symlink {
+                        target: "sub".into(),
+                    },
                     _ => FilesystemEntry::File,
                 };
             }
@@ -673,6 +681,263 @@ fn possible_matches_and_stale_directory_observations_cannot_close_the_bound() {
     let outcome = check(without_pathname_options("file *.php"), files);
     assert!(proofs(&outcome)[0].gap.is_some());
     assert_ne!(outcome.decision, Decision::Allow);
+}
+
+#[test]
+fn single_possible_match_preserves_all_path_operands_without_exact_argv() {
+    for command in ["file * | grep ASCII", "chmod g+w * ...*"] {
+        let response = check(without_pathname_options(command), Files::new(&[".hidden"]));
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(proofs(&response).iter().all(|proof| {
+            !proof.complete && proof.fields.is_empty() && proof.gap.is_none()
+        }));
+        assert!(proofs(&response).iter().any(|proof| {
+            proof.single_match_bound.as_ref().is_some_and(|bound| {
+                bound.literal == "*" && bound.possible_match == ".hidden"
+            })
+        }));
+        if command.starts_with("chmod") {
+            assert!(response.decision_trace.path_targets.iter().any(|target| {
+                matches!(&target.resolution, SemanticResolution::Resolved { value }
+                    if value.concrete_path() == Some("/workspace/.hidden"))
+            }));
+        }
+    }
+}
+
+#[test]
+fn single_possible_match_requires_complete_membership_and_independent_data_operands() {
+    for names in [&["-fixture.txt"][..], &["alpha.txt", "beta.txt"][..]] {
+        let response = check(without_pathname_options("file *.txt"), Files::new(names));
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{names:?}: {:?}",
+            response.reasons
+        );
+    }
+    let mut files = Files::new(&[".hidden"]);
+    files.changed = true;
+    let response = check(without_pathname_options("file *"), files);
+    assert_eq!(response.decision, Decision::NeedApproval);
+}
+
+#[test]
+fn recursive_metadata_keeps_leaf_targets_and_the_empty_layout() {
+    for command in ["chmod -R u+r *", "chown -R 2000:2000 *", "chgrp -R 2000 *"] {
+        let response = check(without_pathname_options(command), Files::new(&[".leaf"]));
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            response.reasons
+        );
+        assert!(response.decision_trace.path_targets.iter().any(|target| {
+            matches!(&target.resolution, SemanticResolution::Resolved { value }
+                if value.concrete_path() == Some("/workspace/.leaf"))
+                && target.metadata_mutation.as_ref().is_some_and(|effect| effect.recursive)
+        }));
+        assert!(proofs(&response).iter().all(|proof| {
+            !proof.complete && proof.fields.is_empty() && proof.gap.is_none()
+        }));
+    }
+}
+
+#[test]
+fn recursive_metadata_requires_leaf_targets_for_every_layout() {
+    for command in ["chmod -R u+r *", "chown -R 2000:2000 *", "chgrp -R 2000 *"] {
+        for name in ["sub", ".link"] {
+            let response = check(without_pathname_options(command), Files::new(&[name]));
+            assert_eq!(
+                response.decision,
+                Decision::NeedApproval,
+                "{command} with {name}"
+            );
+        }
+        let mut files = Files::new(&[".leaf"]);
+        files.changed = true;
+        let response = check(without_pathname_options(command), files);
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}");
+    }
+    let mut files = Files::new(&["sub", ".leaf"]);
+    files.case_insensitive = true;
+    let response = check(without_pathname_options("chmod -R u+r SUB .l*"), files);
+    let observed = proofs(&response);
+    assert_eq!(observed.len(), 1);
+    assert!(observed[0].single_match_bound.is_some() && observed[0].gap.is_some());
+}
+
+#[test]
+fn unmatched_glob_keeps_a_possible_regular_file_write() {
+    let response = check(
+        without_pathname_options("touch -d '2001-02-03T04:05:06' *.fixture"),
+        Files::new(&["ordinary"]),
+    );
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    let observed = proofs(&response);
+    assert_eq!(observed.len(), 1);
+    let proof = observed[0];
+    assert_eq!(proof.unmatched_literal.as_deref(), Some("*.fixture"));
+    assert!(proof.gap.is_none() && !proof.complete && proof.fields.is_empty());
+    assert!(response.decision_trace.path_targets.iter().any(|target| {
+        target.operation == PathTargetOperation::Write
+            && matches!(&target.resolution, SemanticResolution::Resolved { value }
+                if value.concrete_path() == Some("/workspace/*.fixture"))
+    }));
+}
+
+#[test]
+fn possible_regular_file_write_requires_a_stable_local_leaf() {
+    let command = "touch -d '2001-02-03T04:05:06' *.fixture";
+    for name in ["sub", ".link"] {
+        let response = check(
+            without_pathname_options(&format!("{command} {name}")),
+            Files::new(&[name]),
+        );
+        assert_eq!(response.decision, Decision::NeedApproval, "{name}");
+        assert!(proofs(&response)[0].gap.is_some());
+    }
+    let mut files = Files::new(&["ordinary"]);
+    files.changed = true;
+    let response = check(without_pathname_options(command), files);
+    assert_eq!(response.decision, Decision::NeedApproval);
+    assert!(proofs(&response)[0].gap.is_some());
+    let response = check(
+        without_pathname_options(command),
+        Files::new(&["one.fixture"]),
+    );
+    assert_eq!(response.decision, Decision::NeedApproval);
+}
+
+#[test]
+fn unmatched_trailing_option_value_keeps_the_comparison_read_paths() {
+    for flag in ["-x", "--exclude"] {
+        let result = check(
+            without_pathname_options(&format!("diff left right -r {flag} *.fixture")),
+            Files::new(&["left", "right"]),
+        );
+        assert_eq!(result.decision, Decision::Allow, "{flag}: {:?}", result.reasons);
+        let proof = proofs(&result)[0];
+        assert_eq!(proof.unmatched_literal.as_deref(), Some("*.fixture"));
+        assert!(!proof.complete && proof.gap.is_none() && proof.fields.is_empty());
+    }
+}
+
+#[test]
+fn terminal_option_diagnostic_requires_the_reviewed_flag_and_operand_position() {
+    for command in [
+        "diff left right -r -X *.fixture",
+        "diff left right -r -X -x *.fixture",
+        "diff left right -I *.fixture",
+        "diff left -x *.fixture right",
+        "diff left right -x *.fixture | cat",
+        "diff left right -x *.fixture > /outside/result",
+    ] {
+        let response = check(without_pathname_options(command), Files::new(&["left", "right"]));
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}: {:?}", response.reasons);
+    }
+}
+
+#[test]
+fn glob_observation_precedes_a_line_splitter_receiving_its_output() {
+    let result = check(
+        without_pathname_options("sort -m *.fixture | split -d -l 2 - chunk-"),
+        Files::new(&["ordinary"]),
+    );
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert!(proofs(&result).iter().any(|proof| {
+        proof.unmatched_literal.as_deref() == Some("*.fixture")
+            && !proof.complete
+            && proof.gap.is_none()
+    }));
+    assert!(result.decision_trace.path_targets.iter().any(|target| {
+        matches!(&target.lexical, PathResolution::FileNamePrefix { prefix, .. } if prefix == "chunk-")
+    }));
+}
+
+#[test]
+fn glob_pipeline_order_requires_direct_stdin_and_reviewed_output_mode() {
+    for command in [
+        "sort -m *.fixture | split -n 2 - chunk-",
+        "sort -m *.fixture | split -d -l 2 ordinary chunk-",
+        "sort -m *.fixture |& split -d -l 2 - chunk-",
+        "sort -m *.fixture | cat | split -d -l 2 - chunk-",
+        "sort -m *.fixture > copy | split -d -l 2 - chunk-",
+        "sort -m *.fixture | split -d -l 2 - /outside/chunk-",
+    ] {
+        let result = check(without_pathname_options(command), Files::new(&["ordinary"]));
+        assert_ne!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+    }
+}
+
+#[test]
+fn read_only_process_substitution_siblings_share_the_directory_observation() {
+    let response = check(
+        without_pathname_options(
+            "comm -3 <(printf '%s\\n' */ | sed 's|/.*||' | sort) <(find */ -type d -name example | cut -d/ -f1 | uniq)",
+        ),
+        Files::new(&["ordinary"]),
+    );
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(proofs(&response).iter().any(|proof| {
+        proof.unmatched_literal.as_deref() == Some("*/") && !proof.complete && proof.gap.is_none()
+    }));
+}
+
+#[test]
+fn directory_glob_keeps_the_gap_for_unproved_process_substitution_effects() {
+    let stable = "comm -3 <(printf '%s\\n' ordinary) <(find */ -type d -name example)";
+    for command in [
+        "comm -3 <(mkdir example) <(find */ -type d -name example)",
+        "comm -3 <(printf '%s\\n' ordinary > note) <(find */ -type d -name example)",
+        "comm -3 <(printf '%s\\n' ordinary | sed 'w note') <(find */ -type d -name example)",
+        "comm -3 <(printf '%s\\n' ordinary | sed -f script) <(find */ -type d -name example)",
+        "comm -3 <(printf '%s\\n' ordinary) <(find */ -type d -name example | tee note)",
+        "comm -3 >(cat) <(find */ -type d -name example)",
+        "comm -3 <(cat <(printf '%s\\n' ordinary)) <(find */ -type d -name example)",
+    ] {
+        let response = check(without_pathname_options(command), Files::new(&["ordinary"]));
+        assert_ne!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+    }
+    let mut files = Files::new(&["ordinary"]);
+    files.changed = true;
+    let response = check(without_pathname_options(stable), files);
+    assert_ne!(response.decision, Decision::Allow, "{:?}", response.reasons);
+}
+
+#[test]
+fn quoted_group_word_can_only_mutate_the_fixed_chgrp_target() {
+    let response = check(
+        request("chgrp \"$UNKNOWN_GROUP\" ordinary"),
+        Files::new(&["ordinary"]),
+    );
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(response.decision_trace.path_targets.iter().any(|target| {
+        matches!(&target.resolution, SemanticResolution::Resolved { value }
+            if value.concrete_path() == Some("/workspace/ordinary"))
+            && target.metadata_mutation.as_ref().is_some_and(|mutation| {
+                mutation.mutation_kinds == [PathMetadataMutationKind::ChangeGroup]
+                    && !mutation.recursive && mutation.raw_operand.is_none()
+            })
+    }));
+}
+
+#[test]
+fn chgrp_keeps_other_argument_shapes_and_external_targets_guarded() {
+    for command in [
+        "chgrp $UNKNOWN_GROUP ordinary",
+        "chgrp \"$@\" ordinary",
+        "chgrp \"$UNKNOWN_GROUP\" ordinary other",
+        "chgrp \"$UNKNOWN_GROUP\" /outside/ordinary",
+    ] {
+        let response = check(request(command), Files::new(&["ordinary", "other"]));
+        assert_ne!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+    }
 }
 
 #[test]

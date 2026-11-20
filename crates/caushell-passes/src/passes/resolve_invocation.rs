@@ -1388,23 +1388,64 @@ fn collect_top_level_command_resolve_records(
             continue;
         }
 
+        let mut result = caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
+            registry,
+            &resolved_command,
+            runtime_context_for_top_level_command(parsed, command_index, &resolved_command),
+            &variable_overlay,
+            &crate::support::substitution_shapes(
+                registry,
+                &resolved_command,
+                request.shell_kind,
+                &variable_overlay,
+                &alias_overlay,
+                max_nested_parse_depth,
+            ),
+        );
+        if command.command_name.as_deref() == Some("ln")
+            && !command.command_name_runtime_data
+            && command == &resolved_command
+            && parsed.status == caushell_parse::ParseStatus::Complete
+            && parsed.diagnostics.is_empty()
+            && parsed.commands.len() == 1
+            && parsed.redirections.is_empty()
+            && command.text.trim() == parsed.raw_command.trim()
+            && !command.in_pipeline
+            && !command.guarded
+            && !command.conditional_execution
+            && command.terminator.is_none()
+            && command.prefix_assignments.is_empty()
+            && caushell_parse::parse_process_substitutions(&parsed.raw_command, parsed.shell_kind)
+                .is_ok_and(|substitutions| substitutions.is_empty())
+            && let Some(profile) = registry.lookup("ln").profile
+            && let ResolveInvocationArtifactResult::Resolved(resolved) = &mut result
+        {
+            let positional_capture = if request.shell_kind == caushell_types::ShellKind::Bash
+                && max_nested_parse_depth > 0
+                && let [_, token, _] = command.tokens.as_slice()
+            {
+                crate::support::quoted_find_positional_capture(
+                    registry, token, &variable_overlay, &alias_overlay,
+                ).map(|capture_span| (capture_span, &token.span))
+            } else {
+                None
+            };
+            if let Ok(captures) =
+                caushell_parse::parse_command_substitutions(&parsed.raw_command, parsed.shell_kind)
+            {
+                match (captures.as_slice(), positional_capture) {
+                    ([], None) => resolved.retain_standalone_symbolic_link_effects(profile, None),
+                    ([capture], Some((capture_span, token_span))) if capture.span == capture_span => {
+                        resolved.retain_standalone_symbolic_link_effects(profile, Some(token_span));
+                    }
+                    _ => {}
+                }
+            }
+        }
         records.push(ResolvedCommandSeed::new(
             source_node_id,
             ParsedCommandRef::new(command_index, command.span.clone()),
-            caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
-                registry,
-                &resolved_command,
-                runtime_context_for_top_level_command(parsed, command_index, &resolved_command),
-                &variable_overlay,
-                &crate::support::substitution_shapes(
-                    registry,
-                    &resolved_command,
-                    request.shell_kind,
-                    &variable_overlay,
-                    &alias_overlay,
-                    max_nested_parse_depth,
-                ),
-            ),
+            result,
         ));
 
         apply_alias_command(&mut alias_overlay, command, request.sequence_no);
@@ -2808,7 +2849,7 @@ fn pathname_scope_is_stable(
     parsed: &caushell_parse::ParsedCommandArtifact,
     index: usize,
     bindings: &SessionBindings,
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let observations = source_scope_observations(
         registry,
         request,
@@ -2852,12 +2893,22 @@ fn pathname_scope_is_stable(
     {
         return Err("pathname shell variables change within this action".into());
     }
-    for (i, (result, _)) in observations.iter().enumerate() {
+    let mut writes_after_expansion = false;
+    for (i, (result, observed_bindings)) in observations.iter().enumerate() {
         if i == index {
             continue;
         }
         let ResolveInvocationArtifactResult::Resolved(r) = result else {
             return Err("pathname source scope has unproved command effects".into());
+        };
+        let stdin_before_output = index == 0
+            && i == 1
+            && pathname_pipeline_consumer_writes_after_input(registry, parsed, observed_bindings, r);
+        let deferred_write = |effect: &caushell_profile::Effect| {
+            stdin_before_output
+                && effect.kind == EffectKind::WritePath
+                && matches!(&effect.target, EffectTarget::DerivedPath(target)
+                    if target.rule == caushell_types::DerivedPathRule::FileNamePrefix)
         };
         if r.bound
             .effects
@@ -2886,13 +2937,221 @@ fn pathname_scope_is_stable(
                         | EffectKind::NetworkEndpoint
                         | EffectKind::SetCurrentWorkingDirectory
                         | EffectKind::SetExecutionWorkingDirectory
-                )
+                ) && !deferred_write(e)
             })
         {
             return Err("pathname source effects may change names or shell options".into());
         }
+        writes_after_expansion |= r.bound.effects.iter().any(deferred_write);
     }
-    Ok(())
+    Ok(writes_after_expansion)
+}
+
+// With a direct stdout pipe, bytes from the producer's native invocation
+// cannot reach the consumer before the shell expands the producer's argv.
+fn pathname_pipeline_consumer_writes_after_input(
+    registry: &ProfileRegistry,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    bindings: &SessionBindings,
+    consumer: &caushell_profile::ResolvedInvocationArtifact,
+) -> bool {
+    let [producer, command] = parsed.commands.as_slice() else {
+        return false;
+    };
+    let Some(name) = command.command_name.as_deref() else {
+        return false;
+    };
+    if parsed.shell_kind != caushell_types::ShellKind::Bash
+        || parsed.status != caushell_parse::ParseStatus::Complete
+        || producer.pipeline_span.is_none()
+        || producer.pipeline_span != command.pipeline_span
+        || parsed
+            .raw_command
+            .get(producer.span.end_byte..command.span.start_byte)
+            .is_none_or(|text| text.trim() != "|")
+        || [producer, command].iter().any(|cmd| {
+            cmd.guarded
+                || cmd.conditional_execution
+                || cmd.control_flow_span.is_some()
+                || cmd.terminator.is_some()
+                || !cmd.prefix_assignments.is_empty()
+        })
+        || name != consumer.normalized_command_name
+        || bindings.profile_has_alias_shadow(name)
+        || bindings.function_binding(name).is_some()
+    {
+        return false;
+    }
+    let Some(profile) = registry.lookup(name).profile else {
+        return false;
+    };
+    if profile.trust.source != caushell_profile::ProfileSourceKind::BuiltIn
+        || !profile.argument_files.is_empty()
+        || !profile.environment_inputs.is_empty()
+        || profile.option_environment.is_some()
+        || !profile.implicit_config_files.is_empty()
+        || profile.configuration_files.is_some()
+        || profile.native_configuration.is_some()
+    {
+        return false;
+    }
+    let bound = &consumer.bound;
+    let Some(flags) = profile.forms.iter().find(|form| form.id == bound.form_id)
+        .and_then(|form| form.extensions.get("caushell.form/stdin_before_output_flags"))
+        .and_then(JsonValue::as_array) else {
+        return false;
+    };
+    consumer.proven_stream_contract().is_some()
+        && consumer.materialized_projection.invocation.args.iter().all(|arg| {
+            caushell_profile::argument_structure(arg).exact_value().is_some()
+        })
+        && bound.owned_option_flags.iter().all(|source| {
+            matches!(source, ArgumentBindingSource::FollowingFlag { flag_name, .. }
+                if flags.iter().any(|entry| entry.as_str() == Some(flag_name.as_str())))
+        })
+        && bound.effects.iter().any(|effect| {
+            let (EffectKind::ConsumeStdin, EffectTarget::Slot(slot)) = (&effect.kind, &effect.target) else {
+                return false;
+            };
+            bound.bound_parameters.iter().any(|parameter| {
+                &parameter.name == slot
+                    && matches!(&parameter.values[..], [BoundValue::Argument { text, .. }] if text == "-")
+            })
+        })
+}
+
+fn read_only_process_substitution_parent(
+    registry: &ProfileRegistry,
+    request: &CheckRequest,
+    scope: &PayloadSourceScope,
+    current: &caushell_parse::ParsedCommandArtifact,
+    current_index: usize,
+) -> bool {
+    let outer = &scope.parsed;
+    let [parent] = outer.commands.as_slice() else {
+        return false;
+    };
+    if scope.before_command_index != 0 || outer.shell_kind != caushell_types::ShellKind::Bash {
+        return false;
+    }
+    let Ok(substitutions) =
+        caushell_parse::parse_process_substitutions(&outer.raw_command, outer.shell_kind)
+    else {
+        return false;
+    };
+    if substitutions.len() > 8
+        || substitutions
+            .iter()
+            .filter(|sub| sub.body_text == current.raw_command)
+            .count()
+            != 1
+        || !substitutions.iter().all(|sub| {
+            sub.operator == caushell_parse::ProcessSubstitutionOperator::Input
+                && parent.tokens.iter().any(|token| {
+                    token.span == sub.span
+                        && token.node_kind == "process_substitution"
+                        && !token.runtime_data
+                })
+        })
+    {
+        return false;
+    }
+    let simple = |parsed: &caushell_parse::ParsedCommandArtifact| {
+        parsed.status == caushell_parse::ParseStatus::Complete
+            && parsed.redirections.is_empty()
+            && parsed.shell_evaluations.is_empty()
+            && parsed.status_conditions.is_empty()
+            && parsed.assignment_commands.is_empty()
+            && parsed.declaration_commands.is_empty()
+            && parsed.function_definitions.is_empty()
+            && parsed.for_loops.is_empty()
+            && parsed.unset_commands.is_empty()
+            && parsed.commands.iter().all(|command| {
+                !command.guarded
+                    && !command.conditional_execution
+                    && command.control_flow_span.is_none()
+                    && command.terminator.is_none()
+                    && command.prefix_assignments.is_empty()
+            })
+            && caushell_parse::parse_command_substitutions(&parsed.raw_command, parsed.shell_kind)
+                .is_ok_and(|items| items.is_empty())
+    };
+    let read_only = |parsed: &caushell_parse::ParsedCommandArtifact, skip: Option<usize>| {
+        let observed = source_scope_observations(
+            registry,
+            request,
+            parsed,
+            parsed.commands.len().saturating_sub(1),
+            &scope.bindings,
+        );
+        !observed.is_empty()
+            && observed.len() == parsed.commands.len()
+            && observed.iter().zip(&parsed.commands).enumerate().all(
+                |(index, ((result, bindings), command))| {
+                    let Some(name) = command.command_name.as_deref() else {
+                        return false;
+                    };
+                    let ResolveInvocationArtifactResult::Resolved(invocation) = result else {
+                        return false;
+                    };
+                    if name != invocation.normalized_command_name
+                        || bindings.profile_has_alias_shadow(name)
+                        || bindings.function_binding(name).is_some()
+                    {
+                        return false;
+                    }
+                    if skip == Some(index) {
+                        return true;
+                    }
+                    let bound = &invocation.bound;
+                    let Some(profile) =
+                        registry.lookup(&invocation.normalized_command_name).profile
+                    else {
+                        return false;
+                    };
+                    profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+                        && profile.argument_files.is_empty()
+                        && profile.environment_inputs.is_empty()
+                        && profile.option_environment.is_none()
+                        && profile.implicit_config_files.is_empty()
+                        && profile.configuration_files.is_none()
+                        && profile.native_configuration.is_none()
+                        && !bound.operation_semantics_unresolved
+                        && bound.residuals.is_empty()
+                        && bound.configured_inputs.is_empty()
+                        && bound.configured_execution_sources.is_empty()
+                        && bound.argument_regions.is_empty()
+                    && bound.payload_projections.iter().all(|projection| {
+                        projection.format == caushell_profile::PayloadFormat::SedProgram
+                            && matches!(&projection.source,
+                                caushell_profile::PayloadInputSource::Slot(_))
+                    })
+                        && bound.native_argv_effect_envelope.is_none()
+                    && bound.effects.iter().all(|effect| {
+                        super::symbolic_native_inputs::read_effect(effect)
+                            || (effect.resource_namespace.is_none()
+                                && matches!(&effect.target, EffectTarget::Slot(slot)
+                                    if bound.payload_projections.iter().any(|projection| {
+                                        slot == &projection.writes
+                                            || slot == &projection.deletes
+                                            || projection.executions.as_ref() == Some(slot)
+                                    }))
+                                && crate::path::path_target_is_inapplicable(bound, &effect.target))
+                    })
+                },
+            )
+    };
+    simple(outer)
+        && read_only(outer, None)
+        && simple(current)
+        && read_only(current, Some(current_index))
+        && substitutions
+            .iter()
+            .filter(|sub| sub.body_text != current.raw_command)
+            .all(|sub| {
+                caushell_parse::parse_command(&sub.body_text, outer.shell_kind)
+                    .is_ok_and(|body| simple(&body) && read_only(&body, None))
+            })
 }
 
 fn materialize_pathname_fields(
@@ -2939,8 +3198,26 @@ fn materialize_pathname_fields(
         index,
         program_scope_bindings(entry),
     );
+    // A directory-only glob requires evidence about directory membership,
+    // including symlinks followed by a trailing slash.
+    let process_parent_proved = entry.origin_kind == ExecutionUnitOriginKind::ProcessSubstitutionBody
+        && entry.bindings.pathname_options().is_none()
+        && resolved.projection.args.iter().all(|arg| {
+            match caushell_profile::PathnamePattern::from_argument(arg, entry.shell_kind) {
+                Ok(Some(pattern)) => !pattern.absolute && pattern.components.len() == 2
+                    && pattern.literal.ends_with('/'),
+                Ok(None) => true,
+                Err(_) => false,
+            }
+        })
+        && matches!(&context.source_scopes[..], [scope]
+            if read_only_process_substitution_parent(registry, request, scope,
+                &entry.parsed_scope, index));
     for scope in &context.source_scopes {
-        frame = frame.and_then(|_| {
+        if process_parent_proved {
+            continue;
+        }
+        frame = frame.and_then(|writes_after_expansion| {
             pathname_scope_is_stable(
                 registry,
                 request,
@@ -2948,6 +3225,7 @@ fn materialize_pathname_fields(
                 scope.before_command_index,
                 &scope.bindings,
             )
+            .map(|_| writes_after_expansion)
         });
     }
     if entry.inherited_scope.static_input_cwd_unproven
@@ -2955,6 +3233,7 @@ fn materialize_pathname_fields(
     {
         frame = Err("pathname execution frame is incomplete".into());
     }
+    let writes_after_expansion = frame.as_ref().is_ok_and(|value| *value);
     let mut proofs = super::pathname_fields::observe(
         ctx,
         &entry.source_node_id.0,
@@ -2962,7 +3241,7 @@ fn materialize_pathname_fields(
         &entry.bindings,
         entry.shell_kind,
         &cwd,
-        frame,
+        frame.map(|_| ()),
         resolved.bound.operation_semantics_unresolved || !resolved.bound.residuals.is_empty(),
     );
     if proofs.is_empty() {
@@ -2980,18 +3259,24 @@ fn materialize_pathname_fields(
         entry.command_ref.command_index,
         command,
     );
-    let envelope = if entry.origin_kind == ExecutionUnitOriginKind::TopLevel
-        && proofs.iter().all(|proof| proof.unmatched_literal.is_some())
+    let envelope = if (entry.origin_kind == ExecutionUnitOriginKind::TopLevel || process_parent_proved)
+        && proofs.iter().all(|proof| {
+            proof.unmatched_literal.is_some() || proof.single_match_bound.is_some()
+        })
     {
-        super::pathname_fields::unmatched_effects(
+        super::pathname_fields::possible_pathname_effects(
             registry,
             &entry.parsed_scope,
             command,
             runtime_context.clone(),
             &entry.bindings,
             resolved,
-            &proofs,
+            &mut proofs,
+            ctx,
+            writes_after_expansion,
         )
+        .filter(|candidate| !process_parent_proved
+            || candidate.bound.effects.iter().all(super::symbolic_native_inputs::read_effect))
     } else {
         None
     };
@@ -7436,13 +7721,25 @@ fn expanded_static_xargs_children(
     };
     // A domain proof is useful even when none of the concrete input bytes are
     // known. Never reinterpret it as literal shell text or an exact argv list.
-    let input_domain = (native.is_none()
-        && config.decoding_proved
-        && !evidence.complete
-        && !has_applied_modifier(&resolved.bound, "arg_file")
-        && matches!(config.item_mode, XargsItemMode::NullSeparated))
-    .then(|| stdin_path_domain_for_scope(registry, session, request, entry, max_nested_parse_depth))
-    .flatten();
+    let input_domain = if native.is_none() && config.decoding_proved && !evidence.complete {
+        match config.item_mode {
+            XargsItemMode::NullSeparated if !has_applied_modifier(&resolved.bound, "arg_file") => {
+                stdin_path_domain_for_scope(registry, session, request, entry, max_nested_parse_depth)
+            }
+            XargsItemMode::WhitespaceSeparated
+                if resolved.bound.applied_modifiers.is_empty()
+                    && candidate.lookup_domain == caushell_profile::CommandLookupDomain::External
+                    && dispatch_argument_scalar(&candidate.command).as_deref() == Some("mkdir")
+                    && matches!(candidate.argv.as_slice(), [flag]
+                        if dispatch_argument_scalar(flag).as_deref() == Some("-p")) =>
+            {
+                stdin_hexadecimal_path_domain(registry, session, request, entry)
+            }
+            _ => None,
+        }
+    } else {
+        None
+    };
     // Partial fragments have no guaranteed offset: unknown bytes may precede
     // them, join their quoting, or shift every positional argument. Keep them
     // as advisory evidence, never as a proven argv prefix.
@@ -7921,6 +8218,104 @@ fn refresh_path_list_targets(
     if let ResolveInvocationArtifactResult::Resolved(resolved) = &mut entry.result {
         crate::support::bind_path_list_targets(&mut resolved.bound, evidence, domain);
     }
+}
+
+/// The external printf format owns all stdout bytes. Arbitrary upstream
+/// operands can affect the numbers and batch count, but cannot add options
+/// to the final xargs or introduce absolute paths or parent components.
+fn stdin_hexadecimal_path_domain(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    use crate::support::{EffectiveStdinSource, VariableBindingReplay, effective_stdin_source};
+    use caushell_profile::{CommandLookupDomain, ProfileSourceKind};
+
+    let scope = &entry.static_payload_scope;
+    let parsed = &scope.parsed_scope;
+    if entry.shell_kind != caushell_types::ShellKind::Bash
+        || entry.depth != 0
+        || entry.inherited_scope.static_input_cwd_unproven
+        || scope.stdin_is_parent_output
+        || effective_stdin_source(parsed, scope.command_index) != EffectiveStdinSource::Inherited
+        || crate::support::scope_has_prior_directory_transition(parsed, scope.command_index)
+    {
+        return None;
+    }
+    let producer_index = crate::support::collect_pipeline_groups(parsed)
+        .iter()
+        .find_map(|group| {
+            let position = group.commands.iter().position(|stage| {
+                stage.command_index == scope.command_index
+            })?;
+            Some(group.commands.get(position.checked_sub(1)?)?.command_index)
+        })?;
+    let command = parsed.commands.get(producer_index)?;
+    let consumer = parsed.commands.get(scope.command_index)?;
+    if command.command_name.as_deref() != Some("xargs")
+        || command.command_name_runtime_data
+        || !command.prefix_assignments.is_empty()
+        || command.guarded
+        || command.conditional_execution
+        || command.control_flow_span.is_some()
+        || command.subshell_span.is_some()
+        || command.terminator.is_some()
+        || parsed.raw_command
+            .get(command.top_level_span.start_byte..command.top_level_span.end_byte)?
+            .trim() != parsed.raw_command.trim()
+        || parsed.raw_command.get(command.span.end_byte..consumer.span.start_byte)?.trim() != "|"
+        || !crate::support::stdout_is_direct_pipeline(parsed, producer_index, command)
+    {
+        return None;
+    }
+
+    // Inspect only literal argv of the native dispatcher. No replacement mode,
+    // concurrent formatter, shell word expansion or format operand from stdin
+    // participates in this proof.
+    let argv = command.tokens.iter().map(|arg| {
+        caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
+    }).collect::<Option<Vec<_>>>()?;
+    let valid_count = match argv.as_slice() {
+        [count, tool, format] if tool == "printf" && format == r"%02x/%02x\n" => {
+            count.strip_prefix("-n").and_then(parse_positive_usize).is_some()
+        }
+        [flag, count, tool, format]
+            if flag == "-n" && tool == "printf" && format == r"%02x/%02x\n" =>
+        {
+            parse_positive_usize(count).is_some()
+        }
+        _ => false,
+    };
+    if !valid_count
+        || !registry.lookup("xargs").profile.is_some_and(|p| p.trust.source == ProfileSourceKind::BuiltIn)
+        || !registry.lookup_in_domain("printf", true, &CommandLookupDomain::External)
+            .profile.is_some_and(|p| p.trust.source == ProfileSourceKind::BuiltIn)
+    {
+        return None;
+    }
+    let mut aliases = alias_bindings(session.summary(), request);
+    for earlier in parsed.commands.iter().take(producer_index) {
+        apply_alias_command(&mut aliases, earlier, request.sequence_no);
+    }
+    let bindings = runtime_binding_replay(registry, request, &scope.scope_base_bindings)
+        .apply_before(scope.scope_base_bindings.clone(), parsed, command.span.start_byte, request.sequence_no);
+    if aliases.contains_key("xargs")
+        || bindings.function_binding("xargs").is_some()
+        || bindings.profile_has_alias_shadow("xargs")
+    {
+        return None;
+    }
+    let ResolveInvocationArtifactResult::Resolved(formatter) = resolve_invocation_artifact_with_bindings(
+        registry, command, runtime_context_for_parsed_command(parsed, producer_index, command), &bindings,
+    ) else {
+        return None;
+    };
+    (formatter.bound.form_id.as_str() == "dispatch_from_stdin"
+        && formatter.bound.residuals.is_empty()
+        && !formatter.bound.operation_semantics_unresolved
+        && matches!(formatter.bound.applied_modifiers.as_slice(), [m] if m.as_str() == "max_args"))
+        .then_some(caushell_types::RuntimeArgumentDomain::HexadecimalRelativePath)
 }
 
 fn stdin_path_domain_for_scope(

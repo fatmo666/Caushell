@@ -269,6 +269,66 @@ fn prefix_domains_and_generated_affixes_are_transformed_only_when_proved() {
 }
 
 #[test]
+fn literal_replacement_preserves_only_unaffected_path_anchors() {
+    let mut bindings = SessionBindings::new();
+    bindings.set_shell_kind(ShellKind::Bash);
+    bindings.replace_positional_parameters([SessionValue::opaque_dynamic("path")]);
+    bindings.set_positional_argument_domain(
+        1,
+        RuntimeArgumentDomain::PathSet {
+            roots: vec!["./docs/".into(), "./notes/".into()],
+            may_escape: false,
+            basename_suffix: Some("draft".into()),
+            no_adjacent_slashes: true,
+        },
+    );
+    for command in [
+        r#"cp "$1" "${1//draft/review}""#,
+        r#"cp "$1" "${1/draft/review}""#,
+    ] {
+        let materialized = args(command, &bindings);
+        assert_eq!(
+            materialized.invocation.args[1].runtime_argument_domain,
+            Some(RuntimeArgumentDomain::PathSet {
+                roots: vec!["./docs/".into(), "./notes/".into()],
+                may_escape: false,
+                basename_suffix: None,
+                no_adjacent_slashes: true,
+            }),
+            "{command}: {materialized:?}"
+        );
+    }
+    for command in [
+        r#"cp "$1" "${1//DOCS/review}""#,
+        r#"cp "$1" "${1//draft/}""#,
+        r#"cp "$1" "${1//draft/review/part}""#,
+        r#"cp "$1" "${1//d*/review}""#,
+        r#"cp "$1" ${1//draft/review}"#,
+    ] {
+        assert!(
+            args(command, &bindings).invocation.args[1]
+                .runtime_argument_domain
+                .is_none(),
+            "{command}"
+        );
+    }
+    bindings.set_positional_argument_domain(
+        1,
+        RuntimeArgumentDomain::PathSet {
+            roots: vec!["./docs/".into()],
+            may_escape: true,
+            basename_suffix: None,
+            no_adjacent_slashes: false,
+        },
+    );
+    assert!(
+        args(r#"cp "$1" "${1//draft/review}""#, &bindings).invocation.args[1]
+            .runtime_argument_domain
+            .is_none()
+    );
+}
+
+#[test]
 fn positional_domains_have_frame_lifetimes_and_do_not_survive_replacement() {
     let mut b = SessionBindings::new();
     b.set_shell_program_name(Some(SessionValue::opaque_dynamic("program")));

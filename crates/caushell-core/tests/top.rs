@@ -68,6 +68,28 @@ fn interaction_unknown_ownership_and_incomplete_options_still_ask() {
         check(c, Decision::NeedApproval);
     }
 }
+
+#[test]
+fn batch_process_query_accepts_split_decimal_pid_output() {
+    for command in [
+        "top -b -p $(pidof fixture)",
+        "top -b -p `pidof fixture` -n 2",
+    ] {
+        check(command, Decision::Allow);
+    }
+    for command in [
+        "top -p $(pidof fixture)",
+        "top -b -p $(pidof --help)",
+        "top -b -p $(pidof -S text fixture)",
+        "top -b -p $(seq -1 1)",
+        "top -b -p $(pidof fixture) --unknown",
+        "top -b -p $(pidof fixture) > /opt/fixture.log",
+        "top -b -p $(pidof fixture) > /tmp/fixture.log",
+        "XDG_CONFIG_HOME=/opt/fixture top -b -p $(pidof fixture)",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+}
 #[test]
 fn wrappers_and_nested_queries_keep_noninteractive_semantics() {
     for c in [

@@ -53,7 +53,17 @@ pub enum ProjectedArgKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SubstitutionOutputProof {
     ScalarShape(crate::StdoutScalarShape),
+    /// Plain pidof output contains decimal process IDs and separators only.
+    /// An unquoted capture can still expand into zero or several fields.
+    DecimalPidFields,
     ArithmeticField { prefix: String, suffix: String },
+    /// A calendar capture and its literal affixes are local filename fields
+    /// under all IFS settings. Their count and actual bytes remain unknown.
+    LocalFilenameFields,
+    /// Fields of one unquoted calendar pathname with a literal directory
+    /// prefix and extension. All nonempty fields name working-directory
+    /// descendants, but splitting can shift earlier fields into source roles.
+    LocalMovePathFields,
     /// An unsigned line count followed by a literal q. Splitting may
     /// still produce empty fields and additional input operands.
     LineCountQuit,

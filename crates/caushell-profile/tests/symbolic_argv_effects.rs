@@ -13,6 +13,28 @@ fn resolve(registry: &ProfileRegistry, command: &str) -> ResolvedInvocationArtif
         other => panic!("{command}: {other:#?}"),
     }
 }
+
+#[test]
+fn chgrp_fixed_target_keeps_the_possible_metadata_reference_and_unknown_argv() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    let result = resolve(&registry, "chgrp \"$GROUP_VALUE\" ordinary");
+    assert!(!result.bound.operation_semantics_unresolved);
+    assert!(result.bound.residuals.is_empty());
+    assert!(result.bound.applied_modifiers.is_empty());
+    assert!(result.proven_stream_contract().is_none());
+    assert!(argument_structure(&result.materialized_projection.invocation.args[0]).exact_value().is_none());
+    let effects = &result.bound.effects;
+    assert_eq!(effects.len(), 2);
+    assert!(effects.iter().any(|effect| {
+        effect.kind == EffectKind::TargetPath
+            && matches!(&effect.target, EffectTarget::Slot(slot) if slot.as_str() == "reference_path")
+    }));
+    assert!(effects.iter().any(|effect| {
+        effect.kind == EffectKind::ChangeGroup
+            && matches!(&effect.target, EffectTarget::Slot(slot) if slot.as_str() == "path_targets")
+    }));
+}
+
 #[test]
 fn total_contract_covers_symbolic_shell_argv_without_inventing_fields_or_shapes() {
     let registry = ProfileRegistry::built_in().unwrap();

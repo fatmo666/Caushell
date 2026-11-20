@@ -37,7 +37,9 @@ pub use resource::{ResourceAuthorizationEvidence, ResourceTargetEvidence, StateR
 mod finding;
 mod path;
 mod pathname_fields;
-pub use pathname_fields::{PathnameFieldsEvidence, ToolOptionEnvironmentEvidence};
+pub use pathname_fields::{
+    PathnameFieldsEvidence, PathnameSingleMatchBound, ToolOptionEnvironmentEvidence,
+};
 mod python_payload;
 mod python_runtime;
 pub use python_payload::{

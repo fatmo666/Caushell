@@ -29,6 +29,7 @@ pub struct ArgumentStructure {
 #[derive(Debug, Clone, PartialEq, Eq)]
 enum SpellingPart {
     EmptyOrAbsolutePath,
+    EmptyOrLocalFilename,
     Literal(char),
     Any,
     One,
@@ -119,7 +120,9 @@ impl ArgumentStructure {
     /// unmodeled short-option grammars. Three bounded automaton states; no
     /// enumeration of filenames, option combinations, or shell values.
     pub(crate) fn may_be_short_cluster(&self, letters: &str) -> bool {
-        if self.spelling.as_deref() == Some(&[SpellingPart::EmptyOrAbsolutePath]) {
+        if matches!(self.spelling.as_deref(),
+            Some([SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename]))
+        {
             return false;
         }
         if self.fields == ArgumentFieldCount::Unknown || letters.is_empty() {
@@ -157,7 +160,7 @@ impl ArgumentStructure {
                 SpellingPart::Any | SpellingPart::One => true,
                 SpellingPart::Class(body) => class_may_match(body, c),
                 SpellingPart::CharacterRun(chars) => chars.contains(c),
-                SpellingPart::EmptyOrAbsolutePath => true,
+                SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename => true,
             };
             let dash = matches('-');
             let flag = letters.chars().any(matches);
@@ -181,6 +184,14 @@ impl ArgumentStructure {
 // not regex compilation or pathname enumeration. Unsupported/large proofs
 // return "possible". ASCII case folding covers Bash's nocaseglob option.
 fn spelling_matches(parts: &[SpellingPart], value: &str, prefix: bool, fold_case: bool) -> bool {
+    if parts == [SpellingPart::EmptyOrLocalFilename] {
+        return value.is_empty()
+            || (!value.starts_with(['-', '+'])
+                && (prefix || !matches!(value, "." | ".."))
+                && value.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b'+')
+                }));
+    }
     if parts == [SpellingPart::EmptyOrAbsolutePath] {
         return value.is_empty() || value.starts_with('/');
     }
@@ -221,7 +232,7 @@ fn spelling_matches(parts: &[SpellingPart], value: &str, prefix: bool, fold_case
                             SpellingPart::One => true,
                             SpellingPart::Class(body) => class_may_match(body, chars[index]),
                             SpellingPart::Any | SpellingPart::CharacterRun(_) => unreachable!(),
-                            SpellingPart::EmptyOrAbsolutePath => true,
+                            SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename => true,
                         };
                     if reachable[index]
                         && let SpellingPart::Class(body) = part
@@ -584,6 +595,15 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
             }
         }
         match &arg.runtime_argument_domain {
+            Some(caushell_types::RuntimeArgumentDomain::LocalFilenameOrEmpty) => {
+                structure.spelling = Some(vec![SpellingPart::EmptyOrLocalFilename]);
+            }
+            Some(caushell_types::RuntimeArgumentDomain::HexadecimalRelativePath) => {
+                structure.spelling = Some(vec![
+                    SpellingPart::Class("0123456789abcdef".into()),
+                    SpellingPart::Any,
+                ]);
+            }
             Some(caushell_types::RuntimeArgumentDomain::GeneratedFileName { prefix, suffix }) => {
                 structure.static_prefix = prefix.clone();
                 structure.static_suffix = suffix.clone();

@@ -19,6 +19,211 @@ pub fn native_effect_contract_allows_effect(
     allowed && effect.filesystem_namespace_impact() == FilesystemNamespaceImpact::Neutral
 }
 
+/// A single unknown chgrp field cannot supply both a recursive option and a
+/// group operand. A GNU attached reference still queries metadata, and the
+/// final path remains the only possible target of the group change.
+pub(crate) fn retain_chgrp_single_field_effects(
+    profile: &CommandProfile,
+    materialized: &crate::MaterializedProjectedInvocation,
+    bound: &mut crate::BoundInvocation,
+) {
+    use crate::{BoundParameter, EffectTarget, ProfileSourceKind, ResidualKind, ResidualSurface};
+    if profile.primary_name() != "chgrp"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || materialized.invocation.shell_kind != caushell_types::ShellKind::Bash
+        || bound.form_id.as_str() != "change_group"
+        || !bound.applied_modifiers.is_empty()
+        || !bound.operation_semantics_unresolved
+        || !matches!(bound.residuals.as_slice(), [gap]
+            if gap.kind == ResidualKind::UnboundControlSurface
+                && gap.surface == ResidualSurface::Control
+                && gap.reason == crate::bind::ARGUMENT_REGION_OWNERSHIP_GAP
+                && gap.slot.is_none())
+    {
+        return;
+    }
+    let [group, target] = materialized.invocation.args.as_slice() else {
+        return;
+    };
+    let target_shape = crate::argument_structure(target);
+    if group.runtime_data
+        || group.implicit_input_source.is_some()
+        || crate::argument_structure(group).fields != crate::ArgumentFieldCount::ExactlyOne
+        || !matches!(
+            caushell_parse::scalar_argument_parts(&group.text, group.quoted, &group.node_kind)
+                .as_deref(),
+            Some([caushell_parse::ScalarArgumentPart::Parameter(_)])
+        )
+        || !target_shape
+            .exact_value()
+            .is_some_and(|path| !path.is_empty() && !path.starts_with('-'))
+    {
+        return;
+    }
+    let [effect] = bound.effects.as_slice() else {
+        return;
+    };
+    let EffectTarget::Slot(target_slot) = &effect.target else {
+        return;
+    };
+    if effect.kind != EffectKind::ChangeGroup
+        || !bound.bound_parameters.iter().any(|parameter| {
+            parameter.name == *target_slot
+                && matches!(&parameter.values[..], [crate::BoundValue::Argument { span, .. }]
+                    if *span == target.span)
+        })
+    {
+        return;
+    }
+    let Some(group_value) =
+        bound
+            .bound_parameters
+            .iter()
+            .find_map(|parameter| match parameter.values.as_slice() {
+                [value @ crate::BoundValue::Argument { span, .. }]
+                    if parameter.name.as_str() == "group" && *span == group.span =>
+                {
+                    Some(value.clone())
+                }
+                _ => None,
+            })
+    else {
+        return;
+    };
+    let Some(reference) = profile
+        .modifiers
+        .iter()
+        .find(|m| m.id.as_str() == "reference")
+    else {
+        return;
+    };
+    let ([reference_parameter], [reference_effect]) =
+        (&reference.parameters[..], &reference.effects[..])
+    else {
+        return;
+    };
+    let Some(reference_form) = profile
+        .forms
+        .iter()
+        .find(|f| f.id.as_str() == "change_group_from_reference")
+    else {
+        return;
+    };
+    let [group_effect] = reference_form.effects.as_slice() else {
+        return;
+    };
+    if group_effect.kind != EffectKind::ChangeGroup
+        || group_effect.target != effect.target
+        || reference_effect.kind != EffectKind::TargetPath
+        || reference_effect.target != EffectTarget::Slot(reference_parameter.name.clone())
+    {
+        return;
+    }
+    bound
+        .bound_parameters
+        .retain(|p| p.name.as_str() != "group");
+    bound.bound_parameters.push(
+        BoundParameter::new(
+            reference_parameter.name.clone(),
+            reference_parameter.semantic.clone(),
+        )
+        .with_value(group_value),
+    );
+    bound.effects = vec![group_effect.clone(), reference_effect.clone()];
+    bound.operation_semantics_unresolved = false;
+    bound.residuals.clear();
+    bound.stream_contract = None;
+    bound.stdout_growth_complete = false;
+}
+
+/// A symbolic link with no destination, or with a literal current-directory
+/// destination and a proved source operand, can only create a cwd entry.
+/// Keep the possible link target as data and retain the write family.
+pub(crate) fn retain_standalone_symbolic_link_effects(
+    profile: &CommandProfile,
+    materialized: &crate::MaterializedProjectedInvocation,
+    bound: &mut crate::BoundInvocation,
+    positional_capture: Option<&caushell_parse::SourceSpan>,
+) {
+    use crate::{
+        DerivedPathSource, EffectTarget, PathScope, ProfileSourceKind, ResidualKind,
+        ResidualSurface, ToolConventionPathTarget,
+    };
+    if profile.primary_name() != "ln"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || materialized.invocation.shell_kind != caushell_types::ShellKind::Bash
+        || materialized.shell_expansion_unresolved
+        || !matches!(bound.applied_modifiers.as_slice(), [flag] if flag.as_str() == "symbolic")
+        || !bound.operation_semantics_unresolved
+        || !matches!(bound.residuals.as_slice(), [gap]
+            if gap.kind == ResidualKind::UnboundControlSurface
+                && gap.surface == ResidualSurface::Control
+                && gap.reason == crate::bind::ARGUMENT_REGION_OWNERSHIP_GAP
+                && gap.slot.is_none())
+    {
+        return;
+    }
+    let (flag, source, convention) = match (
+        bound.form_id.as_str(), materialized.invocation.args.as_slice(), positional_capture,
+    ) {
+        ("implicit_destination", [flag, source], None)
+            if matches!(
+                caushell_parse::scalar_argument_parts(&source.text, source.quoted, &source.node_kind)
+                    .as_deref(),
+                Some([caushell_parse::ScalarArgumentPart::Parameter(_)])
+            ) =>
+        {
+            // If this field is an option, ln has no source operand.
+            (flag, source, "implicit_symbolic_link_directory")
+        }
+        ("link_into_current_directory", [flag, source, destination], Some(span))
+            if &source.span == span && source.quoted
+                && crate::argument_structure(destination).exact_value() == Some(".") =>
+        {
+            (flag, source, "explicit_symbolic_link_current_directory")
+        }
+        _ => return,
+    };
+    if crate::argument_structure(flag).exact_value() != Some("-s")
+        || source.runtime_data
+        || source.implicit_input_source.is_some()
+        || crate::argument_structure(source).fields != crate::ArgumentFieldCount::ExactlyOne
+    {
+        return;
+    }
+    let [link, write] = bound.effects.as_mut_slice() else {
+        return;
+    };
+    let EffectTarget::DerivedPath(target) = &write.target else {
+        return;
+    };
+    if link.kind != EffectKind::TargetPath
+        || write.kind != EffectKind::WritePath
+        || target.root.is_some()
+        || target.rule != caushell_types::DerivedPathRule::Basename
+        || !matches!(&target.source, DerivedPathSource::Slot(slot)
+            if link.target == EffectTarget::Slot(slot.clone()))
+    {
+        return;
+    }
+    write.target = EffectTarget::ToolConventionPath(ToolConventionPathTarget {
+        path: ".".into(),
+        convention: convention.into(),
+        purpose: target.purpose,
+    });
+    write.path_scope = Some(PathScope::Subtree {
+        escape_modifiers: Vec::new(),
+        narrowing_modifiers: vec![bound.applied_modifiers[0].clone()],
+    });
+    bound.operation_semantics_unresolved = false;
+    bound.residuals.clear();
+    // The field remains unknown. Do not use this effect proof to claim an
+    // exact output or forward the possible link target as stream data.
+    bound.stream_contract = None;
+    bound.stdout_growth_complete = false;
+}
+
 pub fn native_effect_contract_allows_parameter(
     kind: NativeArgvEffectEnvelope,
     parameter: &Parameter,
@@ -59,6 +264,163 @@ fn native_surface_is_direct(profile: &CommandProfile) -> bool {
         && profile.configuration_files.is_none()
         && profile.native_configuration.is_none()
         && profile.selection_failure_effects.is_empty()
+}
+
+/// A fixed batch switch and process filter stay noninteractive when a
+/// decimal PID capture is missing, split, or rejected by the native parser.
+pub(crate) fn retain_top_batch_pid_fields(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    argv: &crate::ProjectedInvocation,
+    bindings: &crate::SessionBindings,
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
+    bound: &mut crate::BoundInvocation,
+) {
+    use crate::*;
+    if profile.primary_name() != "top"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || argv.shell_kind != caushell_types::ShellKind::Bash
+        || command.command_name.as_deref() != Some("top")
+        || command.command_name_runtime_data
+        || !command.prefix_assignments.is_empty()
+        || bindings.get("XDG_CONFIG_HOME").is_some()
+        || bound.form_id.as_str() != "batch"
+        || !bound.effects.is_empty()
+        || !bound.operation_semantics_unresolved
+        || !matches!(bound.residuals.as_slice(), [gap]
+            if gap.kind == ResidualKind::UnboundControlSurface
+                && gap.surface == ResidualSurface::Control
+                && gap.reason == crate::bind::ARGUMENT_REGION_OWNERSHIP_GAP
+                && gap.slot.is_none())
+    {
+        return;
+    }
+    let [batch, process_filter, capture, remaining @ ..] = argv.args.as_slice() else {
+        return;
+    };
+    if argument_structure(batch).exact_value() != Some("-b")
+        || argument_structure(process_filter).exact_value() != Some("-p")
+        || capture.quoted
+        || capture.runtime_data
+        || capture.implicit_input_source.is_some()
+        || capture.substitution_shape != Some(StdoutScalarShape::ArithmeticText)
+        || !matches!(proofs, [(span, SubstitutionOutputProof::DecimalPidFields)]
+            if span == &capture.span)
+    {
+        return;
+    }
+    match remaining {
+        [] => {}
+        [flag, count]
+            if argument_structure(flag).exact_value() == Some("-n")
+                && argument_structure(count).exact_value().is_some_and(|value| {
+                    !value.is_empty()
+                        && value.bytes().all(|byte| byte.is_ascii_digit())
+                        && value.parse::<u32>().is_ok_and(|count| count > 0)
+                }) => {}
+        _ => return,
+    }
+    bound.operation_semantics_unresolved = false;
+    bound.residuals.clear();
+    // Keep the batch form's stream behavior. The bound does not prove
+    // an exact process list or a finite successful output.
+    bound.stdout_growth_complete = false;
+}
+
+/// For an option-free native move the last surviving field is the destination.
+/// Earlier split fields may be sources, including the literal prefix directory.
+/// Both effects must pass the existing entry-relocation namespace proof.
+pub(crate) fn retain_move_path_fields(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    argv: &crate::ProjectedInvocation,
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
+    bound: &mut crate::BoundInvocation,
+) {
+    use crate::*;
+    let [first, tail] = argv.args.as_slice() else {
+        return;
+    };
+    if profile.primary_name() != "mv"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || argv.shell_kind != caushell_types::ShellKind::Bash
+        || command.command_name_runtime_data
+        || !command.prefix_assignments.is_empty()
+        || !matches!(proofs, [(span, SubstitutionOutputProof::LocalMovePathFields)]
+            if span == &tail.span)
+        || first.runtime_data
+        || first.implicit_input_source.is_some()
+        || tail.runtime_data
+        || tail.implicit_input_source.is_some()
+        || bound.form_id.as_str() != "default_move"
+        || !bound.applied_modifiers.is_empty()
+        || !bound.operation_semantics_unresolved
+        || !matches!(bound.residuals.as_slice(), [gap]
+            if gap.kind == ResidualKind::UnboundControlSurface
+                && gap.surface == ResidualSurface::Control
+                && gap.reason == crate::bind::ARGUMENT_REGION_OWNERSHIP_GAP
+                && gap.slot.is_none())
+    {
+        return;
+    }
+    let first_shape = argument_structure(first);
+    let Some(basename) = first_shape.exact_value() else {
+        return;
+    };
+    if basename.is_empty() || matches!(basename, "." | "..")
+        || basename.starts_with(['-', '+']) || basename.contains(['/', '\0'])
+    {
+        return;
+    }
+
+    let [source, destination] = bound.effects.as_slice() else {
+        return;
+    };
+    let (EffectTarget::Slot(source_slot), EffectTarget::Slot(destination_slot)) =
+        (&source.target, &destination.target)
+    else {
+        return;
+    };
+    if source.kind != EffectKind::MovePath || destination.kind != EffectKind::WritePath
+        || [source, destination].iter().any(|effect|
+            effect.namespace_effect != Some(caushell_types::PathNamespaceEffect::EntryRelocation))
+    {
+        return;
+    }
+    let [source_parameter, destination_parameter] = bound.bound_parameters.as_mut_slice() else {
+        return;
+    };
+    if &source_parameter.name != source_slot || &destination_parameter.name != destination_slot
+        || !matches!(source_parameter.values.as_slice(), [BoundValue::Argument { span, .. }]
+            if span == &first.span)
+        || !matches!(destination_parameter.values.as_slice(), [BoundValue::Argument { span, .. }]
+            if span == &tail.span)
+    {
+        return;
+    }
+
+    // A closed directory family covers the fixed source, possible additional
+    // sources and native placement into the final entry if it is a directory.
+    // Retain the split word's provenance without asserting a field count.
+    for parameter in [source_parameter, destination_parameter] {
+        parameter.values[0] = BoundValue::ImplicitInput {
+            source: ImplicitInputSource::CommandSubstitution,
+            domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+                roots: vec!["./".into()],
+                may_escape: false,
+                basename_suffix: None,
+                no_adjacent_slashes: false,
+            }),
+            origin: Some(BoundImplicitArgumentOrigin {
+                span: tail.span.clone(),
+                single_field: false,
+            }),
+        };
+    }
+    bound.operation_semantics_unresolved = false;
+    bound.residuals.clear();
 }
 
 /// The lone decimal word following pv's rate option can be absent, be the

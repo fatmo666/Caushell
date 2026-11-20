@@ -95,7 +95,12 @@ fn pidof_stdout_shape_reaches_the_native_operand_without_certifying_its_width() 
         ("top -b -p $(pidof --help)", false),
         ("top -b -p $(pidof -S marker fixture)", false),
     ] {
-        decision(command, Decision::NeedApproval);
+        let expected = if numeric {
+            Decision::Allow
+        } else {
+            Decision::NeedApproval
+        };
+        decision(command, expected);
         let ctx = context(command, ProfileRegistry::built_in().unwrap());
         let top = ctx
             .execution_unit_resolve_records()

@@ -162,6 +162,12 @@ pub enum ImplicitInputSource {
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum RuntimeArgumentDomain {
     Unbounded,
+    /// A nonempty relative pathname that starts with a hexadecimal digit
+    /// and contains only lowercase hexadecimal digits and slashes.
+    HexadecimalRelativePath,
+    /// An empty field or one ASCII filename in the working directory. The
+    /// filename cannot begin with an option marker or be "." or "..".
+    LocalFilenameOrEmpty,
     /// Prefix + a nonempty ASCII-alphanumeric run + suffix. No particular
     /// generated filename or filesystem object is asserted.
     GeneratedFileName {
@@ -279,7 +285,7 @@ impl RuntimeArgumentDomain {
                     format!("{inner_suffix}{suffix}"),
                 )
             }
-            Self::Unbounded => {
+            Self::Unbounded | Self::HexadecimalRelativePath | Self::LocalFilenameOrEmpty => {
                 return Self::TextTemplate {
                     prefix: prefix.to_string(),
                     suffix: suffix.to_string(),

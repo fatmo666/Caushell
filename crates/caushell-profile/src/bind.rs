@@ -12,6 +12,9 @@ use crate::{
     ValueConstraint, ValueMatcher, parse_owner_group_spec,
 };
 
+pub(crate) const ARGUMENT_REGION_OWNERSHIP_GAP: &str =
+    "argument region ownership is unresolved; known child effects are partial";
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct InvocationShape {
     pub syntax_tokens: BTreeSet<(String, String)>,
@@ -541,7 +544,7 @@ pub fn select_invocation<'a>(
         residuals.push(Residual::new(
             ResidualKind::UnboundControlSurface,
             ResidualSurface::Control,
-            "argument region ownership is unresolved; known child effects are partial",
+            ARGUMENT_REGION_OWNERSHIP_GAP,
         ));
     }
     Ok(InvocationSelection {

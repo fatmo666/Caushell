@@ -490,3 +490,64 @@ fn moving_into_dot_does_not_drop_an_outside_source_or_follow_an_outside_landing_
     let response = check("mv src/input src/extra .", view);
     assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
 }
+
+#[test]
+fn split_calendar_operands_keep_both_move_roles_in_the_observed_directory() {
+    for command in [
+        r#"mv input.dat archive/$(date -d '@0' +%Y%m%d).dat"#,
+        "mv input.dat archive/$(/bin/date +%Y%m%d).dat",
+    ] {
+        let view = Namespace::ordinary()
+            .set("/workspace/input.dat", FilesystemEntry::File)
+            .set("/workspace/archive", FilesystemEntry::Directory)
+            .set("/workspace/archive/item", FilesystemEntry::File)
+            .set("/workspace/42.dat", FilesystemEntry::Directory);
+        let response = check(command, view);
+        assert_eq!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+        assert!(has_relocation_proof(&response));
+        for operation in [PathTargetOperation::MoveSource, PathTargetOperation::Write] {
+            assert!(response.decision_trace.path_targets.iter().any(|p| {
+                p.operation == operation && matches!(
+                    &p.resolution, SemanticResolution::Resolved {
+                        value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                    } if roots == &["/workspace"]
+                )
+            }));
+        }
+        assert!(response.decision_trace.execution_semantics.iter().any(|unit|
+            unit.normalized_command_name == "date"));
+    }
+}
+
+#[test]
+fn split_calendar_move_requires_local_operands_and_a_complete_namespace() {
+    for command in [
+        "mv /outside/input.dat archive/$(date +%Y%m%d).dat",
+        "mv input.dat ../archive/$(date +%Y%m%d).dat",
+        "mv input.dat archive/$(date +%Y/%m%d).dat",
+        "mv input.dat archive/$(date +%Y%m%d 2>&1).dat",
+        "mv input.dat archive/$(date +%Y%m%d)/.dat",
+        "mv input.dat archive/$(date +%Y%m%d)..",
+        "mv input.dat archive/$(date +%Y%m%d).dat other.dat",
+    ] {
+        let response = check(command, Namespace::ordinary());
+        assert_ne!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+        assert!(!has_relocation_proof(&response));
+    }
+    let command = "mv input.dat archive/$(date +%Y%m%d).dat";
+    for path in ["/workspace/archive", "/workspace/input.dat", "/workspace/42.dat"] {
+        let view = Namespace::ordinary().set(
+            path,
+            FilesystemEntry::Symlink { target: "/outside".into() },
+        );
+        let response = check(command, view);
+        assert_eq!(response.decision, Decision::NeedApproval, "{path}: {:?}", response.reasons);
+        assert!(!has_relocation_proof(&response));
+    }
+    let view = Namespace::ordinary().set(
+        "/workspace/archive",
+        FilesystemEntry::Unavailable { reason: "fixture observation missing".into() },
+    );
+    let response = check(command, view);
+    assert_eq!(response.decision, Decision::NeedApproval, "{:?}", response.reasons);
+}
