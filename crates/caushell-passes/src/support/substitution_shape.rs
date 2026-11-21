@@ -237,6 +237,17 @@ pub(crate) fn substitution_shapes(
             };
             if shell_kind == ShellKind::Bash
                 && command.command_name.as_deref() == Some("touch")
+                && matches!(command.tokens.as_slice(), [flag, timestamp, _]
+                    if flag.text == "-t" && timestamp.span == token.span)
+                && !token.quoted
+                && token.text == substitution.text
+                && calendar_date_format(registry, substitution, bindings, aliases, false)
+                    .is_some_and(|format| decimal_clock_format(&format))
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::DecimalCalendarFields));
+            }
+            if shell_kind == ShellKind::Bash
+                && command.command_name.as_deref() == Some("touch")
                 && command.tokens.len() == 1
                 && command.prefix_assignments.is_empty()
                 && !command.in_pipeline
@@ -386,16 +397,33 @@ fn calendar_filename_fields(
     {
         return false;
     }
-    let Ok(parsed) = parse_command(&capture.body_text, ShellKind::Bash) else {
-        return false;
-    };
-    let Some(producer) = plain_single_producer(&parsed) else {
-        return false;
-    };
-    let Some(name @ ("date" | "/bin/date" | "/usr/bin/date")) =
-        producer.command_name.as_deref()
+    let Some(format) = calendar_date_format(registry, capture, bindings, aliases, directory_prefix)
     else {
         return false;
+    };
+    let Some(rest) = format.strip_prefix("+%Y") else {
+        return false;
+    };
+    let chunks = rest.as_bytes().chunks_exact(2);
+    !rest.is_empty()
+        && chunks.remainder().is_empty()
+        && chunks.into_iter().all(|part| matches!(part, b"%m" | b"%d" | b"%H" | b"%M" | b"%S"))
+}
+
+fn calendar_date_format(
+    registry: &ProfileRegistry,
+    capture: &CommandSubstitutionFact,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+    allow_date_operand: bool,
+) -> Option<String> {
+    if capture.body_text.len() > 8192 {
+        return None;
+    }
+    let parsed = parse_command(&capture.body_text, ShellKind::Bash).ok()?;
+    let producer = plain_single_producer(&parsed)?;
+    let name @ ("date" | "/bin/date" | "/usr/bin/date") = producer.command_name.as_deref()? else {
+        return None;
     };
     if producer.command_name_runtime_data || aliases.contains_key(name)
         || bindings.function_binding(name).is_some() || bindings.profile_has_alias_shadow(name)
@@ -403,7 +431,7 @@ fn calendar_filename_fields(
             p.primary_name() == "date" && p.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
         })
     {
-        return false;
+        return None;
     }
     let decode = |argument: &CommandToken| {
         caushell_parse::decode_static_shell_argument(
@@ -412,29 +440,35 @@ fn calendar_filename_fields(
     };
     let format = match producer.tokens.as_slice() {
         [format] => decode(format),
-        [flag, expression, format] if directory_prefix
+        [flag, expression, format] if allow_date_operand
             && decode(flag).as_deref() == Some("-d")
             && decode(expression).is_some() => decode(format),
         _ => None,
-    };
-    let Some(format) = format else {
-        return false;
-    };
-    let Some(rest) = format.strip_prefix("+%Y") else {
-        return false;
-    };
-    let chunks = rest.as_bytes().chunks_exact(2);
-    if rest.is_empty() || !chunks.remainder().is_empty()
-        || !chunks.into_iter().all(|part| matches!(part, b"%m" | b"%d" | b"%H" | b"%M" | b"%S"))
-    {
-        return false;
-    }
+    }?;
     matches!(
         resolve_invocation_artifact_with_bindings(
             registry, producer, InvocationRuntimeContext::default(), bindings,
         ),
         ResolveInvocationArtifactResult::Resolved(r) if r.proven_arithmetic_stdout()
-    )
+    ).then_some(format)
+}
+
+fn decimal_clock_format(format: &str) -> bool {
+    let Some(rest) = format.strip_prefix('+') else {
+        return false;
+    };
+    let mut found_conversion = false;
+    let mut bytes = rest.bytes();
+    while let Some(byte) = bytes.next() {
+        if byte.is_ascii_digit() {
+            continue;
+        }
+        if byte != b'%' || !matches!(bytes.next(), Some(b'm' | b'd' | b'H' | b'M' | b'S')) {
+            return false;
+        }
+        found_conversion = true;
+    }
+    found_conversion
 }
 
 /// A whole quoted capture of a portable find path listing keeps the

@@ -198,6 +198,8 @@ fn paths(roots: &[&str]) -> RuntimeArgumentDomain {
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     }
 }
 #[test]
@@ -280,6 +282,8 @@ fn literal_replacement_preserves_only_unaffected_path_anchors() {
             may_escape: false,
             basename_suffix: Some("draft".into()),
             no_adjacent_slashes: true,
+            dot_relative_components: false,
+            execdir_leaf: false,
         },
     );
     for command in [
@@ -294,6 +298,8 @@ fn literal_replacement_preserves_only_unaffected_path_anchors() {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: true,
+                dot_relative_components: false,
+                execdir_leaf: false,
             }),
             "{command}: {materialized:?}"
         );
@@ -319,6 +325,8 @@ fn literal_replacement_preserves_only_unaffected_path_anchors() {
             may_escape: true,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         },
     );
     assert!(

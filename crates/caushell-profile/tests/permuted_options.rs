@@ -126,6 +126,8 @@ fn bounded_native_batches_keep_per_item_path_proof_without_claiming_scalar_arity
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     });
     let shape = argument_structure(tail);
     assert_eq!(shape.fields, ArgumentFieldCount::ZeroOrMore);

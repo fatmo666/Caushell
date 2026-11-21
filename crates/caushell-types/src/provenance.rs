@@ -200,6 +200,14 @@ pub enum RuntimeArgumentDomain {
         /// This is a spelling fact, independent of containment.
         #[serde(default, skip_serializing_if = "std::ops::Not::not")]
         no_adjacent_slashes: bool,
+        /// Each native spelling is "." or starts with "./", and its path
+        /// components contain no parent traversal. This is independent of
+        /// the filesystem and does not certify the target namespace.
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        dot_relative_components: bool,
+        /// Native callback spelling is a leaf, optionally prefixed with "./".
+        #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+        execdir_leaf: bool,
     },
     /// One path-valued input surrounded by already-decoded argv bytes.
     /// Roots retain their producer spelling; affixes are not shell source.
@@ -215,6 +223,18 @@ pub enum RuntimeArgumentDomain {
 pub const ARITHMETIC_STDOUT_CHARS: &str = "0123456789+- \t\n\r\x0b\x0c";
 
 impl RuntimeArgumentDomain {
+    pub fn has_dot_relative_components(&self) -> bool {
+        matches!(self, Self::PathSet {
+            roots, may_escape: false, dot_relative_components: true, ..
+        } if roots.as_slice() == ["."])
+    }
+
+    pub fn has_execdir_leaf(&self) -> bool {
+        matches!(self, Self::PathSet {
+            roots, may_escape: false, execdir_leaf: true, ..
+        } if roots.as_slice() == ["."])
+    }
+
     pub fn is_spelling_template(&self) -> bool {
         matches!(self, Self::TextTemplate { .. } | Self::ArithmeticTemplate { .. })
     }

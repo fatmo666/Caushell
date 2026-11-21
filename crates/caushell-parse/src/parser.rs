@@ -610,6 +610,97 @@ pub fn parse_command(
     Ok(artifact)
 }
 
+/// Bash can discard an unpaired final backslash when reading a script and
+/// retain it as one literal byte when given a command string. Keep both
+/// interpretations only when they differ in the final argument of a complete,
+/// simple command. The caller must check both interpretations.
+pub fn bash_terminal_argument_escape(
+    source: &str,
+) -> Option<[ParsedCommandArtifact; 2]> {
+    let prefix = source.strip_suffix('\\')?;
+    if prefix.ends_with('\\') || source.len() > 4096 {
+        return None;
+    }
+    let mut discarded = parse_command(prefix, ShellKind::Bash).ok()?;
+    let mut literal_source = source.to_owned();
+    literal_source.push('\\');
+    let mut retained = parse_command(&literal_source, ShellKind::Bash).ok()?;
+    let [left] = discarded.commands.as_slice() else {
+        return None;
+    };
+    let [right] = retained.commands.as_slice() else {
+        return None;
+    };
+    if [&discarded, &retained].into_iter().any(|parsed| {
+        parsed.status != ParseStatus::Complete || !parsed.redirections.is_empty()
+    }) || [left, right].into_iter().any(|command| {
+        command.in_pipeline
+            || command.guarded
+            || command.conditional_execution
+            || command.control_flow_span.is_some()
+            || command.shell_scope_span.is_some()
+            || command.terminator.is_some()
+            || command.span != command.top_level_span
+            || !command.prefix_assignments.is_empty()
+    }) {
+        return None;
+    }
+    let right_arg = right.tokens.last()?;
+    let separate = right.tokens.len() == left.tokens.len() + 1;
+    if right_arg.kind != crate::CommandTokenKind::Arg
+        || right_arg.quoted
+        || right_arg.span.end_byte != source.len() + 1
+    {
+        return None;
+    }
+    let mut shape = retained.clone();
+    shape.raw_command = discarded.raw_command.clone();
+    let check = &mut shape.commands[0];
+    check.text = left.text.clone();
+    check.span = left.span.clone();
+    check.top_level_span = left.top_level_span.clone();
+    if separate {
+        if right_arg.span.start_byte != prefix.len()
+            || right_arg.text != r"\\"
+            || !right_arg.command_substitutions.is_empty()
+        {
+            return None;
+        }
+        check.tokens.pop();
+    } else {
+        let left_arg = left.tokens.last()?;
+        if left_arg.kind != crate::CommandTokenKind::Arg
+            || left_arg.quoted
+            || left_arg.span.start_byte != right_arg.span.start_byte
+            || left_arg.span.end_byte != prefix.len()
+            || left_arg.command_substitutions != right_arg.command_substitutions
+        {
+            return None;
+        }
+        *check.tokens.last_mut()? = left_arg.clone();
+    }
+    if shape != discarded {
+        return None;
+    }
+    // Source positions continue to refer to the original request, including
+    // the byte at EOF. Only the argument projection differs across branches.
+    for (keeps_escape, parsed) in [(false, &mut discarded), (true, &mut retained)] {
+        parsed.raw_command = source.to_owned();
+        let command = &mut parsed.commands[0];
+        command.text = source.get(command.span.start_byte..)?.to_owned();
+        let cover_eof = |span: &mut crate::SourceSpan| {
+            span.end_column = span.end_column + source.len() - span.end_byte;
+            span.end_byte = source.len();
+        };
+        cover_eof(&mut command.span);
+        cover_eof(&mut command.top_level_span);
+        if keeps_escape || !separate {
+            cover_eof(&mut command.tokens.last_mut()?.span);
+        }
+    }
+    Some([discarded, retained])
+}
+
 /// Plan a bounded, partial scalar observation. This walks grammar nodes, never
 /// shell-looking text in single quotes, comments, or embedded tool programs.
 /// Omitted names and indirect/array values must remain unknown to consumers.

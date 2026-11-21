@@ -100,6 +100,8 @@ fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
             may_escape: escape,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         });
         let facts = argument_structure(arg);
         assert_eq!(facts.static_prefix, prefix, "{arg:?}");
@@ -113,6 +115,8 @@ fn scalar_path_domain_uses_all_argv_anchors_not_one_representative_root() {
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     });
     assert_eq!(
         argument_structure(arg).fields,

@@ -26,6 +26,8 @@ fn tail(root: &str) -> ProjectedArg {
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     });
     a
 }

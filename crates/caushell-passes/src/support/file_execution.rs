@@ -17,6 +17,7 @@ use std::collections::BTreeSet;
 pub(crate) struct FileExecutionCheck {
     pub source: NodeId,
     pub slot: String,
+    pub slots: BTreeSet<String>,
     pub exempt: bool,
     /// Non-filesystem channels may suppress a path warning, but cannot
     /// authorize an opaque program, including when mixed with local files.
@@ -167,6 +168,7 @@ pub(crate) fn file_execution_checks(
                 ),
                 source: reference.source,
                 slot: reference.slot,
+                slots,
                 exempt,
                 file_targets_resolved,
             }

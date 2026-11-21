@@ -142,3 +142,29 @@ fn repository_query_coverage_keeps_mutations_and_opaque_execution_separate() {
             .any(|f| f.rule_id == RuleId::InteractiveEscapeSurface)
     );
 }
+
+#[test]
+fn git_log_binds_explicit_display_formats_and_preserves_policy_guards() {
+    for command in [
+        "git log --pretty=format: --name-only | wc -l",
+        "git log --pretty=format:'%h|%an|%s' -10 | cat",
+    ] {
+        let response = check(command);
+        assert_eq!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+        assert!(response.decision_trace.execution_semantics.iter().any(|semantics| {
+            semantics.normalized_command_name == "git" && semantics.form_id == "inspect_history"
+        }), "{command}");
+    }
+    for command in [
+        "git log --pretty=format:'%s'",
+        "git log --pretty=custom | cat",
+        "git log --pretty=format:'%G?' | cat",
+        "git log --pretty format:'%s' | cat",
+        "git log --pretty=format:'%s' --ext-diff | cat",
+        "git log --pretty=format:'%s' --textconv | cat",
+        "git log --pretty=format:'%s' > /outside/history",
+    ] {
+        let response = check(command);
+        assert_ne!(response.decision, Decision::Allow, "{command}: {:?}", response.reasons);
+    }
+}

@@ -20,6 +20,25 @@ fn controls(command: &str) -> CheckResponse {
 }
 
 #[test]
+fn small_decimal_sequence_populates_each_xargs_replacement_frame() {
+    let test = r#"seq 3 | xargs -I {} -P 2 bash -c 'echo item {}; echo end {}'"#;
+    let result = controls(test);
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    let commands: Vec<_> = result.decision_trace.execution_semantics.iter()
+        .filter(|semantic| semantic.normalized_command_name == "echo")
+        .map(|semantic| semantic.source.raw_text.as_str())
+        .collect();
+    for record in ["1", "2", "3"] {
+        assert!(commands.contains(&format!("echo item {record}").as_str()), "{commands:?}");
+        assert!(commands.contains(&format!("echo end {record}").as_str()), "{commands:?}");
+    }
+    for changed in [test.replace("seq 3", "seq 99"), test.replace(" | ", " |& ")] {
+        let result = controls(&changed);
+        assert_eq!(result.decision, Decision::NeedApproval, "{changed}: {:?}", result.reasons);
+    }
+}
+
+#[test]
 fn original_requests_check_all_layouts_and_keep_the_distinct_child_effects() {
     for row in fixture_requests() {
         let result = ShellQueryCore::new().check(request(&row["request"]["payload"]));

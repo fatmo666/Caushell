@@ -32,6 +32,30 @@ pub struct ScopedOptions {
 
 type Declarations = BTreeMap<String, Option<FlagOperandMode>>;
 
+/// A native replacement can preserve an entire long-option name and equals
+/// sign while leaving the value unknown. Diff's anchor operand grammar
+/// interprets the suffix as one file or stdin operand.
+pub fn native_diff_anchor(argument: &crate::ProjectedArg) -> Option<&'static str> {
+    use caushell_types::{ImplicitInputSource, RuntimeArgumentDomain};
+
+    if argument.implicit_input_source != Some(ImplicitInputSource::StdinData)
+        || argument.node_kind != "runtime_scalar"
+    {
+        return None;
+    }
+    match argument.runtime_argument_domain.as_ref()? {
+        RuntimeArgumentDomain::TextTemplate { prefix, .. }
+        | RuntimeArgumentDomain::PathTemplate { prefix, .. } => {
+            match prefix.split_once('=')?.0 {
+                "--from-file" => Some("--from-file"),
+                "--to-file" => Some("--to-file"),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
 pub fn declared_options(
     profile: &crate::CommandProfile,
 ) -> Result<BTreeMap<String, Option<FlagOperandMode>>, String> {
@@ -384,6 +408,20 @@ pub(crate) fn scan_leading_options(
         .map(|flag| flag.as_str())
         .collect();
     while index < scope.end_index {
+        if permuted
+            && !trailing
+            && positional_prefix.is_none()
+            && operand_matcher.is_none()
+            && projection.command_name.as_deref() == Some("diff")
+            && let Some(flag) = native_diff_anchor(&projection.args[index])
+            && declarations.get(flag) == Some(&Some(FlagOperandMode::NextArg))
+            && !ends_scope.contains(flag)
+        {
+            result.flags.push((index, FlagName::new(flag)));
+            index += 1;
+            result.scope.end_index = index;
+            continue;
+        }
         let structure = crate::argument_structure(&projection.args[index]);
         if !structure.exact {
             // Quotes certify at most field width, not native option ownership.

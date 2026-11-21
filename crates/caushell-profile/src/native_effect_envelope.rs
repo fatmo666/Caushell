@@ -412,6 +412,8 @@ pub(crate) fn retain_move_path_fields(
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             }),
             origin: Some(BoundImplicitArgumentOrigin {
                 span: tail.span.clone(),
@@ -421,6 +423,90 @@ pub(crate) fn retain_move_path_fields(
     }
     bound.operation_semantics_unresolved = false;
     bound.residuals.clear();
+}
+
+/// The timestamp and Bash PID may both split. None of their fields can
+/// become options or the stdout descriptor. Any remaining operand is a
+/// decimal name in cwd, the literal PID directory, or a child of that
+/// directory. Keep these families subject to normal write-path checks.
+pub(crate) fn retain_touch_timestamp_fields(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    argv: &crate::ProjectedInvocation,
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
+    bound: &mut crate::BoundInvocation,
+) {
+    use crate::*;
+    let [flag, timestamp, target] = argv.args.as_slice() else {
+        return;
+    };
+    if profile.primary_name() != "touch"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || argv.shell_kind != caushell_types::ShellKind::Bash
+        || command.command_name_runtime_data
+        || !command.prefix_assignments.is_empty()
+        || argument_structure(flag).exact_value() != Some("-t")
+        || !matches!(proofs, [(span, SubstitutionOutputProof::DecimalCalendarFields)]
+            if span == &timestamp.span)
+        || [timestamp, target].iter().any(|argument| {
+            argument.quoted || argument.runtime_data || argument.implicit_input_source.is_some()
+        })
+        || bound.form_id.as_str() != "create_or_update_paths"
+        || !matches!(bound.applied_modifiers.as_slice(), [id] if id.as_str() == "timestamp")
+        || !bound.operation_semantics_unresolved
+        || !matches!(bound.residuals.as_slice(), [gap]
+            if gap.kind == ResidualKind::UnboundControlSurface
+                && gap.surface == ResidualSurface::Control
+                && gap.reason == crate::bind::ARGUMENT_REGION_OWNERSHIP_GAP
+                && gap.slot.is_none())
+    {
+        return;
+    }
+    let Some(directory) = target.text.strip_suffix("$$").filter(|p| p.ends_with('/')) else {
+        return;
+    };
+    if directory.starts_with(['-', '+'])
+        || directory.starts_with("//")
+        || directory.split('/').any(|component| component == "..")
+        || !directory.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-'))
+    {
+        return;
+    }
+    let [effect] = bound.effects.as_slice() else {
+        return;
+    };
+    let EffectTarget::Slot(slot) = &effect.target else {
+        return;
+    };
+    if effect.kind != EffectKind::WritePath
+        || effect.namespace_effect != Some(caushell_types::PathNamespaceEffect::RegularFileWrite)
+    {
+        return;
+    }
+    let Some(paths) = bound.bound_parameters.iter_mut().find(|parameter| &parameter.name == slot)
+    else {
+        return;
+    };
+    if !matches!(paths.values.as_slice(), [BoundValue::Argument { span, .. }] if span == &target.span) {
+        return;
+    }
+    paths.values[0] = BoundValue::ImplicitInput {
+        source: ImplicitInputSource::CommandSubstitution,
+        domain: Some(caushell_types::RuntimeArgumentDomain::PathSet {
+            roots: vec![directory.into(), "./".into()],
+            may_escape: false,
+            basename_suffix: None,
+            no_adjacent_slashes: !directory.contains("//"),
+            dot_relative_components: false,
+            execdir_leaf: false,
+        }),
+        origin: None,
+    };
+    bound.operation_semantics_unresolved = false;
+    bound.residuals.clear();
+    bound.stream_contract = None;
+    bound.stdout_growth_complete = false;
 }
 
 /// The lone decimal word following pv's rate option can be absent, be the
@@ -677,6 +763,7 @@ pub(crate) fn budget_gaps_are_data_operands(
     selection: &crate::InvocationSelection<'_>,
     materialized: &crate::MaterializedProjectedInvocation,
     bound: &crate::BoundInvocation,
+    known_printf_format: Option<&caushell_parse::SourceSpan>,
 ) -> bool {
     use crate::*;
     if !native_surface_is_direct(profile)
@@ -709,7 +796,10 @@ pub(crate) fn budget_gaps_are_data_operands(
     if first == 0
         || materialized.invocation.args[..first]
             .iter()
-            .any(|arg| argument_structure(arg).exact_value().is_none())
+            .any(|arg| {
+                argument_structure(arg).exact_value().is_none()
+                    && known_printf_format != Some(&arg.span)
+            })
     {
         return false;
     }

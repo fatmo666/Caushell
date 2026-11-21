@@ -62,9 +62,17 @@ pub(super) fn strictly_bound_invocation(profile: &CommandProfile, resolved: &Res
     let mut after_options = false;
     for (index, arg) in argv.args.iter().enumerate() {
         let shape = caushell_profile::argument_structure(arg);
+        let owned_diff_anchor = profile.primary_name() == "diff"
+            && shape.fields == caushell_profile::ArgumentFieldCount::ExactlyOne
+            && caushell_profile::native_diff_anchor(arg).is_some_and(|expected| {
+                selection.option_scope.as_ref().is_some_and(|scope| {
+                    scope.flags.iter().any(|(at, flag)| *at == index && flag.as_str() == expected)
+                })
+            });
         if shape.exact_value() == Some("--") && selection.option_terminators.contains(&index) {
             after_options = true;
         } else if !after_options
+            && !owned_diff_anchor
             && shape.exact_value().is_none()
             && (shape.fields == caushell_profile::ArgumentFieldCount::Unknown
                 || shape.may_start_with("-")

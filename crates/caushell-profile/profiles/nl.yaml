@@ -23,14 +23,15 @@ forms:
     parameters: [{name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}]
     stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque, stdout_dependency: independent, stderr_dependency: independent}
   - id: number_lines
+    # GNU nl reads consecutive named operands as one numbered stream.
     stdout_growth: {kind: preserve_records, empty_slots: [input_paths]}
-    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}, {kind: not, item: {kind: has_positional_at, index: 1}}]}
+    selector: {kind: all, items: [&running {kind: not, item: {kind: has_modifier, modifier: information}}, {kind: not, item: &stdin {kind: any, items: [{kind: no_positional_args}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
     remaining_selector: {kind: no_positional_args}
     parameters: &inputs
       - name: input_operand
         semantic: {kind: plain_value}
-        binding: {kind: next_positional}
-        cardinality: optional_one
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
         structured_projection:
           branches: [{matcher: {kind: literal, value: '-'}, target: null}]
           fallback: {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}}

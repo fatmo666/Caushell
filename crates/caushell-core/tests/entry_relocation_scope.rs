@@ -112,6 +112,60 @@ fn check(command: &str, view: Namespace) -> CheckResponse {
         .with_filesystem_view(Arc::new(view))
         .check(request(command))
 }
+
+#[test]
+fn composed_relative_move_paths_keep_the_find_tree_bound() {
+    let command = r#"find . -type f -name '*.item' -exec bash -c 'parent="${1%/*}"; mv "$1" "$parent/$parent-copy-${1##*/}"' - '{}' \;"#;
+    let fixture = || Namespace::ordinary().set("/workspace/src/example.item", FilesystemEntry::File);
+    let response = check(command, fixture());
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    for slot in ["source_paths", "destination_path"] {
+        assert!(response.decision_trace.path_targets.iter().any(|target| {
+            target.slot_name == slot && matches!(&target.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, may_escape: false }
+            } if roots == &["/workspace"])
+        }), "{slot}");
+    }
+    let symlink = fixture().set("/workspace/link", FilesystemEntry::Symlink {
+        target: "/outside".into(),
+    });
+    assert_ne!(check(command, symlink).decision, Decision::Allow);
+    for changed in [
+        command.replace("find .", "find src"),
+        command.replace("mv \"$1\"", "parent=\"$UNOBSERVED\"; mv \"$1\""),
+        command.replace("\"$parent/$parent-copy-${1##*/}\"", "$parent/$parent-copy-${1##*/}"),
+    ] {
+        assert_ne!(check(&changed, fixture()).decision, Decision::Allow, "{changed}");
+    }
+}
+
+#[test]
+fn execdir_leaf_and_basename_composition_keeps_the_move_in_scope() {
+    let command = r#"find . -type f -name '*.item' -execdir bash -c 'name="${PWD##*/}"; [[ "$1" != "$name-"* ]] && mv "$1" "./$name-copy-$1"' - '{}' \;"#;
+    let fixture = || Namespace::ordinary().set("/workspace/src/example.item", FilesystemEntry::File);
+    let response = check(command, fixture());
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    for slot in ["source_paths", "destination_path"] {
+        assert!(response.decision_trace.path_targets.iter().any(|target| {
+            target.slot_name == slot && matches!(&target.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, may_escape: false }
+            } if roots == &["/workspace"])
+        }), "{slot}");
+    }
+    let symlink = fixture().set("/workspace/link", FilesystemEntry::Symlink {
+        target: "/outside".into(),
+    });
+    assert_ne!(check(command, symlink).decision, Decision::Allow);
+    for changed in [
+        command.replace("find .", "find src"),
+        command.replace("${PWD##*/}", "$PWD"),
+        command.replace("./$name-copy-$1", "./$name$1"),
+        command.replace("\"./$name-copy-$1\"", "./$name-copy-$1"),
+    ] {
+        assert_ne!(check(&changed, fixture()).decision, Decision::Allow, "{changed}");
+    }
+}
+
 fn has_relocation_proof(r: &CheckResponse) -> bool {
     r.decision_trace.path_targets.iter().flat_map(|f| &f.namespace_proofs)
         .any(|p| serde_json::to_value(p).unwrap()["effect"] == "entry_relocation")

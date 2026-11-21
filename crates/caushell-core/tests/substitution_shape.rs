@@ -418,3 +418,35 @@ fn split_calendar_filenames_require_literal_anchors_and_a_stable_namespace() {
         assert_ne!(result.decision, Decision::Allow);
     }
 }
+
+#[test]
+fn split_touch_timestamp_and_pid_keep_a_bounded_write() {
+    let workspace = SubstitutionWorkspace::new();
+    std::fs::create_dir(workspace.0.join("bucket")).unwrap();
+    for ifs in [None, Some("09")] {
+        let result = workspace.check("touch -t $(date +%m%d%H%M) ./bucket/$$", ifs);
+        assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|target| {
+            target.operation == PathTargetOperation::Write
+                && matches!(&target.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots.len() == 2
+                    && roots.contains(&workspace.0.to_string_lossy().into_owned())
+                    && roots.contains(&workspace.0.join("bucket").to_string_lossy().into_owned()))
+        }));
+    }
+    for source in [
+        "touch -t $(date +%m%d%H%M) /outside/$$",
+        "touch -t $(date +%m/%d) ./bucket/$$",
+        "touch -t $(date +%m%d%H%M 2>&1) ./bucket/$$",
+        "touch -t $(date +%m%d%H%M) ./bucket/$target",
+    ] {
+        assert_ne!(workspace.check(source, None).decision, Decision::Allow, "{source}");
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/outside/file", workspace.0.join("bucket/123")).unwrap();
+        let result = workspace.check("touch -t $(date +%m%d%H%M) ./bucket/$$", None);
+        assert_ne!(result.decision, Decision::Allow);
+    }
+}

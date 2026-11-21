@@ -411,6 +411,8 @@ pub fn bash_pid_redirection_path_domain(
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     })
 }
 

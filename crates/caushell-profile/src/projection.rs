@@ -64,6 +64,9 @@ pub enum SubstitutionOutputProof {
     /// prefix and extension. All nonempty fields name working-directory
     /// descendants, but splitting can shift earlier fields into source roles.
     LocalMovePathFields,
+    /// An unquoted date capture whose stdout is empty or decimal digits.
+    /// Field splitting may still remove it or produce more than one field.
+    DecimalCalendarFields,
     /// An unsigned line count followed by a literal q. Splitting may
     /// still produce empty fields and additional input operands.
     LineCountQuit,

@@ -568,6 +568,7 @@ fn resolve_invocation_with_proofs<'a>(
                     }
                     crate::SubstitutionOutputProof::LocalFilenameFields
                     | crate::SubstitutionOutputProof::LocalMovePathFields
+                    | crate::SubstitutionOutputProof::DecimalCalendarFields
                     | crate::SubstitutionOutputProof::LineCountQuit
                     | crate::SubstitutionOutputProof::SedDayTemplate { .. } => {}
                 }
@@ -640,7 +641,10 @@ fn resolve_invocation_with_proofs<'a>(
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
             let bound = crate::environment_inputs::attach(profile, bound, command, bindings);
             let mut bound = attach_argument_file_effects(profile, &materialized_projection, bound);
-            crate::native_variable_writes::attach(profile, &materialized_projection, &lookup_domain, context.shell_kind, bindings, &mut bound);
+            let known_printf_format = crate::native_variable_writes::attach(
+                profile, &projection, &materialized_projection, &lookup_domain,
+                context.shell_kind, bindings, &mut bound,
+            );
             // Variable-writing CLI ownership must not use a hypothetical
             // one-word expansion. Unknown width can swallow controls or add
             // unmodeled destinations, even when this selected form is a query.
@@ -724,7 +728,9 @@ fn resolve_invocation_with_proofs<'a>(
             // data operand suffix may close the operation-level uncertainty;
             // variable writes, configuration and every other gap remain.
             if materialized_projection.shell_expansion_unresolved {
-                if crate::native_effect_envelope::budget_gaps_are_data_operands(profile, &selection, &materialized_projection, &bound) {
+                if crate::native_effect_envelope::budget_gaps_are_data_operands(
+                    profile, &selection, &materialized_projection, &bound, known_printf_format.as_ref(),
+                ) {
                     crate::native_effect_envelope::retain_symbolic_argv_stream_contract(&mut bound, caushell_types::NativeArgvEffectEnvelope::DataOnly);
                 } else {
                     bound.operation_semantics_unresolved = true;
@@ -738,6 +744,9 @@ fn resolve_invocation_with_proofs<'a>(
                     profile, command, &projection, proofs, &mut bound,
                 );
                 crate::native_effect_envelope::retain_move_path_fields(
+                    profile, command, &materialized_projection.invocation, proofs, &mut bound,
+                );
+                crate::native_effect_envelope::retain_touch_timestamp_fields(
                     profile, command, &materialized_projection.invocation, proofs, &mut bound,
                 );
                 crate::native_effect_envelope::retain_top_batch_pid_fields(

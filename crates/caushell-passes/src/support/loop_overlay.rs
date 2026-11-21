@@ -230,6 +230,8 @@ fn path_domain(mut roots: Vec<String>) -> Option<RuntimeArgumentDomain> {
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     })
 }
 
@@ -283,6 +285,8 @@ mod tests {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             },
         );
         assert!(

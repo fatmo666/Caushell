@@ -3449,6 +3449,37 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 }
             }
 
+            if let Some(flag_name) = occurrence_name
+                && operand_mode == FlagOperandMode::NextArg
+                && value_constraints.is_empty()
+                && self.projection.command_name.as_deref() == Some("diff")
+                && crate::native_diff_anchor(arg) == Some(flag_name.as_str())
+            {
+                self.consumed[index] = true;
+                self.bound_option_occurrences.push((index, flag_name.clone()));
+                if let Some(modifier) = modifier {
+                    self.modifier_parameter_flags.push(ArgumentBindingSource::MatchedModifierFlag {
+                        modifier_id: modifier.id.clone(),
+                        flag_name: flag_name.clone(),
+                        flag_span: arg.span.clone(),
+                    });
+                }
+                // The option prefix is owned. Without the operand bytes, its
+                // structured projection retains every applicable effect slot.
+                values.push(BoundValue::ImplicitInput {
+                    source: ImplicitInputSource::StdinData,
+                    domain: Some(caushell_types::RuntimeArgumentDomain::TextTemplate {
+                        prefix: String::new(),
+                        suffix: String::new(),
+                    }),
+                    origin: Some(crate::BoundImplicitArgumentOrigin {
+                        span: arg.span.clone(),
+                        single_field: true,
+                    }),
+                });
+                continue;
+            }
+
             let flag_text = if self.exact_option_words {
                 crate::argument_regions::argv_value(arg)
             } else {

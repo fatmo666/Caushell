@@ -2106,6 +2106,16 @@ fn find_dispatch_candidates(
         roots: roots.clone(),
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: !follows_symlinks
+            && !roots_unknown
+            && roots.as_slice() == ["."]
+            && root_values.len() == 1
+            && !resolved.bound.operation_semantics_unresolved
+            && resolved.bound.residuals.is_empty()
+            && registry.lookup("find").profile.is_some_and(|profile| {
+                profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+            }),
+        execdir_leaf: false,
     };
     // Only a validated, static global minimum depth excludes the starting
     // points. Do not interpret arbitrary find predicates as scope proofs.
@@ -2153,6 +2163,8 @@ fn find_dispatch_candidates(
         may_escape: roots_unknown,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: search_domain.has_dot_relative_components(),
     };
     let mut candidates = Vec::new();
     let mut unresolved = Vec::new();
@@ -2173,6 +2185,7 @@ fn find_dispatch_candidates(
         let command_index = region.command_index;
         let end = region.end_index;
         let command_token = &tokens[command_index];
+        let command_value = decoded.get(command_index).and_then(|value| value.as_deref());
         let batch = decoded.get(end).and_then(|value| value.as_deref()) == Some("+");
         let basename_suffix =
             find_action_basename_suffix(resolved, &decoded, &root_values, region);
@@ -2202,6 +2215,14 @@ fn find_dispatch_candidates(
             let dynamic_placeholder = force_placeholder
                 || value.is_some_and(|value| value.contains("{}") && value != "{}");
             let unknown = value.is_none();
+            // The literal diff anchor precedes any filename bytes. Batched
+            // GNU find rejects another placeholder. Keep the one native
+            // option field while staying agnostic about the operand bytes.
+            let anchor = if batch && unknown && command_value == Some("diff") {
+                caushell_profile::native_diff_anchor(token)
+            } else {
+                None
+            };
             let domain = value.filter(|value| value.contains("{}")).map(|value| {
                 let mut domain = if execdir {
                     &execdir_domain
@@ -2234,8 +2255,14 @@ fn find_dispatch_candidates(
                 // Other unresolved shell expansions retain their original
                 // token so normal materialization can preserve the unknown.
                 implicit_input_source: (dynamic_placeholder || is_placeholder)
-                    .then_some(caushell_types::ImplicitInputSource::DispatchOutput),
-                runtime_argument_domain: domain,
+                    .then_some(caushell_types::ImplicitInputSource::DispatchOutput)
+                    .or_else(|| anchor.map(|_| TypedImplicitInputSource::StdinData)),
+                runtime_argument_domain: domain.or_else(|| {
+                    anchor.map(|flag| caushell_types::RuntimeArgumentDomain::TextTemplate {
+                        prefix: format!("{flag}="),
+                        suffix: String::new(),
+                    })
+                }),
                 runtime_data: !unknown && !dynamic_placeholder && !is_placeholder,
                 quoted: token.quoted,
                 node_kind: if dynamic_placeholder || is_placeholder {
@@ -2256,9 +2283,6 @@ fn find_dispatch_candidates(
             }
         };
 
-        let command_value = decoded
-            .get(command_index)
-            .and_then(|value| value.as_deref());
         let command = make_argument(command_slot, command_token, command_value, false);
         let operands = command_index + 1..end;
         let optional_fields = tokens[operands.clone()]
@@ -7719,9 +7743,20 @@ fn expanded_static_xargs_children(
             max_nested_parse_depth.saturating_sub(entry.depth),
         )
     };
+    let sequence_items = if native.is_none() && !evidence.complete
+        && let XargsDispatchMode::ReplaceToken { token } = &config.dispatch_mode
+        && dispatch_argument_scalar(&candidate.command).is_some_and(|name| !name.contains(token))
+    {
+        fixed_sequence_replacement_items(registry, entry, resolved, &config)
+    } else {
+        None
+    };
+    let enumerated_sequence = sequence_items.is_some();
     // A domain proof is useful even when none of the concrete input bytes are
     // known. Never reinterpret it as literal shell text or an exact argv list.
-    let input_domain = if native.is_none() && config.decoding_proved && !evidence.complete {
+    let input_domain = if native.is_none() && config.decoding_proved && !evidence.complete
+        && !enumerated_sequence
+    {
         match config.item_mode {
             XargsItemMode::NullSeparated if !has_applied_modifier(&resolved.bound, "arg_file") => {
                 stdin_path_domain_for_scope(registry, session, request, entry, max_nested_parse_depth)
@@ -7748,10 +7783,12 @@ fn expanded_static_xargs_children(
     } else {
         &[]
     };
-    let decoded_items =
-        xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref());
+    let decoded_items = sequence_items.or_else(|| {
+        xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref())
+    });
     // A failed native input decoder is not proof of an empty argv batch.
-    let input_complete = config.decoding_proved && evidence.complete && decoded_items.is_some();
+    let input_complete = config.decoding_proved && (evidence.complete || enumerated_sequence)
+        && decoded_items.is_some();
     let items = decoded_items
         .unwrap_or_default()
         .into_iter()
@@ -8009,7 +8046,7 @@ fn expanded_static_xargs_children(
         // A tool-level confirmation is a possible execution branch, not proof
         // that the child has no effects. Preserve its conditional status.
         command.conditional_execution |=
-            config.requires_confirmation || arity_alternatives || alternative_order;
+            config.requires_confirmation || arity_alternatives || alternative_order || enumerated_sequence;
         let child_bindings =
             dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
@@ -8100,6 +8137,78 @@ fn expanded_static_xargs_children(
         });
     }
     children
+}
+
+/// In replacement mode each complete line launches its own independent job.
+/// A small fixed seq can emit only these decimal records, even if it stops
+/// early. This enumeration is local to xargs; it asserts no observed bytes.
+fn fixed_sequence_replacement_items(
+    registry: &ProfileRegistry,
+    entry: &ExpandedFrontierEntry,
+    consumer: &caushell_profile::ResolvedInvocationArtifact,
+    config: &XargsStaticExpansionConfig,
+) -> Option<Vec<String>> {
+    use caushell_profile::ProfileSourceKind::BuiltIn;
+    let scope = &entry.static_payload_scope;
+    let parsed = &scope.parsed_scope;
+    if entry.origin_kind != ExecutionUnitOriginKind::TopLevel
+        || entry.depth != 0
+        || entry.shell_kind != caushell_types::ShellKind::Bash
+        || scope.stdin_is_parent_output
+        || scope.command_index != 1
+        || parsed.status != caushell_parse::ParseStatus::Complete
+        || !parsed.diagnostics.is_empty()
+        || !parsed.redirections.is_empty()
+        || !config.decoding_proved
+        || config.run_if_empty
+        || config.eof_marker.is_some()
+        || !matches!(config.dispatch_mode, XargsDispatchMode::ReplaceToken { .. })
+        || !matches!(config.item_mode, XargsItemMode::NewlineSeparated)
+        || consumer.bound.applied_modifiers.iter().any(|modifier| {
+            !matches!(modifier.as_str(),
+                "replace_token" | "replace_token_optional" | "max_processes" | "no_run_if_empty")
+        })
+    {
+        return None;
+    }
+    let [producer, command] = parsed.commands.as_slice() else { return None };
+    let bindings = &scope.scope_base_bindings;
+    if ["seq", "xargs"].iter().any(|name| {
+        bindings.function_binding(name).is_some()
+            || bindings.profile_has_alias_shadow(name)
+            || !registry.lookup(name).profile.is_some_and(|p| p.trust.source == BuiltIn)
+    }) || producer.command_name.as_deref() != Some("seq")
+        || producer.command_name_runtime_data
+        || producer.pipeline_span.is_none()
+        || producer.pipeline_span != command.pipeline_span
+        || [producer, command].iter().any(|c| {
+            c.guarded || c.conditional_execution || !c.prefix_assignments.is_empty()
+        })
+        || !parsed.raw_command.get(..producer.span.start_byte)?.trim().is_empty()
+        || parsed.raw_command.get(producer.span.end_byte..command.span.start_byte)?.trim() != "|"
+        || !parsed.raw_command.get(command.span.end_byte..)?.trim().is_empty()
+    {
+        return None;
+    }
+    let [limit] = producer.tokens.as_slice() else { return None };
+    let stop = limit.text.parse::<u8>().ok()?;
+    if !(1..=32).contains(&stop) || limit.text != stop.to_string()
+        || limit.implicit_input_source.is_some() || !limit.command_substitutions.is_empty()
+    {
+        return None;
+    }
+    let ResolveInvocationArtifactResult::Resolved(seq) =
+        caushell_profile::resolve_invocation_artifact_with_bindings(
+            registry, producer, InvocationRuntimeContext::new().with_shell_kind(entry.shell_kind),
+            bindings,
+        )
+    else {
+        return None;
+    };
+    if seq.bound.form_id.as_str() != "integer_sequence" || !seq.proven_arithmetic_stdout() {
+        return None;
+    }
+    Some((1..=stop).map(|value| value.to_string()).collect())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -12536,6 +12645,8 @@ modifiers:
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         };
         command.command_name.as_deref() == Some(command_name)
             && command.tokens.get(argument_index).is_some_and(|token| {
@@ -12554,6 +12665,8 @@ modifiers:
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         };
         matches!(&record.result, ResolveInvocationArtifactResult::Resolved(resolved)
             if resolved.bound.bound_parameters.iter().flat_map(|parameter| &parameter.values)
@@ -14139,6 +14252,8 @@ modifiers:
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         });
         argument.node_kind = "runtime_scalar".into();
         for (body, expected_fields, may_control) in [

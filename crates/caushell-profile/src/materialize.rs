@@ -39,6 +39,9 @@ pub enum ShellArrayKind {
 pub struct ShellVariableFacts {
     /// Nonempty signed decimal scalar, without claiming its current value.
     pub integer_scalar: bool,
+    /// Scalar produced by removing the longest prefix ending in '/'.
+    /// The remaining component may be empty, "." or "..".
+    pub basename_text: bool,
     pub scalar_shape: Option<crate::StdoutScalarShape>,
     pub array_kind: Option<ShellArrayKind>,
     pub element_shape: Option<crate::StdoutScalarShape>,
@@ -209,10 +212,36 @@ impl SessionBindings {
             self.command_lookup_domain = crate::CommandLookupDomain::Unknown;
         }
         let reason = "shell scope has multiple possible return paths";
+        let mut uncertain_environment_values = Vec::new();
+        let mut unobserved_environment_entries = Vec::new();
+        let partial_function_environments =
+            !self.child_environment_complete && self.in_function_scope && other.in_function_scope;
         let environment_differs = self.child_environment_complete
             != other.child_environment_complete
-            || self.environment_entries().collect::<BTreeMap<_, _>>()
-                != other.environment_entries().collect::<BTreeMap<_, _>>();
+            || {
+                let left: BTreeMap<_, _> = self.environment_entries().collect();
+                let right: BTreeMap<_, _> = other.environment_entries().collect();
+                let names = left.keys().chain(right.keys()).copied().collect::<std::collections::BTreeSet<_>>();
+                names.into_iter().any(|name| match (left.get(name), right.get(name)) {
+                    (left, right) if left == right => false,
+                    (Some(Some(SessionValue::OpaqueDynamic { .. })), Some(Some(_)))
+                    | (Some(Some(_)), Some(Some(SessionValue::OpaqueDynamic { .. }))) => {
+                        uncertain_environment_values.push(name.to_owned());
+                        false
+                    }
+                    (Some(Some(SessionValue::OpaqueDynamic { .. })), None)
+                    | (None, Some(Some(SessionValue::OpaqueDynamic { .. })))
+                        if partial_function_environments
+                            && [&self.entry_environment, &other.entry_environment]
+                                .into_iter()
+                                .all(|entry| entry.as_ref().and_then(|s| s.variable_binding(name)).is_none()) =>
+                    {
+                        unobserved_environment_entries.push(name.to_owned());
+                        false
+                    }
+                    _ => true,
+                })
+            };
         let names = self
             .variable_names()
             .chain(other.variable_names())
@@ -241,6 +270,24 @@ impl SessionBindings {
             // A missing export is not a proved absence. Do not let a safe
             // environment on one path hide configuration on the other.
             self.mark_shell_state_uncertain("return paths have unresolved export membership");
+        } else {
+            // Keep these entries opaque across the join. A different opaque
+            // value does not establish a change in the set of exported names.
+            // Forget matching shell values too, so a caller cannot re-export
+            // an exact scalar in place of the uncertain child environment.
+            for name in uncertain_environment_values {
+                self.insert_opaque_dynamic(&name, reason);
+                self.child_environment
+                    .insert(name, Some(SessionValue::opaque_dynamic(reason)));
+            }
+            // A missing entry in a partial environment has unknown
+            // membership. Joining it with an opaque value cannot establish
+            // either presence or absence for the caller or a child process.
+            for name in unobserved_environment_entries {
+                self.insert_opaque_dynamic(&name, reason);
+                self.child_environment.remove(&name);
+                self.native_variants.clear();
+            }
         }
         if self.positional_parameters_complete != other.positional_parameters_complete
             || self.positional_parameters != other.positional_parameters
@@ -1080,6 +1127,14 @@ impl SessionBindings {
         domain: caushell_types::RuntimeArgumentDomain,
     ) {
         self.insert_opaque_dynamic(name, "bounded shell iteration value");
+        self.set_argument_domain(name, domain);
+    }
+
+    pub fn set_argument_domain(
+        &mut self,
+        name: &str,
+        domain: caushell_types::RuntimeArgumentDomain,
+    ) {
         self.argument_domains.insert(name.into(), domain);
     }
 
@@ -2995,6 +3050,13 @@ pub fn materialize_argument_domain(
     let reference = exact_shell_parameter_reference(&arg.text);
     if whole_double_quoted
         && bindings.shell_kind() == caushell_types::ShellKind::Bash
+        && let Some(domain) = compose_dot_relative_path(&arg.text, bindings)
+            .or_else(|| compose_execdir_leaf_path(&arg.text, bindings))
+    {
+        return Some(domain);
+    }
+    if whole_double_quoted
+        && bindings.shell_kind() == caushell_types::ShellKind::Bash
         && let Some(ShellParameterReference::PatternSubstitution {
             parameter,
             pattern,
@@ -3066,6 +3128,137 @@ fn parameter_argument_domain<'a>(
         ShellParameterName::Variable(name) => bindings.argument_domain(name),
         ShellParameterName::Positional(position) => bindings.positional_argument_domain(*position),
     }
+}
+
+/// An ordinary scalar assignment can preserve the parent of a proved native
+/// relative path. Only the exact quoted parameter operation is covered.
+pub fn dot_relative_parent_assignment(
+    value: &caushell_parse::AssignmentValueFact,
+    bindings: &SessionBindings,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    if !value.quoted || value.node_kind != "string" || !value.command_substitutions.is_empty()
+        || bindings.shell_kind() != caushell_types::ShellKind::Bash
+    {
+        return None;
+    }
+    let ShellParameterReference::PatternRemoval { parameter, kind, pattern } =
+        exact_shell_parameter_reference(&value.text)?
+    else {
+        return None;
+    };
+    if kind != ShellPatternRemovalKind::ShortestSuffix || pattern != "/*"
+        || !parameter_argument_domain(bindings, &parameter)?.has_dot_relative_components()
+    {
+        return None;
+    }
+    Some(dot_relative_path_domain())
+}
+
+fn dot_relative_path_domain() -> caushell_types::RuntimeArgumentDomain {
+    caushell_types::RuntimeArgumentDomain::PathSet {
+        roots: vec![".".into()],
+        may_escape: false,
+        basename_suffix: None,
+        no_adjacent_slashes: false,
+        dot_relative_components: true,
+        execdir_leaf: false,
+    }
+}
+
+fn compose_dot_relative_path(
+    text: &str,
+    bindings: &SessionBindings,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    const PATH: &str = "__CAUSHELL_RELATIVE_PATH_PART__";
+    const BASENAME: &str = "__CAUSHELL_BASENAME_PART__";
+    if text.contains(PATH) || text.contains(BASENAME) {
+        return None;
+    }
+    let mut path_count = 0;
+    let mut basename_count = 0;
+    let (template, references) = materialize_shell_word_with_resolver(
+        text, bindings, ShellWordMode::PositionalArgument, ShellWordQuote::Double, false,
+        |reference| {
+            let (parameter, marker) = match reference {
+                ShellParameterReference::Variable(name) => (ShellParameterName::Variable(name.clone()), PATH),
+                ShellParameterReference::Positional(index) => (ShellParameterName::Positional(*index), PATH),
+                ShellParameterReference::PatternRemoval { parameter, kind, pattern }
+                    if *kind == ShellPatternRemovalKind::LongestPrefix && pattern == "*/" =>
+                {
+                    (parameter.clone(), BASENAME)
+                }
+                _ => return None,
+            };
+            if !parameter_argument_domain(bindings, &parameter)?.has_dot_relative_components() {
+                return None;
+            }
+            if marker == PATH {
+                path_count += 1;
+            } else {
+                basename_count += 1;
+            }
+            Some(marker.into())
+        },
+    )?;
+    let tail = template.strip_prefix(PATH)?.strip_prefix('/')?;
+    if references.len() < 2
+        || template.matches(PATH).count() != path_count
+        || template.matches(BASENAME).count() != basename_count
+        || !tail.ends_with(BASENAME)
+    {
+        return None;
+    }
+    if !tail.split('/').all(|component| {
+        let path_prefix = component.starts_with(PATH);
+        let suffix = component.strip_prefix(PATH).unwrap_or(component);
+        if path_prefix && suffix.is_empty() {
+            return true;
+        }
+        let literal = suffix.strip_suffix(BASENAME).unwrap_or(suffix);
+        // A separator with a non-dot byte keeps the combined component
+        // from becoming "..", even when either input is literally ".".
+        literal.as_bytes().first().is_some_and(|&c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+            && literal.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-' | b'.'))
+            && !literal.contains(PATH)
+            && !literal.contains(BASENAME)
+    }) {
+        return None;
+    }
+    Some(dot_relative_path_domain())
+}
+
+fn compose_execdir_leaf_path(
+    text: &str,
+    bindings: &SessionBindings,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    const PARENT: &str = "__CAUSHELL_EXEC_DIR_NAME__";
+    const ENTRY: &str = "__CAUSHELL_EXEC_DIR_ENTRY__";
+    if !text.starts_with("./") || text.contains(PARENT) || text.contains(ENTRY)
+        || bindings.shell_state_uncertainty().is_some()
+    {
+        return None;
+    }
+    let (template, references) = materialize_shell_word_with_resolver(
+        text, bindings, ShellWordMode::PositionalArgument, ShellWordQuote::Double, false,
+        |reference| match reference {
+            ShellParameterReference::Variable(name) if bindings.variable_facts(name).basename_text => {
+                Some(PARENT.into())
+            }
+            ShellParameterReference::Positional(index)
+                if bindings.positional_argument_domain(*index)?.has_execdir_leaf() =>
+            {
+                Some(ENTRY.into())
+            }
+            _ => None,
+        },
+    )?;
+    let separator = template.strip_prefix("./")?.strip_prefix(PARENT)?.strip_suffix(ENTRY)?;
+    // Keep the first component non-dot even when the extracted basename
+    // is empty. The callback supplies either a leaf or "./" plus that leaf.
+    (references.len() == 2
+        && !separator.is_empty()
+        && separator.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-')))
+        .then(dot_relative_path_domain)
 }
 
 fn removal_argument_domain(
@@ -3174,6 +3367,8 @@ fn substitute_within_path_anchor(
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes,
+        dot_relative_components: false,
+        execdir_leaf: false,
     })
 }
 

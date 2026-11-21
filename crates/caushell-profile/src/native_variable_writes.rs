@@ -5,26 +5,28 @@ use caushell_types::ShellKind;
 
 pub(crate) fn attach(
     profile: &CommandProfile,
+    source: &ProjectedInvocation,
     argv: &MaterializedProjectedInvocation,
     domain: &CommandLookupDomain,
     shell: ShellKind,
     bindings: &SessionBindings,
     bound: &mut BoundInvocation,
-) {
+) -> Option<caushell_parse::SourceSpan> {
     let Some(NativeVariableWrites::Printf) = profile.native_variable_writes else {
-        return;
+        return None;
     };
     if !matches!(
         domain,
         CommandLookupDomain::Shell | CommandLookupDomain::Builtin
     ) {
-        return;
+        return None;
     }
     let mut targets = Vec::new();
     let mut args = argv.invocation.args.iter();
     let exact = |arg: &ProjectedArg| argument_structure(arg).exact_value().map(str::to_owned);
     let mut destination = None;
     let mut separated = false;
+    let mut write_free_format_span = None;
     let format = loop {
         let Some(arg) = args.next() else { break None };
         let Some(word) = exact(arg) else {
@@ -47,7 +49,40 @@ pub(crate) fn attach(
                     Some(ShellParameterReference::Variable(name))
                         if matches!(bindings.variable_facts(&name).scalar_shape,
                             Some(StdoutScalarShape::PlainHexText | StdoutScalarShape::RawBase64Text)));
-            if !target_free && !encoded_format {
+            let inert_format_suffix = shell == ShellKind::Bash
+                && profile.trust.source == ProfileSourceKind::BuiltIn
+                && shape.fields == ArgumentFieldCount::ExactlyOne
+                && {
+                    let mut matching = source.args.iter().filter(|word| word.span == arg.span);
+                    matches!((matching.next(), matching.next()), (Some(word), None)
+                        if quoted_format_with_inert_suffix(word, bindings, separated))
+                };
+            // A bounded bare numeric range can produce only signed decimal
+            // arguments, or its literal brace spelling with expansion off.
+            // Neither can name a Bash variable or array member for %n.
+            let numeric_range_operands = shell == ShellKind::Bash
+                && profile.trust.source == ProfileSourceKind::BuiltIn
+                && shape.fields == ArgumentFieldCount::ExactlyOne
+                && (separated || !shape.may_start_with("-"))
+                && args.len() > 0
+                && args.clone().all(|word| {
+                    argv.shell_expansion_gaps.iter().any(|gap| {
+                        gap.span == word.span
+                            && gap.kind == ShellExpansionGapKind::BraceBudgetExhausted
+                            && gap.bounded_literal_bytes.is_some()
+                    }) && word
+                        .text
+                        .strip_prefix('{')
+                        .and_then(|text| text.strip_suffix('}'))
+                        .is_some_and(|text| {
+                            text.bytes()
+                                .all(|byte| byte.is_ascii_digit() || b"+-.".contains(&byte))
+                        })
+                });
+            if inert_format_suffix || numeric_range_operands {
+                write_free_format_span = Some(arg.span.clone());
+            }
+            if !target_free && !encoded_format && !inert_format_suffix && !numeric_range_operands {
                 targets.push(None);
             }
             break None;
@@ -127,6 +162,44 @@ pub(crate) fn attach(
             bound.effects.push(effect);
         }
     }
+    write_free_format_span
+}
+
+// A complete format prefix can only be followed by literal data when the
+// owning shell proves both the quoted field and the suffix's alphabet.
+// Keep the actual output unknown and never substitute representative bytes.
+fn quoted_format_with_inert_suffix(
+    arg: &ProjectedArg,
+    bindings: &SessionBindings,
+    separated: bool,
+) -> bool {
+    if arg.word_context != WordContext::ShellArgument || !arg.quoted
+        || arg.node_kind != "string" || arg.runtime_data || arg.implicit_input_source.is_some()
+        || arg.text.contains(['"', '\\', '`'])
+    {
+        return false;
+    }
+    let Some((prefix, suffix)) = arg.text.split_once('$') else {
+        return false;
+    };
+    if prefix.is_empty() || (!separated && prefix.starts_with('-'))
+        || !printf_arguments(prefix).is_some_and(|roles| roles.into_iter().all(|writes| !writes))
+    {
+        return false;
+    }
+    if let Some(name) = suffix.strip_prefix('{').and_then(|s| s.strip_suffix(",,}")) {
+        let reference = exact_shell_parameter_reference(&format!("${{{name}}}"));
+        let Some(reference @ ShellParameterReference::Variable(_)) = reference else {
+            return false;
+        };
+        return exact_scalar_shell_parameter_value(bindings, &reference)
+            .is_some_and(|value| value.bytes().all(|byte| byte.is_ascii_alphabetic()));
+    }
+    let reference = format!("${suffix}");
+    matches!(exact_shell_parameter_reference(&reference),
+        Some(ShellParameterReference::Variable(name))
+            if bindings.variable_facts(&name).integer_scalar
+                || bindings.variable_facts(&name).scalar_shape == Some(StdoutScalarShape::ArithmeticText))
 }
 
 /// Ordered argument consumption, including star width/precision. `true` is

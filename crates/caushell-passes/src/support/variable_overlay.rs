@@ -686,6 +686,13 @@ pub(super) fn apply_variable_overlay(
                             parsed.shell_kind,
                         )
                     };
+                    let path_domain = if !assignment_command.conditional_execution
+                        && bindings.variable_facts(&assignment.name) == Default::default()
+                    {
+                        caushell_profile::dot_relative_parent_assignment(&assignment.value, &bindings)
+                    } else {
+                        None
+                    };
                     let value = classify_assignment_value(&assignment.value, &bindings);
                     apply_binding(
                         &mut bindings,
@@ -696,6 +703,9 @@ pub(super) fn apply_variable_overlay(
                             observed_at,
                         ),
                     );
+                    if let Some(domain) = path_domain {
+                        bindings.set_argument_domain(&assignment.name, domain);
+                    }
                     // A pure assignment command can write the same name more
                     // than once. Retain each possible partial effect, not just
                     // the last value at the end of this event.
@@ -907,6 +917,7 @@ pub(super) fn apply_variable_overlay(
                             }
                             let mut facts = bindings.variable_facts(name);
                             facts.scalar_shape = None;
+                            facts.basename_text = false;
                             facts.element_shape = None;
                             touched.insert(name.into());
                             bindings

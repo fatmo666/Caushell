@@ -194,9 +194,10 @@ pub(super) fn prepare(
         ) else {
             continue;
         };
+        let metadata_limited = limits.metadata_limited.contains(&output.producer_node_id);
         let limited_observation_gap = if !output.missing_starting_point_observations.is_empty() {
             Some("missing producer starting points do not close consumer effects")
-        } else if limits.metadata_limited.contains(&output.producer_node_id) {
+        } else if metadata_limited {
             Some("producer metadata tests do not close consumer effects")
         } else {
             None
@@ -239,7 +240,10 @@ pub(super) fn prepare(
             && let Some(gap) = limited_dispatch_gap
             && !has_closed_read_only_dispatch(ctx, registry, consumer.source_node_id())
         {
-            empty_nul_path_snapshot = limited_observation_gap.is_none()
+            // A missing start still leaves the direct NUL path contract.
+            // Retain the input gap and let the separate effect audit check
+            // the static child, including any bounded metadata targets.
+            empty_nul_path_snapshot = !metadata_limited
                 && output.records.is_empty()
                 && output.encoding == Some(caushell_types::StreamRecordEncoding::Nul)
                 && output.producer_contract_sha256.is_some()

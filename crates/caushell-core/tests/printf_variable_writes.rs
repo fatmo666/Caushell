@@ -112,6 +112,47 @@ fn plain_hex_format_proof_does_not_escape_its_capture_or_reference() {
 }
 
 #[test]
+fn quoted_printf_formats_retain_proven_literal_suffixes() {
+    for command in [
+        r#"f() { local s=$1; printf "%.0s${s,,}" 1 2; }; f A"#,
+        r#"f() { local s=$1; printf "value:%s${s,,}" {1..10000}; }; f A"#,
+    ] {
+        let r = check(command);
+        assert_eq!(r.decision, Decision::Allow, "{command}: {:?}", r.reasons);
+    }
+    for command in [
+        r#"printf "%.0s${unknown,,}" 1 2"#,
+        r#"s=%n; printf "%.0s${s,,}" 1 2"#,
+        r#"printf "%.0s$unknown" 1 2"#,
+        r#"f() { local -i n=$(printf '%d' 7); printf "%n$n" "$destination"; }; f"#,
+    ] {
+        let r = check(command);
+        assert_eq!(r.decision, Decision::NeedApproval, "{command}: {:?}", r.reasons);
+    }
+}
+
+#[test]
+fn a_bounded_bare_numeric_range_cannot_supply_printf_variable_names() {
+    let response = check(r#"printf "value:%s$format" {1..10000}"#);
+    assert_eq!(response.decision, Decision::Allow, "{:?}", response.reasons);
+    assert!(response.decision_trace.execution_semantics.iter().any(|item| {
+        item.normalized_command_name == "printf"
+            && !item.operation_semantics_unresolved
+            && !item.mutates_current_shell
+    }));
+
+    for command in [
+        r#"printf "value:%s$format" value{1..10000}"#,
+        r#"printf "value:%s$format" {1..10000} "$destination""#,
+        r#"printf -v "$destination" "value:%s$format" {1..10000}"#,
+        r#"printf "value:%s$format" {1..10000} | sh"#,
+    ] {
+        let response = check(command);
+        assert_eq!(response.decision, Decision::NeedApproval, "{command}: {:?}", response.reasons);
+    }
+}
+
+#[test]
 fn raw_base64_capture_is_a_data_only_printf_format() {
     for command in [
         "v=$(echo 'demo % text' | b64encode -r -); printf $v",

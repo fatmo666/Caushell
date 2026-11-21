@@ -125,7 +125,7 @@ pub use materialize::{
     ShellParameterReference, ShellVariableFacts, ValueMaterialization, VariablePresence,
     ShellExpansionGap, ShellExpansionGapKind,
     exact_scalar_shell_parameter_reference_value, exact_scalar_shell_parameter_value,
-    exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
+    dot_relative_parent_assignment, exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_prefix_environment,
     materialize_projected_invocation, materialize_recursive_payload_candidate,
     materialize_shell_array_element, materialize_shell_assignment_value,
@@ -133,7 +133,7 @@ pub use materialize::{
 };
 pub use normalize::{NormalizeError, normalize_command_profile};
 pub use option_scope::ScopedOptions;
-pub use option_scope::declared_options;
+pub use option_scope::{declared_options, native_diff_anchor};
 pub use parameter_pattern::ShellPatternRemovalKind;
 pub use payload_projection::refresh_payload_projections;
 pub use projection::{

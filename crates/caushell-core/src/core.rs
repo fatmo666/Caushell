@@ -311,7 +311,16 @@ impl ShellQueryCore {
         let runner_start = Instant::now();
         if ctx.request().command.len() <= self.policy.analysis_budget.max_request_bytes {
             let session_view = SessionView::from_session(session);
+            let terminal_escape_seed = (ctx.request().shell_kind == caushell_types::ShellKind::Bash
+                && ctx.request().command.ends_with('\\'))
+            .then(|| ctx.clone());
             runner.run(session_view, &mut ctx);
+            if let Some(seed) = terminal_escape_seed
+                && let Some(checked) =
+                    check_bash_terminal_argument_escape(runner, session_view, &ctx, seed)
+            {
+                ctx = checked;
+            }
         } else {
             // Do not parse an attacker-sized payload after admitting exhaustion.
             ctx.set_final_decision(caushell_types::Decision::NeedApproval);
@@ -832,6 +841,194 @@ fn enforce_analysis_budgets(
         }
     }
     usage
+}
+
+fn check_bash_terminal_argument_escape(
+    runner: &PassRunner,
+    session: SessionView<'_>,
+    original: &RunnerContext,
+    seed: RunnerContext,
+) -> Option<RunnerContext> {
+    use caushell_types::{Decision, RuleId};
+
+    if original.final_decision != Some(Decision::NeedApproval)
+        || original.decision_proposals.is_empty()
+        || original.decision_proposals.iter().any(|proposal| {
+            proposal.rule_id != RuleId::CommandParseFailure || proposal.source_pass != "parse_command"
+        })
+    {
+        return None;
+    }
+    let [discarded, retained] =
+        caushell_parse::bash_terminal_argument_escape(&seed.request().command)?;
+    let separate = discarded.commands.first()?.tokens.len() + 1
+        == retained.commands.first()?.tokens.len();
+    let discarded_tail = discarded.commands.first()?.tokens.last().map(|token| token.text.clone());
+    let retained_token = retained.commands.first()?.tokens.last()?;
+    let retained_tail = retained_token.text.clone();
+    let span = &retained_token.span;
+    let source_tail = seed.request().command.get(span.start_byte..span.end_byte)?.to_owned();
+    let mut without = seed.clone();
+    without.set_parsed_command(discarded);
+    runner.run(session, &mut without);
+    if without.final_decision != Some(Decision::Allow) {
+        return None;
+    }
+    let mut with = seed;
+    with.set_parsed_command(retained);
+    runner.run(session, &mut with);
+    // Both static checks retain the original request identity. The two
+    // verdicts, findings and observations must agree before merging facts.
+    if with.final_decision != Some(Decision::Allow)
+        || without.findings != with.findings
+        || without.evidence != with.evidence
+        || without.decision_proposals != with.decision_proposals
+    {
+        return None;
+    }
+    if separate {
+        let materialized = terminal_escape_optional_read(&without, &with, &source_tail)?;
+        with.stage_mutation(materialized);
+        with.record_pass("verify_bash_terminal_argument_escape");
+        return Some(with);
+    }
+    if without.pending_mutations().len() != with.pending_mutations().len() {
+        return None;
+    }
+    let discarded_tail = discarded_tail?;
+
+    let mut restore_source = Vec::new();
+    for (left, right) in without.pending_mutations().iter().zip(with.pending_mutations()) {
+        if left == right {
+            continue;
+        }
+        // An already opaque value can keep the original source spelling. A
+        // concrete value, path, or staged shell update must agree byte for byte.
+        let mut common = right.clone();
+        let PendingMutation::AddProvenanceArtifact {
+            artifact:
+                ProvenanceArtifact::MaterializedValue {
+                    state: caushell_types::ProvenanceMaterializedValueState::UnsupportedDynamicText { text },
+                    ..
+                },
+            ..
+        } = &mut common
+        else {
+            return None;
+        };
+        if *text != retained_tail {
+            return None;
+        }
+        text.clone_from(&discarded_tail);
+        if &common != left {
+            return None;
+        }
+        if let PendingMutation::AddProvenanceArtifact {
+            node_id, mut artifact, ..
+        } = common
+        {
+            if let ProvenanceArtifact::MaterializedValue {
+                state: caushell_types::ProvenanceMaterializedValueState::UnsupportedDynamicText { text },
+                ..
+            } = &mut artifact
+            {
+                text.clone_from(&source_tail);
+            }
+            restore_source.push(PendingMutation::ReplaceProvenanceArtifact { node_id, artifact });
+        }
+    }
+    for mutation in restore_source {
+        without.stage_mutation(mutation);
+    }
+    without.record_pass("verify_bash_terminal_argument_escape");
+    Some(without)
+}
+
+/// Keep the union only when the retained argument adds exactly one generic
+/// file read. Its spelling is literal when present, but presence is unproved.
+fn terminal_escape_optional_read(
+    without: &RunnerContext,
+    with: &RunnerContext,
+    source_tail: &str,
+) -> Option<PendingMutation> {
+    use caushell_graph::EdgeKind;
+    use caushell_types::{
+        PathResolution, ProvenanceConsumeKind, ProvenanceMaterializedValueState,
+        ResolvedPathPurpose, ResolvedPathRole,
+    };
+
+    let mut common = without.pending_mutations().iter().peekable();
+    let additional: Vec<_> = with
+        .pending_mutations()
+        .iter()
+        .filter(|mutation| common.next_if_eq(mutation).is_none())
+        .collect();
+    if common.next().is_some() {
+        return None;
+    }
+    let [
+        PendingMutation::AddPathFact {
+            source_node_id: read_source,
+            resolution: PathResolution::Concrete { path },
+            role: ResolvedPathRole::Read,
+            purpose: Some(ResolvedPathPurpose::GenericOperand),
+            relation: EdgeKind::Reads,
+            slot_name: read_slot,
+            normalized_command_name: read_command,
+            ..
+        },
+        PendingMutation::AddProvenanceArtifact {
+            source_node_id: content_source,
+            artifact: ProvenanceArtifact::PathContent { path: content_path, version: None },
+            relation: EdgeKind::Consumes,
+            semantics: ProvenanceEdgeSemantics::Consume {
+                consume_kind: ProvenanceConsumeKind::PathRead,
+                slot_name: Some(content_slot),
+                normalized_command_name: content_command,
+                ..
+            },
+            ..
+        },
+        PendingMutation::AddProvenanceArtifact {
+            source_node_id: value_source,
+            node_id,
+            artifact: ProvenanceArtifact::MaterializedValue {
+                state: ProvenanceMaterializedValueState::ExactScalar { value },
+                version,
+                ..
+            },
+            relation: EdgeKind::Produces,
+            semantics: ProvenanceEdgeSemantics::Produce {
+                produce_kind: ProvenanceProduceKind::MaterializedValue,
+                normalized_command_name: value_command,
+                ..
+            },
+        },
+    ] = additional.as_slice()
+    else {
+        return None;
+    };
+    if read_source != content_source
+        || read_source != value_source
+        || read_command != content_command
+        || read_command != value_command
+        || read_slot != content_slot
+        || path != content_path
+        || path.rsplit('/').next() != Some(source_tail)
+        || value != source_tail
+    {
+        return None;
+    }
+    Some(PendingMutation::ReplaceProvenanceArtifact {
+        node_id: node_id.clone(),
+        artifact: ProvenanceArtifact::MaterializedValue {
+            source_kind: "dynamic_text".into(),
+            state: ProvenanceMaterializedValueState::UnsupportedDynamicText {
+                text: source_tail.to_owned(),
+            },
+            version: *version,
+        },
+    })
 }
 
 fn build_default_runner(registry: ProfileRegistry) -> PassRunner {

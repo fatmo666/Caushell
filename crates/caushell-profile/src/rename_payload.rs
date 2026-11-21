@@ -915,6 +915,8 @@ fn transformed_domain(
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         }),
         origin: origin.clone(),
     })
@@ -970,6 +972,8 @@ fn utility_transformed_domain(
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         }),
         origin: origin.clone(),
     })
@@ -1293,6 +1297,8 @@ mod tests {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             }),
             origin: None,
         };
@@ -1333,6 +1339,8 @@ mod tests {
                     may_escape: false,
                     basename_suffix: None,
                     no_adjacent_slashes: false,
+                    dot_relative_components: false,
+                    execdir_leaf: false,
                 }),
                 origin: None,
             };
@@ -1489,6 +1497,8 @@ mod tests {
                     may_escape: false,
                     basename_suffix: None,
                     no_adjacent_slashes: false,
+                    dot_relative_components: false,
+                    execdir_leaf: false,
                 }),
                 origin: None,
             };

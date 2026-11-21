@@ -210,3 +210,41 @@ fn hard_deny_survives_return_and_parameter_expansion() {
         check(command, Decision::Deny);
     }
 }
+
+#[test]
+fn local_loop_counter_keeps_return_environment_side_effects_bounded() {
+    for step in ["i=$((i + 1))", "((i++))"] {
+        let command = format!(
+            "f() {{ local input=$1; local i=0; while [ \"$i\" -lt 2 ]; do if [ \"${{input:$i:1}}\" = x ]; then printf stop; return 1; fi; {step}; done; printf done; return 0; }}; f ab"
+        );
+        check(&command, Decision::Allow);
+    }
+}
+
+#[test]
+fn opaque_export_entries_do_not_poison_unrelated_function_bindings() {
+    use caushell_profile::{EnvironmentValueRef, SessionBindings, SessionValue};
+
+    let mut branch = SessionBindings::new().with_exact_scalar("target", "./fixture");
+    branch.enter_function_scope();
+    let mut changed = branch.clone();
+    changed.set_environment_value("counter", SessionValue::opaque_dynamic("unknown export"));
+    for (mut first, second) in [
+        (branch.clone(), changed.clone()),
+        (changed, branch.clone()),
+    ] {
+        first.join_control_path(&second, CommandSequenceNo::new(1));
+        assert_eq!(first.environment_value("counter"), EnvironmentValueRef::Unknown);
+        assert_eq!(
+            first.get("target").unwrap().value,
+            &SessionValue::exact_scalar("./fixture")
+        );
+        assert!(first.shell_state_uncertainty().is_none());
+    }
+
+    let mut exported = branch.clone();
+    exported.set_environment_value("counter", SessionValue::exact_scalar("1"));
+    branch.join_control_path(&exported, CommandSequenceNo::new(1));
+    assert!(branch.shell_state_uncertainty().is_some());
+    assert_eq!(branch.environment_value("counter"), EnvironmentValueRef::Unknown);
+}

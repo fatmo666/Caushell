@@ -19,6 +19,7 @@ pub use artifact::{
 pub use error::ParseError;
 pub use parser::{
     ScalarArgumentPart, array_assignment_entries, assignment_dominates_use,
+    bash_terminal_argument_escape,
     command_success_required_before, concatenated_argument_is_scalar, constant_arithmetic_word,
     decode_static_shell_argument,
     exhaustive_case_assignment_values, observed_shell_variables,

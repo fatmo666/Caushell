@@ -119,6 +119,16 @@ pub(super) fn assignment(
     if value.text.len() > 8192 {
         return result;
     }
+    result.basename_text = shell == ShellKind::Bash
+        && value.quoted
+        && value.node_kind == "string"
+        && !bindings.runtime_variable_target_is_unresolved("PWD")
+        && matches!(caushell_profile::exact_shell_parameter_reference(&value.text),
+            Some(caushell_profile::ShellParameterReference::PatternRemoval {
+                parameter: caushell_profile::ShellParameterName::Variable(name),
+                kind: caushell_profile::ShellPatternRemovalKind::LongestPrefix,
+                pattern,
+            }) if name == "PWD" && pattern == "*/");
     result.integer_scalar = materialize_shell_assignment_value(&value.text, value.quoted, &value.node_kind, bindings)
         .is_some_and(|v| integer_text(&v)) || value.node_kind == "arithmetic_expansion"
         || (!matches!(value.node_kind.as_str(), "raw_string" | "ansi_c_string")
@@ -310,6 +320,7 @@ pub(super) fn invalidate_evaluation(
     if let K::ArrayElementAssignment { name, .. } = &site.kind {
         let mut facts = bindings.variable_facts(name);
         facts.integer_scalar = false;
+        facts.basename_text = false;
         facts.scalar_shape = None;
         facts.element_shape = None;
         bindings.mark_unresolved_runtime_variable_target(name);
@@ -409,6 +420,24 @@ pub(super) fn invalidate_command(
         }
     }
     if !bindings.has_variable_facts() || !super::runtime_write_visible(command, parsed, target) {
+        return;
+    }
+    // A parsed simple Bash string test is syntax. Its opening bracket is
+    // never an executable glob, and the comparison does not write variables.
+    if parsed.shell_kind == ShellKind::Bash
+        && command.command_name.as_deref() == Some("[[")
+        && !command.command_name_runtime_data
+        && command.prefix_assignments.is_empty()
+        && let [left, operator, right, close] = command.tokens.as_slice()
+        && matches!(operator.text.as_str(), "==" | "!=" | "=")
+        && operator.node_kind == operator.text
+        && close.node_kind == "]]"
+        && [left, right].iter().all(|token| {
+            token.command_substitutions.is_empty()
+                && !token.text.contains(['[', '`'])
+                && !token.text.contains("$(")
+        })
+    {
         return;
     }
     let Some(registry) = registry else {

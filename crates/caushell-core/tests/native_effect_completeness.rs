@@ -111,6 +111,45 @@ fn proofs(r: &CheckResponse) -> Vec<&NativeInputEffectEvidence> {
         })
         .collect()
 }
+
+#[test]
+fn batched_find_keeps_the_native_diff_anchor_and_its_read_effects() {
+    for flag in ["--from-file", "--to-file"] {
+        let command = format!(
+            "find missing -type f -print0 | xargs -0 -I ITEM find src -type f -exec diff -qs {flag}=ITEM '{{}}' +"
+        );
+        let result = check(&command, Namespace::ordinary());
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        let native = proofs(&result);
+        assert_eq!(native.len(), 1);
+        assert!(native[0].bound_effects.as_ref().unwrap().argument_ownership_complete);
+        assert!(result.decision_trace.evidence.iter().any(|e| {
+            matches!(&e.kind, EvidenceKind::NativeInputDecode(g) if !g.complete
+                && g.node_id == native[0].node_id)
+        }));
+        assert!(result.decision_trace.execution_semantics.iter().any(|fact| {
+            fact.normalized_command_name == "diff" && fact.form_id == "compare_paths"
+        }));
+    }
+}
+
+#[test]
+fn an_unproved_find_callback_keeps_its_input_gap() {
+    for callback in [
+        "-exec diff -qs --from-fi=ITEM '{}' +",
+        "-exec diff -qs --from-file=ITEM '{}' ';'",
+        "-exec diff -qs --from-file=ITEM '{}' + -fprint listing",
+        "-exec diff -qs --from-file=ITEM --to-file=ITEM '{}' +",
+    ] {
+        let command = format!(
+            "find missing -type f -print0 | xargs -0 -I ITEM find src -type f {callback}"
+        );
+        let result = check(&command, Namespace::ordinary());
+        assert_ne!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        assert!(proofs(&result).is_empty(), "{command}");
+    }
+}
+
 #[test]
 fn bounded_writes_use_existing_targets_without_claiming_input_bytes() {
     for command in [
@@ -328,19 +367,35 @@ fn a_symlink_in_the_write_family_keeps_the_original_namespace_gap() {
 
 #[test]
 fn empty_nul_path_snapshot_retains_bounded_metadata_effects() {
-    let command = "find . -type f -name '*.fixture' -print0 | xargs -0 chmod 640";
-    let result = check(command, Namespace::ordinary());
-    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
-    let proofs = proofs(&result);
-    let [proof] = proofs.as_slice() else {
-        panic!("expected one bounded child effect proof");
-    };
-    assert!(!proof.bound_effects.as_ref().unwrap().path_targets.is_empty());
-    assert!(result.decision_trace.evidence.iter().any(|e| {
-        matches!(&e.kind, EvidenceKind::NativeInputDecode(g)
-            if g.node_id == proof.node_id && !g.complete && g.empty_nul_path_snapshot
-                && g.rejected_candidate_encoding.is_none())
-    }));
+    for (command, expected_root) in [
+        (
+            "find . -type f -name '*.fixture' -print0 | xargs -0 chmod 640",
+            "/workspace",
+        ),
+        (
+            "find ./missing -name '*.fixture' -print0 | xargs -0 chmod 640",
+            "/workspace/missing",
+        ),
+    ] {
+        let result = check(command, Namespace::ordinary());
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        let proofs = proofs(&result);
+        let [proof] = proofs.as_slice() else {
+            panic!("{command}: expected one bounded child effect proof");
+        };
+        assert!(!proof.bound_effects.as_ref().unwrap().path_targets.is_empty());
+        assert!(result.decision_trace.evidence.iter().any(|e| {
+            matches!(&e.kind, EvidenceKind::NativeInputDecode(g)
+                if g.node_id == proof.node_id && !g.complete && g.empty_nul_path_snapshot
+                    && g.rejected_candidate_encoding.is_none())
+        }));
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.operation == PathTargetOperation::Metadata
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false }
+                } if roots == &[expected_root.to_string()])
+        }));
+    }
 }
 
 #[test]
@@ -348,7 +403,8 @@ fn empty_path_snapshot_keeps_unproved_routes_and_targets_conservative() {
     for command in [
         "find . -name '*.fixture' -print | xargs -0 chmod 640",
         "find . -name '*.fixture' -print0 | xargs chmod 640",
-        "find ./missing -name '*.fixture' -print0 | xargs -0 chmod 640",
+        "find ./missing -name '*.fixture' -print0 | xargs chmod 640",
+        "find ../missing -name '*.fixture' -print0 | xargs -0 chmod 640",
         "find /outside -name '*.fixture' -print0 | xargs -0 chmod 640",
     ] {
         let result = check(command, Namespace::ordinary());
@@ -368,6 +424,79 @@ fn empty_path_snapshot_keeps_unproved_routes_and_targets_conservative() {
     );
     let result = check("find ./src -name '*.fixture' -print0 | xargs -0 chmod 640", unavailable);
     assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    assert!(proofs(&result).is_empty());
+}
+
+#[test]
+fn unknown_appended_fields_keep_fixed_script_file_authorization() {
+    for (dispatch, interpreter, file) in [
+        ("xargs -0", "python3", "report.py"),
+        ("xargs", "perl", "report.pl"),
+    ] {
+        let input_flag = if dispatch.ends_with("-0") {
+            "-print0"
+        } else {
+            "-print"
+        };
+        let command =
+            format!("find . -name '*.fixture' {input_flag} | {dispatch} {interpreter} {file}");
+        let result = check(&command, Namespace::ordinary());
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+        let proof = proofs(&result);
+        let [proof] = proof.as_slice() else {
+            panic!("{command}: expected the static effect proof");
+        };
+        assert!(
+            proof
+                .bound_effects
+                .as_ref()
+                .unwrap()
+                .path_targets
+                .iter()
+                .any(|reference| {
+                    result.decision_trace.path_targets.iter().any(|fact| {
+                        fact.source_node_id == reference.source_node_id
+                            && fact.effect_key == reference.effect_key
+                            && fact.operation == PathTargetOperation::ExecuteFile
+                    })
+                })
+        );
+        assert!(result.decision_trace.evidence.iter().any(|e| {
+            matches!(&e.kind, EvidenceKind::NativeInputDecode(g) if g.node_id == proof.node_id && !g.complete)
+        }));
+    }
+    for command in [
+        "find . -name '*.fixture' -print0 | xargs -0 python3 /outside/report.py",
+        "find . -name '*.fixture' -print0 | xargs -0 python3 -c 'print(1)'",
+        "find . -name '*.fixture' -print0 | xargs -0 perl -e 'print 1'",
+        "find . -name '*.fixture' -print0 | xargs -0 -I {} python3 {}",
+        "find . -name '*.fixture' -print0 | xargs -0 python3 \"$script\"",
+    ] {
+        let result = check(command, Namespace::ordinary());
+        assert_ne!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(proofs(&result).is_empty(), "{command}");
+    }
+    let view = Namespace::ordinary().set(
+        "/workspace/report.py",
+        FilesystemEntry::Symlink {
+            target: "/outside/report.py".into(),
+        },
+    );
+    let result = check(
+        "find . -name '*.fixture' -print0 | xargs -0 python3 report.py",
+        view,
+    );
+    assert_eq!(result.decision, Decision::NeedApproval);
     assert!(proofs(&result).is_empty());
 }
 

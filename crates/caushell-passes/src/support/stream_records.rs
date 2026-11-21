@@ -204,6 +204,8 @@ pub(crate) fn stdin_path_records(
                             .any(|m| resolved.bound.applied_modifiers.contains(m)),
                         basename_suffix: None,
                         no_adjacent_slashes: false,
+                        dot_relative_components: false,
+                        execdir_leaf: false,
                     },
                     separator,
                 });
@@ -372,6 +374,8 @@ mod tests {
                         may_escape: false,
                         basename_suffix: None,
                         no_adjacent_slashes: false,
+                        dot_relative_components: false,
+                        execdir_leaf: false,
                     }
                 })
             );
@@ -383,6 +387,8 @@ mod tests {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             }
         );
     }
@@ -397,6 +403,8 @@ mod tests {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             }
         );
         let record = proof("arbitrary_paths '~/Library' | consumer", 8).unwrap();
@@ -407,6 +415,8 @@ mod tests {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             }
         );
         assert!(proof("arbitrary_paths ~/$UNKNOWN | consumer", 8).is_none());

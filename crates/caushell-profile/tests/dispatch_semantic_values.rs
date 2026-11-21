@@ -274,6 +274,8 @@ fn unknown_projection_does_not_inherit_a_source_path_bound() {
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         }),
     };
     parameter.projected_values = Some(vec![ProjectedSemanticValue {

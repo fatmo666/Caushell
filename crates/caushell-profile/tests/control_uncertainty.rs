@@ -104,6 +104,8 @@ fn bounded_native_batch_is_not_an_unknown_option_just_because_its_width_varies()
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     });
     assert!(!argument_structure(arg).may_start_with("-"));
     let selection = select_invocation(&p, &projected).unwrap();

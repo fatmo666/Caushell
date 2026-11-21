@@ -27,6 +27,8 @@ fn candidate(source: ImplicitInputSource) -> RecursivePayloadCandidate {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             }),
         },
     }
@@ -94,6 +96,8 @@ fn projected_unknown_arguments_are_not_misrepresented_as_static_empty_strings() 
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         });
         projection.args[0].text.clear();
         projection.args[0].implicit_input_source =

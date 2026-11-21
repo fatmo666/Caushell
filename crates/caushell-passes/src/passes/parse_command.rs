@@ -13,6 +13,15 @@ impl RequestTransformPass for ParseCommandPass {
         let shell_kind = ctx.request().shell_kind;
         let command = ctx.request().command.clone();
 
+        // The core may supply a complete interpretation of this same wire
+        // for a bounded syntax recheck. User requests cannot set this field.
+        if ctx.parsed_command().is_some_and(|parsed| {
+            parsed.status == ParseStatus::Complete
+                && parsed.shell_kind == shell_kind
+                && parsed.raw_command == command
+        }) {
+            return;
+        }
         match parse_command(&command, shell_kind) {
             Ok(artifact) => {
                 if artifact.status == ParseStatus::Partial {

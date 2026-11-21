@@ -464,6 +464,8 @@ fn projection_does_not_inherit_a_runtime_domain_for_the_whole_operand() {
             may_escape: false,
             basename_suffix: None,
             no_adjacent_slashes: false,
+            dot_relative_components: false,
+            execdir_leaf: false,
         }),
     };
     let parameter = manual_parameter(original.clone());

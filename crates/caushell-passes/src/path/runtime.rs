@@ -169,6 +169,8 @@ mod tests {
                 may_escape: false,
                 basename_suffix: None,
                 no_adjacent_slashes: false,
+                dot_relative_components: false,
+                execdir_leaf: false,
             };
             assert_eq!(
                 runtime_path_bounds(&domain).unwrap().root_membership,

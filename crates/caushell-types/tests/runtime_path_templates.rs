@@ -6,6 +6,8 @@ fn paths() -> RuntimeArgumentDomain {
         may_escape: true,
         basename_suffix: None,
         no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
     }
 }
 
@@ -90,6 +92,8 @@ fn path_spelling_proof_survives_only_unmodified_substitution() {
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: true,
+        dot_relative_components: false,
+        execdir_leaf: false,
     };
     let json = serde_json::to_string(&domain).unwrap();
     assert_eq!(
