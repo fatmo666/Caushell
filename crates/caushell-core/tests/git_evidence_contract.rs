@@ -366,6 +366,37 @@ fn default_system_layout_requires_both_current_identity_and_private_inventory() 
 }
 
 #[test]
+fn held_git_snapshot_does_not_override_a_write_in_the_current_action() {
+    let mut req = request("cp a .git/config; git diff -- a");
+    req.shell_state_before
+        .variables
+        .retain(|v| v.name != "GIT_CONFIG_NOSYSTEM");
+    req.shell_state_before.execution_frame = Some(ExecutionFrameObservation {
+        binding: ExecutionFrameBinding::for_request(&req, "fixture-owner"),
+        environment: vec![],
+        variables: vec![],
+        variable_values: vec![],
+        integer_variables: Default::default(),
+        pathname: None,
+        native_variants: BTreeMap::from([("git".into(), GIT_2_47_3_VARIANT.into())]),
+    });
+    let layout = GitRuntimeLayout {
+        variant: GIT_2_47_3_VARIANT.into(),
+        system_config: "/trusted/gitconfig".into(),
+        configuration_snapshot_held: true,
+    };
+    let r = ShellQueryCore::new()
+        .with_filesystem_view(Arc::new(Files { layout: Some(layout), ..Files::clean() }))
+        .check(req);
+    assert_eq!(r.decision, Decision::NeedApproval, "{:?}", r.reasons);
+    assert!(r.decision_trace.evidence.iter().any(|e| {
+        matches!(&e.kind, EvidenceKind::ToolConfigParse(config)
+            if config.files.iter().any(|read| read.path == "/workspace/.git/config"
+                && read.status == FileContentStatus::Changed))
+    }));
+}
+
+#[test]
 fn declared_frame_dependencies_collect_indexed_exports_without_global_completeness() {
     struct Observer;
     impl ExecutionFrameObserver for Observer {

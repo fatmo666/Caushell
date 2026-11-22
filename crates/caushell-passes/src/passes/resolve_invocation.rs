@@ -954,6 +954,7 @@ fn config_defined_task_frontier_entries(
         &observations,
         &execution_cwds,
         source_scopes,
+        None,
     );
     let content = match content {
         crate::support::StaticFileContent::Unobserved => return Vec::new(),
@@ -1042,8 +1043,9 @@ fn source_visible_file_content(
     observations: &[(ResolveInvocationArtifactResult, SessionBindings)],
     execution_cwds: &[caushell_runner::EffectiveCwd],
     source_scopes: &[PayloadSourceScope],
+    entry_content: Option<crate::support::StaticFileContent>,
 ) -> crate::support::StaticFileContent {
-    let mut content = None;
+    let mut content = entry_content;
     for scope in source_scopes {
         let observations = source_scope_observations(
             registry,
@@ -11649,6 +11651,7 @@ fn script_file_payload_candidates_from_literal_writes(
                     &observations,
                     &cwds,
                     &context.source_scopes,
+                    None,
                 ) {
                     crate::support::StaticFileContent::Known(text) => Some(text),
                     _ => None,

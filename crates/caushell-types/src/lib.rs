@@ -25,7 +25,7 @@ mod execution_frame_variable;
 mod git_runtime;
 mod pip_runtime;
 pub use execution_frame_variable::{ExecutionFrameVariable, ExecutionFrameVariableValue};
-pub use git_runtime::{GIT_2_39_5_VARIANT, GitRuntimeLayout};
+pub use git_runtime::{GIT_2_39_5_VARIANT, GIT_2_47_3_VARIANT, GitRuntimeLayout};
 pub use pip_runtime::{PIP_25_3_LINUX_VARIANT, PipRuntimeLayout};
 mod resource;
 pub use execution_frame::{

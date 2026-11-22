@@ -666,6 +666,18 @@ pub(super) fn refresh(
         &entry.command_ref,
     );
     let home = environment.scalar("HOME").ok().flatten().map(str::to_owned);
+    let spelling = entry
+        .parsed_scope
+        .commands
+        .get(command_index)
+        .and_then(|c| c.command_name.as_deref());
+    let filesystem = ctx.filesystem_view();
+    let native_layout = spelling.and_then(|spelling| {
+        let layout = filesystem.git_runtime(spelling)?;
+        (layout.validate().is_ok()
+            && entry.bindings.native_variant(spelling) == Some(layout.variant.as_str()))
+        .then_some(layout)
+    });
     let count = ctx
         .evidence
         .iter()
@@ -678,7 +690,7 @@ pub(super) fn refresh(
         })
         .sum::<usize>();
     let mut inputs = Inputs {
-        view: ctx.filesystem_view(),
+        view: filesystem,
         visible: Box::new(|p| {
             source_visible_file_content(
                 registry,
@@ -690,6 +702,11 @@ pub(super) fn refresh(
                 &observations,
                 &cwds,
                 &context.source_scopes,
+                // The owning executor holds a snapshot at entry to this request.
+                // Retain same-action writes, including enclosing source scopes.
+                native_layout
+                    .as_ref()
+                    .map(|_| crate::support::StaticFileContent::Unobserved),
             )
         }),
         paths: vec![],
@@ -737,17 +754,6 @@ pub(super) fn refresh(
     let mut state = GitConfiguration::default();
     let mut named_inputs = Vec::new();
     let base = cwd.as_deref().unwrap_or(request.shell_state_before.cwd());
-    let spelling = entry
-        .parsed_scope
-        .commands
-        .get(command_index)
-        .and_then(|c| c.command_name.as_deref());
-    let native_layout = spelling.and_then(|spelling| {
-        let layout = inputs.view.git_runtime(spelling)?;
-        (layout.validate().is_ok()
-            && entry.bindings.native_variant(spelling) == Some(layout.variant.as_str()))
-        .then_some(layout)
-    });
     if let Some(layout) = &native_layout {
         inputs
             .evidence

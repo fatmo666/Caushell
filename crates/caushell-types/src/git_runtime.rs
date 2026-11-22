@@ -2,6 +2,7 @@
 use serde::{Deserialize, Serialize};
 
 pub const GIT_2_39_5_VARIANT: &str = "git_2_39_5";
+pub const GIT_2_47_3_VARIANT: &str = "git_2_47_3";
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -15,7 +16,7 @@ pub struct GitRuntimeLayout {
 impl GitRuntimeLayout {
     pub fn validate(&self) -> Result<(), String> {
         let path = &self.system_config;
-        if self.variant != GIT_2_39_5_VARIANT
+        if !matches!(self.variant.as_str(), GIT_2_39_5_VARIANT | GIT_2_47_3_VARIANT)
             || !self.configuration_snapshot_held
             || !path.starts_with('/')
             || path.len() > 4096
