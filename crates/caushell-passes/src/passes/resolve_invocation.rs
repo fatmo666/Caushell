@@ -9066,6 +9066,20 @@ enum XargsDispatchMode {
     MaxLines { max_lines: usize },
 }
 
+pub(super) fn xargs_accepts_plain_path_lines(
+    resolved: &caushell_profile::ResolvedInvocationArtifact,
+) -> bool {
+    let config = xargs_static_expansion_config(resolved);
+    config.decoding_proved
+        && config.item_mode == XargsItemMode::WhitespaceSeparated
+        && config.eof_marker.is_none()
+        && config.insert_batch_token.is_none()
+        && matches!(
+            config.dispatch_mode,
+            XargsDispatchMode::AppendAll | XargsDispatchMode::MaxArgs { .. }
+        )
+}
+
 fn xargs_static_expansion_config(
     resolved: &caushell_profile::ResolvedInvocationArtifact,
 ) -> XargsStaticExpansionConfig {

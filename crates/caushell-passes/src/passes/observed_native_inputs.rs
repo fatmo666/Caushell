@@ -112,6 +112,18 @@ fn has_closed_read_only_dispatch(
     })
 }
 
+// The native line output has one argv-safe path per record when its exact
+// spelling contains no xargs separators, quoting, or option prefix.
+fn has_plain_path_lines(output: &StdoutRecordsEvidence) -> bool {
+    output.producer_contract_sha256.is_some()
+        && output.records.iter().all(|record| {
+            let path = &record.path_spelling;
+            (path.starts_with("./") || path.starts_with('/'))
+                && path.bytes().all(|b| b.is_ascii_alphanumeric() || b"/._-".contains(&b))
+                && record.bytes.strip_suffix(b"\n") == Some(path.as_bytes())
+        })
+}
+
 pub(super) fn prepare(
     session: SessionView<'_>,
     ctx: &RunnerContext,
@@ -173,7 +185,7 @@ pub(super) fn prepare(
                     && r.variable_frame() == consumer.variable_frame()
             })
         };
-        let Some((mut output, _)) = stdin_observed_records(
+        let Some((mut output, forwarded)) = stdin_observed_records(
             consumer.parsed_scope(),
             consumer.command_index(),
             64,
@@ -232,8 +244,17 @@ pub(super) fn prepare(
             if output.records.is_empty() {
                 return Some("empty producer snapshot does not close consumer effects");
             }
-            (output.encoding == Some(caushell_types::StreamRecordEncoding::Lines))
-                .then_some("line-delimited path observations do not close consumer effects")
+            let plain_path_dispatch = || {
+                ctx.request().shell_state_before.execution_frame.is_some()
+                    && forwarded.is_empty()
+                    && matches!(consumer.result(), ResolveInvocationArtifactResult::Resolved(resolved)
+                        if super::resolve_invocation::xargs_accepts_plain_path_lines(resolved))
+                    && has_plain_path_lines(&output)
+            };
+            if output.encoding == Some(caushell_types::StreamRecordEncoding::Lines) && !plain_path_dispatch() {
+                return Some("line-delimited path observations do not close consumer effects");
+            }
+            None
         });
         let mut empty_nul_path_snapshot = false;
         if output.complete
