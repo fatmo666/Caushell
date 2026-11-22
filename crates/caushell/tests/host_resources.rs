@@ -88,6 +88,7 @@ impl Client {
         HostCheck {
             module_identities: Vec::new(),
             module_permissions: Vec::new(),
+            git_runtime_layout: None,
             request,
             owner: owner(shell),
             lifetime_ms: 60_000,

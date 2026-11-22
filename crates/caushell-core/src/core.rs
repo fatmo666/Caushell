@@ -217,6 +217,17 @@ impl ShellQueryCore {
         self
     }
 
+    pub fn filesystem_view(&self) -> std::sync::Arc<dyn caushell_runner::FilesystemView> {
+        self.filesystem.clone()
+    }
+
+    pub fn replace_filesystem_view(
+        &mut self,
+        view: std::sync::Arc<dyn caushell_runner::FilesystemView>,
+    ) -> std::sync::Arc<dyn caushell_runner::FilesystemView> {
+        std::mem::replace(&mut self.filesystem, view)
+    }
+
     pub fn check(&mut self, request: CheckRequest) -> CheckResponse {
         self.check_with_outcome(request).response
     }

@@ -1,0 +1,100 @@
+--- a/execution_frame.py
++++ b/execution_frame.py
+@@ -180,8 +180,16 @@
+     assert plan['binding']==binding
+     frame,evidence=shell.observe(plan)
+     assert frame['binding']==binding
++    git_snapshot = None
++    if payload['intent'] == 'judge_only':
++        git_snapshot, status = client.git_snapshot()
++        evidence['git_snapshot_status'] = status
++    if git_snapshot is not None:
++        frame.setdefault('native_variants', {})['git'] = git_snapshot['layout']['variant']
++        evidence['git_snapshot'] = git_snapshot
+     payload['shell_state_before']['execution_frame']=frame
+-    response,elapsed=client.rpc(request);client.check_sequence=sequence
++    response,elapsed=client.rpc(request, git_layout=git_snapshot['layout'] if git_snapshot else None)
++    client.check_sequence=sequence
+     frames=[e['kind'] for e in response['decision_trace']['evidence'] if e['kind']['kind']=='execution_frame']
+     assert len(frames)==1 and frames[0]['accepted'] and frames[0]['binding']==binding
+     client.observations.append(dict(check_sequence=sequence,binding=binding,requirements=plan['requirements'],observation=frame,**evidence))
+--- a/host_client.py
++++ b/host_client.py
+@@ -209,7 +209,7 @@
+         self.grants = {key: grant for key, grant in self.grants.items() if grant["resource"] != resource}
+         self.routes = {key: route for key, route in self.routes.items() if route['resource'] != resource}
+ 
+-    def rpc(self, request):
++    def rpc(self, request, git_layout=None):
+         wire = deepcopy(request)
+         if request["kind"] == "check":
+             assert self.active is None
+@@ -217,6 +217,9 @@
+             wire["payload"] = dict(request=payload,
+                 owner=self.owner(payload["session_id"], payload["runtime"]["runtime_name"]),
+                 lifetime_ms=60000)
++            if git_layout is not None:
++                assert payload["intent"] == "judge_only"
++                wire["payload"]["git_runtime_layout"] = git_layout
+         response, elapsed = self.control(wire)
+         if request["kind"] == "check" and request["payload"].get("intent", "propose_for_execution") != "judge_only":
+             self.active = deepcopy(request["payload"]["shell_state_before"]["execution_frame"]["binding"])
+--- a/native_client.py
++++ b/native_client.py
+@@ -10,6 +10,7 @@
+ from copy import deepcopy
+ from util import WORK, digest, load, save, sha_bytes, timestamp
+ from host_client import HostClient, ResultService
++from git_snapshot import observe_git_layout
+ 
+ ROOT = Path(__file__).resolve().parent
+ 
+@@ -22,6 +23,10 @@
+         self.policy = load(ROOT / "resource-policy.json")
+         self.service_binding = []
+         self.host_bindings = []
++        self.runtime_image = load(ROOT / "build/binary.json")["image_id"]
++
++    def git_snapshot(self):
++        return observe_git_layout(self.shell, self.process, self.runtime_image)
+ 
+     def bind_service(self, payload):
+         if not self.services:
+@@ -46,7 +51,7 @@
+                 executor_pid=self.shell.boundary().process.pid,
+                 service_witness=service.witness, route_witness=service.route_witness))
+ 
+-    def rpc(self, request):
++    def rpc(self, request, git_layout=None):
+         began = time.monotonic()
+         record = dict(index=len(self.trace), submitted_at=timestamp(), request=deepcopy(request),
+             request_sha256=sha_bytes(json.dumps(request, sort_keys=True).encode()))
+@@ -55,7 +60,7 @@
+             if request["kind"] == "check":
+                 self.bind_service(request["payload"])
+             setup_ms = (time.monotonic() - began) * 1000
+-            response, elapsed = super().rpc(request)
++            response, elapsed = super().rpc(request, git_layout=git_layout)
+             record.update(response=dict(kind=request["kind"], payload=response),
+                 latency_ms=elapsed, host_setup_latency_ms=setup_ms)
+             return response, elapsed
+--- a/host_audit.py
++++ b/host_audit.py
+@@ -86,6 +86,17 @@
+             assert active is None
+             check = payload['request']
+             binding = check['shell_state_before']['execution_frame']['binding']
++            layout = payload.get('git_runtime_layout')
++            if layout is not None:
++                assert check['intent'] == 'judge_only'
++                frame = check['shell_state_before']['execution_frame']
++                observations = [o for o in row['execution_frame_observations'] if o['binding'] == binding]
++                assert len(observations) == 1
++                witness = observations[0]['git_snapshot']
++                assert witness['layout'] == layout
++                assert witness['executable'] == '/usr/bin/git'
++                assert layout['configuration_snapshot_held'] is True
++                assert frame['native_variants']['git'] == layout['variant']
+             owner = payload['owner']
+             assert all(owner['namespace_id'] == witness['namespace_id'] for witness in witnesses.values())
+             assert all(owner[key] == binding[key] for key in ('session_id','runtime_name','executor_instance_id'))

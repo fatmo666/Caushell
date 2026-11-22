@@ -107,6 +107,7 @@ impl Client {
             lifetime_ms: 60_000,
             module_identities: Vec::new(),
             module_permissions: Vec::new(),
+            git_runtime_layout: None,
         }
     }
     fn identity(&mut self, check: &HostCheck) -> ModuleIdentityFact {
@@ -229,6 +230,29 @@ fn fixture() -> PathBuf {
     .unwrap();
     fs::write(root.join("runtime/module.py"), "pinned loader closure").unwrap();
     root
+}
+
+#[test]
+fn private_git_layout_is_scoped_to_one_judge_only_check() {
+    let root = fixture();
+    fs::create_dir(root.join("work/.git")).unwrap();
+    fs::write(root.join("work/.git/config"), "").unwrap();
+    fs::write(root.join("work/note"), "note\n").unwrap();
+    let mut client = Client::start(root.clone());
+    let layout = GitRuntimeLayout {
+        variant: GIT_2_47_3_VARIANT.into(),
+        system_config: root.join("gitconfig").to_str().unwrap().into(),
+        configuration_snapshot_held: true,
+    };
+    for (held, expected) in [(false, Decision::NeedApproval), (true, Decision::Allow), (false, Decision::NeedApproval)] {
+        let mut check = client.framed("git diff -- note", CheckIntent::JudgeOnly);
+        let frame = check.request.shell_state_before.execution_frame.as_mut().unwrap();
+        frame.native_variants.insert("git".into(), layout.variant.clone());
+        check.git_runtime_layout = held.then(|| layout.clone());
+        let HostResponse::Check(response) = client.rpc(HostRequest::Check(check)) else { panic!() };
+        assert_eq!(response.decision, expected, "{:?}", response.reasons);
+        assert!(response.check_receipt.is_none());
+    }
 }
 
 #[test]

@@ -1,7 +1,7 @@
 //! Private, serial control pipe owned by the executor, not by a tool subprocess.
 use crate::{CliError, CliRuntime};
 use caushell_runner::{
-    ManagedResource, ManagedResourceRegistry, ResourceAuthority, ResourceGrant,
+    DirectoryRead, FileContentRead, FilesystemView, ManagedResource, ManagedResourceRegistry, ResourceAuthority, ResourceGrant,
     ResourceInstanceRef, ResourceLocatorScope, ResourceOwner, ResourcePermission,
     ResourceRegistration, ResourceRoute, ResourceRouteRegistration,
 };
@@ -86,6 +86,9 @@ pub struct HostCheck {
     pub module_identities: Vec<ModuleIdentityFact>,
     #[serde(default)]
     pub module_permissions: Vec<ModuleContractPermission>,
+    /// The executor owns the configuration namespace for this JudgeOnly check.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub git_runtime_layout: Option<GitRuntimeLayout>,
     pub request: RuntimeCheckRequest,
     pub owner: ResourceOwner,
     pub lifetime_ms: u64,
@@ -160,6 +163,55 @@ struct HostResources {
     grants: BTreeMap<String, Grant>,
     routes: BTreeMap<String, Route>,
     next_grant: u64,
+}
+
+struct HeldGitFilesystem {
+    inner: Arc<dyn FilesystemView>,
+    layout: GitRuntimeLayout,
+}
+
+impl FilesystemView for HeldGitFilesystem {
+    fn git_runtime(&self, command: &str) -> Option<GitRuntimeLayout> {
+        if command == "git" {
+            Some(self.layout.clone())
+        } else {
+            self.inner.git_runtime(command)
+        }
+    }
+
+    fn pip_runtime(&self, command: &str) -> Option<PipRuntimeLayout> {
+        self.inner.pip_runtime(command)
+    }
+
+    fn shell_executable(
+        &self, command: &str, cwd: &str, shell: ShellKind, path: &ShellEnvironmentValue,
+    ) -> Option<ShellExecutableObservation> {
+        self.inner.shell_executable(command, cwd, shell, path)
+    }
+
+    fn execution_account(&self) -> Option<RuntimeAccount> {
+        self.inner.execution_account()
+    }
+
+    fn runtime_file(&self, path: &str) -> RuntimeFileObservation {
+        self.inner.runtime_file(path)
+    }
+
+    fn source(&self) -> FilesystemObservationSource {
+        self.inner.source()
+    }
+
+    fn entry(&self, path: &str) -> FilesystemEntry {
+        self.inner.entry(path)
+    }
+
+    fn read_directory(&self, path: &str, limits: DirectoryReadLimits) -> DirectoryRead {
+        self.inner.read_directory(path, limits)
+    }
+
+    fn read_file(&self, path: &str, limit: usize) -> FileContentRead {
+        self.inner.read_file(path, limit)
+    }
 }
 impl HostResources {
     fn registration(&self, handle: &ResourceHandle) -> Result<&Registration, CliError> {
@@ -375,6 +427,15 @@ fn check(
     if plan.binding != binding {
         return Err(invalid("host frame does not match the current check plan"));
     }
+    let git_layout = request.git_runtime_layout;
+    if let Some(layout) = &git_layout {
+        layout.validate().map_err(invalid)?;
+        if request.request.intent != CheckIntent::JudgeOnly
+            || frame.native_variants.get("git") != Some(&layout.variant)
+        {
+            return Err(invalid("Git layout requires a JudgeOnly check and its observed Git identity"));
+        }
+    }
     let module_scope = caushell_runner::ModuleContractScope::new(
         binding.clone(),
         request.owner.namespace_id.clone(),
@@ -395,7 +456,14 @@ fn check(
     resources.registry.with_current_snapshot(&snapshot, &binding, || {
         let intent = request.request.intent;
         runtime.core.set_module_contract_scope(Some(module_scope.clone()));
+        let prior_filesystem = git_layout.map(|layout| {
+            let inner = runtime.core.filesystem_view();
+            runtime.core.replace_filesystem_view(Arc::new(HeldGitFilesystem { inner, layout }))
+        });
         let result = runtime.handle_runtime_transport_request(RuntimeTransportRequest::Check(request.request));
+        if let Some(filesystem) = prior_filesystem {
+            runtime.core.replace_filesystem_view(filesystem);
+        }
         runtime.core.set_module_contract_scope(None);
         let RuntimeTransportResponse::Check(response) = result? else { unreachable!() };
         let accepted = response.decision_trace.evidence.iter().any(|e| {
