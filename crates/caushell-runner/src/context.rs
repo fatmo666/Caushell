@@ -459,6 +459,7 @@ pub enum ShellSourceCwdAnchor {
 // Proposals preserve per-pass judgments; final_decision is set only by the
 // final decision phase after earlier passes have contributed evidence.
 pub struct RunnerContext {
+    assume_protected_defaults: bool,
     module_contract_scope: Option<crate::ModuleContractScope>,
     resource_authority: Option<crate::ResourceAuthoritySnapshot>,
     filesystem: crate::filesystem::FilesystemViewHandle,
@@ -501,6 +502,7 @@ impl RunnerContext {
 
     pub fn with_policy(request: CheckRequest, policy: PolicyConfig) -> Self {
         Self {
+            assume_protected_defaults: false,
             module_contract_scope: None,
             resource_authority: None,
             filesystem: Default::default(),
@@ -536,6 +538,14 @@ impl RunnerContext {
 
     pub fn request(&self) -> &CheckRequest {
         &self.request
+    }
+
+    pub fn set_protected_defaults_for_static_judgment(&mut self) {
+        self.assume_protected_defaults = true;
+    }
+
+    pub fn assumes_protected_defaults(&self) -> bool {
+        self.assume_protected_defaults
     }
 
     pub fn set_module_contract_scope(&mut self, scope: crate::ModuleContractScope) {

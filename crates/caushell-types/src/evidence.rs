@@ -477,6 +477,9 @@ pub struct NonShellScriptExecutionEvidence {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum EvidenceKind {
+    StaticLoopbackScope { node_id: String, endpoints: Vec<String> },
+    StaticCleartextScope { node_id: String, endpoints: Vec<String> },
+    StaticOptionEnvironmentDefault { name: String },
     DirectoryTree(crate::DirectoryTreeEvidence),
     ModuleContract(crate::ModuleContractEvidence),
     ResourceAuthorization(crate::ResourceAuthorizationEvidence),
@@ -590,6 +593,7 @@ pub struct ToolConfigInputEvidence {
 pub enum ToolConfigInputStatus {
     Disabled,
     Absent,
+    AssumedProtected,
     Opaque,
     Unknown,
 }

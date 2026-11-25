@@ -246,8 +246,28 @@ impl ShellQueryCore {
 
     pub fn try_check_with_intent(
         &mut self,
+        request: CheckRequest,
+        intent: caushell_types::CheckIntent,
+    ) -> Result<CheckOutcome, ShellQueryCoreError> {
+        self.try_check_internal(request, intent, false)
+    }
+
+    /// Offline judgment under the protected-defaults threat model. This API
+    /// returns a judgment only and never issues an execution receipt.
+    pub fn try_judge_static_shell(
+        &mut self,
+        request: CheckRequest,
+    ) -> Result<CheckResponse, ShellQueryCoreError> {
+        let static_context = request.shell_state_before.execution_frame.is_none();
+        self.try_check_internal(request, caushell_types::CheckIntent::JudgeOnly, static_context)
+            .map(|outcome| outcome.response)
+    }
+
+    fn try_check_internal(
+        &mut self,
         mut request: CheckRequest,
         intent: caushell_types::CheckIntent,
+        assume_protected_defaults: bool,
     ) -> Result<CheckOutcome, ShellQueryCoreError> {
         let original_request = request
             .shell_state_before
@@ -285,6 +305,9 @@ impl ShellQueryCore {
         let session = sessions.entry(session_id).or_insert_with(SessionState::new);
 
         let mut ctx = RunnerContext::with_policy(request, self.policy.clone());
+        if assume_protected_defaults {
+            ctx.set_protected_defaults_for_static_judgment();
+        }
         ctx.set_filesystem_view(self.filesystem.clone());
         let module_scope = self.module_contract_scope.take();
         if let Some(scope) = module_scope.as_ref().filter(|scope| {

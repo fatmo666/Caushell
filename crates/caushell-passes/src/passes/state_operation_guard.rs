@@ -1,11 +1,16 @@
-use caushell_profile::{EffectKind, ResolveInvocationArtifactResult};
+use caushell_graph::{GraphRead, NodeId};
+use caushell_profile::{
+    EffectKind, EnvironmentValueRef, ResolveInvocationArtifactResult, ResolvedInvocationArtifact,
+    SessionValue, argument_structure,
+};
+use caushell_query::NetworkEndpointQuery;
 use caushell_runner::{RunnerContext, SessionAnalysisPass, SessionView};
 use caushell_types::{
-    Evidence, EvidenceKind, ResourceAuthorizationEvidence, ResourceTargetEvidence, RuleId,
-    StateOperationKind,
+    Evidence, EvidenceKind, ProvenanceEndpointKind, ProvenanceEndpointUsage, ResourceAuthorizationEvidence,
+    ResourceTargetEvidence, RuleAction, RuleId, StateOperationDomain, StateOperationKind,
 };
 
-use crate::support::decision_for_rule_action;
+use crate::support::{decision_for_rule_action, graph_backed_execution_resolve_records};
 use crate::support::resource::owner_namespace_is_proved;
 
 /// Enforces declared external state classes, never names, live state or guessed
@@ -54,6 +59,44 @@ impl SessionAnalysisPass for StateOperationGuardPass {
                     StateOperationKind::Control => RuleId::StateControl,
                     StateOperationKind::Opaque => RuleId::StateOpaqueOperation,
                 };
+                if ctx.assumes_protected_defaults()
+                    && state.domain == StateOperationDomain::RemoteResource
+                    && state.operation == StateOperationKind::Mutate
+                    && fact.normalized_command_name() == "curl"
+                    && matches!(fact.form_id(), "upload_to_url" | "upload_explicit_url")
+                    && !fact.operation_semantics_unresolved()
+                    && ctx.policy().rule_policy.action_for(rule) != RuleAction::Deny
+                    && let Some(endpoints) = static_direct_loopback(ctx, staged.graph(), fact.source().node_id())
+                {
+                    ctx.add_evidence(Evidence {
+                        rule_id: rule,
+                        summary: "static policy classifies the declared direct loopback upload as local".into(),
+                        kind: EvidenceKind::StaticLoopbackScope {
+                            node_id: fact.source().node_id().0.clone(),
+                            endpoints,
+                        },
+                    });
+                    continue;
+                }
+                if ctx.assumes_protected_defaults()
+                    && state.domain == StateOperationDomain::ConnectionVerification
+                    && state.operation == StateOperationKind::Control
+                    && fact.normalized_command_name() == "curl"
+                    && fact.form_id() == "fetch_to_stdout"
+                    && !fact.operation_semantics_unresolved()
+                    && ctx.policy().rule_policy.action_for(rule) != RuleAction::Deny
+                    && let Some(endpoints) = static_cleartext_fetch(ctx, staged.graph(), fact.source().node_id())
+                {
+                    ctx.add_evidence(Evidence {
+                        rule_id: rule,
+                        summary: "declared fetch and transport use cleartext HTTP; peer TLS verification is unused".into(),
+                        kind: EvidenceKind::StaticCleartextScope {
+                            node_id: fact.source().node_id().0.clone(),
+                            endpoints,
+                        },
+                    });
+                    continue;
+                }
                 let reason = format!(
                     "{:?} {:?} state operation declared for {} ({}) at {}; filesystem workspace membership does not authorize this state operation",
                     state.domain,
@@ -153,4 +196,91 @@ impl SessionAnalysisPass for StateOperationGuardPass {
             }
         }
     }
+}
+
+fn static_direct_loopback(
+    ctx: &RunnerContext,
+    graph: &dyn GraphRead,
+    source: &NodeId,
+) -> Option<Vec<String>> {
+    let record = graph_backed_execution_resolve_records(ctx)
+        .into_iter()
+        .find(|record| record.source_node_id() == source)?;
+    let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
+        return None;
+    };
+    if resolved.bound.applied_modifiers.iter().any(|modifier| {
+        matches!(modifier.as_str(),
+            "config_input" | "follow_redirects" | "request_target" | "socket_route"
+            | "explicit_transport" | "explicit_route_override")
+    }) || has_additional_transport_inputs(resolved)
+        || NetworkEndpointQuery::has_transport_target(graph, source)
+    {
+        return None;
+    }
+    let environment = record.environment();
+    for name in ["http_proxy", "HTTP_PROXY", "https_proxy", "HTTPS_PROXY", "all_proxy", "ALL_PROXY"] {
+        match environment.value(name) {
+            EnvironmentValueRef::Absent | EnvironmentValueRef::Unknown => {}
+            EnvironmentValueRef::Present(SessionValue::ExactScalar(value)) if value.is_empty() => {}
+            _ => return None,
+        }
+    }
+    let endpoints = NetworkEndpointQuery::for_execution_units(
+        graph, std::slice::from_ref(source), ctx.request().sequence_no,
+    );
+    if endpoints.is_empty() || endpoints.iter().any(|endpoint| {
+        endpoint.kind != ProvenanceEndpointKind::Url || !endpoint.has_loopback_scope()
+            || !endpoint.endpoint.is_some_and(|url| url.split_once("://").is_some_and(|(scheme, _)| {
+                scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
+            }))
+    }) {
+        return None;
+    }
+    Some(endpoints.into_iter().map(|endpoint| endpoint.description().to_owned()).collect())
+}
+
+fn static_cleartext_fetch(
+    ctx: &RunnerContext,
+    graph: &dyn GraphRead,
+    source: &NodeId,
+) -> Option<Vec<String>> {
+    let record = graph_backed_execution_resolve_records(ctx)
+        .into_iter()
+        .find(|record| record.source_node_id() == source)?;
+    let ResolveInvocationArtifactResult::Resolved(resolved) = record.result() else {
+        return None;
+    };
+    let modifiers = &resolved.bound.applied_modifiers;
+    if !modifiers.iter().any(|id| id.as_str() == "peer_verification")
+        || has_additional_transport_inputs(resolved)
+        || modifiers.iter().any(|id| {
+            matches!(id.as_str(), "config_input" | "follow_redirects" | "socket_route"
+                | "explicit_route_override" | "proxy_peer_verification" | "doh_peer_verification")
+        })
+    {
+        return None;
+    }
+    let endpoints = NetworkEndpointQuery::for_execution_units(
+        graph, std::slice::from_ref(source), ctx.request().sequence_no,
+    );
+    if !endpoints.iter().any(|endpoint| endpoint.usage == ProvenanceEndpointUsage::FetchSource)
+        || endpoints.iter().any(|endpoint| {
+            endpoint.kind != ProvenanceEndpointKind::Url
+                || !endpoint.endpoint.is_some_and(|url| url.split_once("://")
+                    .is_some_and(|(scheme, _)| scheme.eq_ignore_ascii_case("http")))
+        })
+    {
+        return None;
+    }
+    Some(endpoints.into_iter().map(|endpoint| endpoint.description().to_owned()).collect())
+}
+
+fn has_additional_transport_inputs(invocation: &ResolvedInvocationArtifact) -> bool {
+    invocation.bound.applied_modifiers.iter().any(|id| {
+        // State files can affect routing and the general option group includes DoH.
+        matches!(id.as_str(), "state_file" | "common_value_option")
+    }) || invocation.materialized_projection.invocation.args.iter().any(|arg| {
+        matches!(argument_structure(arg).exact_value(), Some("--http3" | "--http3-only"))
+    })
 }

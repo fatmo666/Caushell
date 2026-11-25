@@ -1,5 +1,6 @@
 mod git;
 mod argument_fields;
+mod svn;
 use std::{collections::BTreeMap, path::Path};
 
 use caushell_profile::{
@@ -103,6 +104,33 @@ impl ResolveInvocationPass {
         let Some(parsed) = ctx.parsed_command().cloned() else {
             return;
         };
+        let mut binding_request = ctx.request().clone();
+        if ctx.assumes_protected_defaults()
+            && binding_request.shell_kind == caushell_types::ShellKind::Bash
+            && binding_request.runtime.shell_runtime_capabilities
+                == caushell_types::ShellRuntimeCapabilities::request_only()
+            && binding_request.shell_state_before.observability.variables
+                == caushell_types::ShellStateKnowledge::Unknown
+            && session.summary().shell_state_uncertainty().is_none()
+            && session.summary().variable_binding("TAR_OPTIONS").is_none()
+            && !binding_request.shell_state_before.environment.iter().any(|e| e.name == "TAR_OPTIONS")
+            && !binding_request.shell_state_before.variables.iter().any(|v| v.name == "TAR_OPTIONS")
+        {
+            // The offline entry model supplies no inherited tar options. Seed
+            // the private binding view before replaying this shell's effects,
+            // so prefix assignments and visible shell state take precedence.
+            binding_request.shell_state_before.environment.push(caushell_types::ShellEnvironmentSnapshot {
+                name: "TAR_OPTIONS".into(),
+                value: caushell_types::ShellEnvironmentValue::Absent,
+            });
+            ctx.add_evidence(Evidence {
+                rule_id: caushell_types::RuleId::SelectionError,
+                summary: "offline entry model assumes no inherited TAR_OPTIONS".into(),
+                kind: caushell_types::EvidenceKind::StaticOptionEnvironmentDefault {
+                    name: "TAR_OPTIONS".into(),
+                },
+            });
+        }
         let staged_session = StagedSession::new(
             session.graph(),
             ctx.request(),
@@ -110,10 +138,9 @@ impl ResolveInvocationPass {
             ctx.pending_mutations(),
         );
         let staged_view = SessionView::from_session(&staged_session);
-        let bindings = request_bindings(session.summary(), ctx.request());
+        let bindings = request_bindings(session.summary(), &binding_request);
         // The overlay and ordinary resolver see the same merged definitions.
         // This is a local analysis view, not new runtime/Harness observations.
-        let mut binding_request = ctx.request().clone();
         binding_request.shell_state_before.aliases =
             alias_bindings(session.summary(), ctx.request())
                 .values()
@@ -210,6 +237,7 @@ impl ResolveInvocationPass {
                 e.kind,
                 caushell_types::EvidenceKind::PathnameFields(_)
                     | caushell_types::EvidenceKind::ToolOptionEnvironment(_)
+                    | caushell_types::EvidenceKind::ToolConfigInput(_)
                     | caushell_types::EvidenceKind::ToolConfigParse(_)
                     | caushell_types::EvidenceKind::ShellArgumentFields(_)
             )
@@ -4521,6 +4549,8 @@ fn collect_execution_unit_resolve_records(
                 registry, command, context, &entry.bindings,
             );
         }
+
+        svn::close_default_status_initialization(pathname_context, &mut entry);
 
         let frontier_depth = entry.depth;
         let child_bindings = entry.bindings.clone();

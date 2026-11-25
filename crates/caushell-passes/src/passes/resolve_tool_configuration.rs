@@ -110,6 +110,7 @@ impl SessionTransformPass for ResolveToolConfigurationPass {
                     matches!(
                         input.status,
                         ToolConfigInputStatus::Absent | ToolConfigInputStatus::Disabled
+                            | ToolConfigInputStatus::AssumedProtected
                     )
                 })
             {
