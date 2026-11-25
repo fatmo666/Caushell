@@ -1,0 +1,30 @@
+dsl_version: caushell.profile/v1alpha1
+kind: command_profile
+
+identity: {canonical_name: iselect, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux], shell_families: [], requires_features: []}
+option_scope: permuted_options
+option_matching: exact_names
+opaque_on_unresolved: true
+
+forms:
+  - id: select_line
+    selector: {kind: all, items: []}
+    parameters:
+      - name: lines
+        semantic: {kind: plain_value}
+        binding: {kind: remaining_positionals}
+        cardinality: optional_many
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque}
+    effects: [{kind: transform_data, target: {kind: none}}]
+
+modifiers:
+  - id: all_select
+    matcher: {kind: any_flag, flags: ['-a', '--all-select']}
+
+extensions:
+  caushell.profile/source_research:
+    - https://sources.debian.org/src/iselect/1.4.2-1/iselect.1.in
+  caushell.profile/known_limitations:
+    - Selection, prompt input, and the terminal UI do not establish exact output bytes.

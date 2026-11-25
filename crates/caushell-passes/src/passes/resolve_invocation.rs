@@ -1,5 +1,6 @@
 mod git;
 mod argument_fields;
+mod bash_job_targets;
 mod svn;
 use std::{collections::BTreeMap, path::Path};
 
@@ -308,6 +309,9 @@ impl ResolveInvocationPass {
         for evidence in expansion_limit_evidence {
             ctx.add_evidence(evidence);
         }
+        bash_job_targets::resolve_empty_job_targets(
+            ctx, session.summary(), &parsed, &self.registry, &mut execution_unit_resolve_records,
+        );
         let dispatch_records = project_dispatch_records(
             &self.registry, ctx.request(), &execution_unit_resolve_records,
         );

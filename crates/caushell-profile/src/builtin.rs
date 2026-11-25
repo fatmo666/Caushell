@@ -1402,6 +1402,14 @@ const BUILT_IN_PROFILE_SOURCES: &[BuiltInProfileSource] = &[
         content: include_str!("../profiles/dialog.yaml"),
     },
     BuiltInProfileSource {
+        profile_id: "iselect",
+        content: include_str!("../profiles/iselect.yaml"),
+    },
+    BuiltInProfileSource {
+        profile_id: "zenity",
+        content: include_str!("../profiles/zenity.yaml"),
+    },
+    BuiltInProfileSource {
         profile_id: "whiptail",
         content: include_str!("../profiles/whiptail.yaml"),
     },
