@@ -106,6 +106,7 @@ impl ResolveInvocationPass {
             return;
         };
         let mut binding_request = ctx.request().clone();
+        let entry_summary = static_bash_entry_summary(ctx, session.summary(), &parsed, &binding_request);
         if ctx.assumes_protected_defaults()
             && binding_request.shell_kind == caushell_types::ShellKind::Bash
             && binding_request.runtime.shell_runtime_capabilities
@@ -135,11 +136,11 @@ impl ResolveInvocationPass {
         let staged_session = StagedSession::new(
             session.graph(),
             ctx.request(),
-            session.summary(),
+            entry_summary.as_ref().unwrap_or_else(|| session.summary()),
             ctx.pending_mutations(),
         );
         let staged_view = SessionView::from_session(&staged_session);
-        let bindings = request_bindings(session.summary(), &binding_request);
+        let bindings = request_bindings(staged_view.summary(), &binding_request);
         // The overlay and ordinary resolver see the same merged definitions.
         // This is a local analysis view, not new runtime/Harness observations.
         binding_request.shell_state_before.aliases =
@@ -624,6 +625,75 @@ impl ResolvedCommandSeed {
             result,
         }
     }
+}
+
+fn static_bash_entry_summary(
+    ctx: &mut RunnerContext,
+    summary: &caushell_types::SessionSummary,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    request: &CheckRequest,
+) -> Option<caushell_types::SessionSummary> {
+    use caushell_types::{
+        CommandSequenceNo, EvidenceKind, RuleId, ShellKind, ShellRuntimeCapabilities,
+        ShellStateKnowledge,
+    };
+
+    let state = &request.shell_state_before;
+    if !ctx.assumes_protected_defaults()
+        || request.shell_kind != ShellKind::Bash
+        || request.sequence_no != CommandSequenceNo(1)
+        || request.runtime.shell_runtime_capabilities != ShellRuntimeCapabilities::request_only()
+        || state.execution_frame.is_some()
+        || state.observability.variables != ShellStateKnowledge::Unknown
+        || summary.last_sequence_no().is_some()
+        || summary.shell_state_uncertainty().is_some()
+        || parsed.status != caushell_parse::ParseStatus::Complete
+        || !Path::new(state.cwd()).is_absolute()
+        || state.cwd().contains('\0')
+        || !state.aliases.is_empty()
+        || !state.functions.is_empty()
+        || summary.alias_bindings().next().is_some()
+        || summary.function_bindings().next().is_some()
+    {
+        return None;
+    }
+
+    if state
+        .environment
+        .iter()
+        .map(|binding| binding.name.as_str())
+        .chain(state.variables.iter().map(|binding| binding.name.as_str()))
+        .any(|name| {
+            matches!(name, "BASH_ENV" | "ENV" | "BASHOPTS" | "SHELLOPTS" | "POSIXLY_CORRECT")
+                || name.starts_with("BASH_FUNC_")
+        })
+    {
+        return None;
+    }
+
+    // These are entry bindings in the private resolver view, including the
+    // unexported IFS. Later shell-state effects still replay in source order.
+    let mut entry = None;
+    for (name, value, exported) in [("PWD", state.cwd(), true), ("IFS", " \t\n", false)] {
+        if state.environment.iter().any(|binding| binding.name == name)
+            || state.variables.iter().any(|binding| binding.name == name)
+            || summary.variable_binding(name).is_some()
+        {
+            continue;
+        }
+        entry.get_or_insert_with(|| summary.clone()).set_exact_scalar_variable(
+            name,
+            value,
+            exported,
+            CommandSequenceNo(0),
+        );
+        ctx.add_evidence(Evidence {
+            rule_id: RuleId::SelectionError,
+            summary: format!("offline independent Bash entry supplies the initial {name}"),
+            kind: EvidenceKind::StaticBashEntryVariable { name: name.into() },
+        });
+    }
+    entry
 }
 
 fn request_bindings(
@@ -2907,6 +2977,7 @@ fn pathname_scope_is_stable(
     parsed: &caushell_parse::ParsedCommandArtifact,
     index: usize,
     bindings: &SessionBindings,
+    proven_producer: Option<&caushell_parse::CommandSubstitutionFact>,
 ) -> Result<bool, String> {
     let observations = source_scope_observations(
         registry,
@@ -2920,7 +2991,11 @@ fn pathname_scope_is_stable(
     }
     if !parsed.redirections.is_empty()
         || !caushell_parse::parse_command_substitutions(&parsed.raw_command, parsed.shell_kind)
-            .is_ok_and(|s| s.is_empty())
+            .is_ok_and(|s| match s.as_slice() {
+                [] => true,
+                [one] => proven_producer == Some(one),
+                _ => false,
+            })
         || !caushell_parse::parse_process_substitutions(&parsed.raw_command, parsed.shell_kind)
             .is_ok_and(|s| s.is_empty())
     {
@@ -3212,6 +3287,56 @@ fn read_only_process_substitution_parent(
             })
 }
 
+fn static_entry_find_pathname<'a>(
+    registry: &ProfileRegistry,
+    ctx: &RunnerContext,
+    entry: &ExpandedFrontierEntry,
+    command: &'a caushell_parse::CommandFact,
+    cwd: &caushell_runner::EffectiveCwd,
+) -> Option<(caushell_parse::CommandFact, &'a caushell_parse::CommandSubstitutionFact)> {
+    let cwd = cwd.as_known()?;
+    if command.command_name.as_deref() != Some("find")
+        || cwd != ctx.request().shell_state_before.cwd()
+        || !registry.lookup("find").profile.is_some_and(|profile| {
+            profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+        })
+    {
+        return None;
+    }
+    let token = command.tokens.first()?;
+    let producer = static_entry_pwd_producer(registry, ctx, entry, command)?;
+    if token.command_substitutions.as_slice() != std::slice::from_ref(producer) {
+        return None;
+    }
+    let source = ctx.request().command.get(token.span.start_byte..token.span.end_byte)?;
+    let (suffix, quoted_prefix) = if let Some(suffix) = source.strip_prefix(&producer.text) {
+        (suffix, false)
+    } else {
+        (source.strip_prefix('"')?.strip_prefix(&producer.text)?.strip_prefix('"')?, true)
+    };
+    let literal_path_byte = |b: u8| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-');
+    if !cwd.bytes().all(literal_path_byte)
+        || !suffix.starts_with('/')
+        || !suffix.contains('*')
+        || suffix.contains("**")
+        || !suffix.bytes().all(|b| b == b'*' || literal_path_byte(b))
+        || (!quoted_prefix && caushell_profile::observed_ifs_value(&entry.bindings)
+            .is_none_or(|ifs| cwd.chars().any(|c| ifs.contains(c))))
+    {
+        return None;
+    }
+
+    // This internal argument retains the wildcard and the original span.
+    // The original parsed scope still supplies the producer and child audit.
+    let mut pathname_command = command.clone();
+    let token = pathname_command.tokens.first_mut()?;
+    token.text = format!("{cwd}{suffix}");
+    token.quoted = false;
+    token.node_kind = "word".into();
+    token.command_substitutions.clear();
+    Some((pathname_command, producer))
+}
+
 fn materialize_pathname_fields(
     registry: &ProfileRegistry,
     request: &CheckRequest,
@@ -3249,12 +3374,35 @@ fn materialize_pathname_fields(
     .get(index)
     .cloned()
     .unwrap_or(caushell_runner::EffectiveCwd::Unknown);
+    let Some(source_command) = entry.parsed_scope.commands.get(entry.command_ref.command_index) else {
+        return;
+    };
+    let runtime_context = runtime_context_for_parsed_command(
+        &entry.parsed_scope,
+        entry.command_ref.command_index,
+        source_command,
+    );
+    let pathname = static_entry_find_pathname(registry, ctx, entry, source_command, &cwd)
+        .and_then(|(command, producer)| {
+            let ResolveInvocationArtifactResult::Resolved(rebound) = resolve_invocation_artifact_with_bindings(
+                registry, &command, runtime_context.clone(), &entry.bindings,
+            ) else {
+                return None;
+            };
+            rebound.bound.bound_parameters.iter().any(|parameter| {
+                parameter.name.as_str() == "search_roots" && parameter.values.iter().any(|value| {
+                    matches!(value, BoundValue::Argument { text, ownership: caushell_profile::ArgumentOwnership::Operand, .. }
+                        if text == &command.tokens[0].text)
+                })
+            }).then_some((command, rebound, producer))
+        });
     let mut frame = pathname_scope_is_stable(
         registry,
         request,
         &entry.parsed_scope,
         index,
         program_scope_bindings(entry),
+        pathname.as_ref().map(|(_, _, producer)| *producer),
     );
     // A directory-only glob requires evidence about directory membership,
     // including symlinks followed by a trailing slash.
@@ -3282,6 +3430,7 @@ fn materialize_pathname_fields(
                 &scope.parsed,
                 scope.before_command_index,
                 &scope.bindings,
+                None,
             )
             .map(|_| writes_after_expansion)
         });
@@ -3291,6 +3440,10 @@ fn materialize_pathname_fields(
     {
         frame = Err("pathname execution frame is incomplete".into());
     }
+    let pathname = pathname.as_ref().filter(|_| frame.is_ok());
+    let (command, resolved) = pathname.map_or((source_command, resolved), |(command, rebound, _)| {
+        (command, rebound)
+    });
     let writes_after_expansion = frame.as_ref().is_ok_and(|value| *value);
     let mut proofs = super::pathname_fields::observe(
         ctx,
@@ -3305,18 +3458,6 @@ fn materialize_pathname_fields(
     if proofs.is_empty() {
         return;
     }
-    let Some(command) = entry
-        .parsed_scope
-        .commands
-        .get(entry.command_ref.command_index)
-    else {
-        return;
-    };
-    let runtime_context = runtime_context_for_parsed_command(
-        &entry.parsed_scope,
-        entry.command_ref.command_index,
-        command,
-    );
     let envelope = if (entry.origin_kind == ExecutionUnitOriginKind::TopLevel || process_parent_proved)
         && proofs.iter().all(|proof| {
             proof.unmatched_literal.is_some() || proof.single_match_bound.is_some()
@@ -3345,7 +3486,16 @@ fn materialize_pathname_fields(
         }
     }
     for proof in &proofs {
-        ctx.add_evidence(super::pathname_fields::evidence(proof.clone()));
+        let derived = pathname.is_some() && proof.start_byte == command.tokens[0].span.start_byte;
+        let mut shown = proof.clone();
+        if derived {
+            shown.source_word.clone_from(&source_command.tokens[0].text);
+        }
+        let mut evidence = super::pathname_fields::evidence(shown);
+        if derived {
+            evidence.summary = "shell pathname fields with a proven Bash directory prefix".into();
+        }
+        ctx.add_evidence(evidence);
     }
     entry.bindings.set_pathname_fields(proofs);
     entry.result = match envelope {
@@ -9570,6 +9720,62 @@ fn decode_xargs_delimiter(word: &str) -> Option<String> {
     byte.is_ascii().then(|| char::from(byte).to_string())
 }
 
+fn static_entry_pwd_producer<'a>(
+    registry: &ProfileRegistry,
+    ctx: &RunnerContext,
+    entry: &ExpandedFrontierEntry,
+    command: &'a caushell_parse::CommandFact,
+) -> Option<&'a caushell_parse::CommandSubstitutionFact> {
+    if entry.origin_kind != ExecutionUnitOriginKind::TopLevel
+        || command.command_name_runtime_data
+        || command.conditional_execution
+        || !command.prefix_assignments.is_empty()
+        || !ctx.evidence.iter().any(|e| matches!(&e.kind,
+            caushell_types::EvidenceKind::StaticBashEntryVariable { name } if name == "PWD"))
+    {
+        return None;
+    }
+
+    let request = ctx.request();
+    let raw = &request.command;
+    let only_whitespace = |text: &str| text.trim_matches([' ', '\t', '\n']).is_empty();
+    if &entry.parsed_scope.raw_command != raw
+        || !raw.get(..command.span.start_byte).is_some_and(only_whitespace)
+    {
+        return None;
+    }
+    let first_arg = command.tokens.first()?;
+    let name = command.command_name.as_deref()?;
+    if raw.get(command.span.start_byte..first_arg.span.start_byte)?.trim_end_matches([' ', '\t', '\n']) != name {
+        return None;
+    }
+
+    // Bind the first substitution after literal words at shell entry. No
+    // prior shell statement or expanding argument can change the builtin or
+    // the logical directory before this occurrence.
+    let token = command.tokens.iter().find(|token| {
+        caushell_parse::decode_static_shell_argument(&token.text, token.quoted, &token.node_kind).is_none()
+            || !token.command_substitutions.is_empty()
+    })?;
+    let [producer] = token.command_substitutions.as_slice() else {
+        return None;
+    };
+    let state = &request.shell_state_before;
+    if producer.body_text.trim_matches([' ', '\t', '\n']) != "pwd"
+        || !registry.lookup("pwd").profile.is_some_and(|profile| {
+            profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+        })
+        || state.environment.iter().map(|v| v.name.as_str())
+            .chain(state.variables.iter().map(|v| v.name.as_str()))
+            .any(|name| name.starts_with("LD_") || name.starts_with("DYLD_"))
+        || !caushell_parse::parse_process_substitutions(raw, request.shell_kind)
+            .is_ok_and(|substitutions| substitutions.is_empty())
+    {
+        return None;
+    }
+    Some(producer)
+}
+
 fn static_substitution_argument_fields(
     command: &caushell_parse::CommandFact,
     session: caushell_query::QuerySession<'_>,
@@ -9580,6 +9786,7 @@ fn static_substitution_argument_fields(
     cwd_reliable: bool,
     home: Option<&str>,
     remaining_depth: u8,
+    entry_pwd: Option<&caushell_parse::CommandSubstitutionFact>,
 ) -> Vec<caushell_profile::ArgumentFieldsProof> {
     use caushell_profile::ShellFieldFragment::UnquotedExpansion;
     if shell_kind != caushell_types::ShellKind::Bash || remaining_depth == 0 {
@@ -9600,6 +9807,14 @@ fn static_substitution_argument_fields(
             let end = token.span.end_byte.checked_sub(command.span.start_byte)?;
             let original = command.text.get(start..end)?;
             let output = |text: &str| {
+                if let Some(pwd) = entry_pwd
+                    && pwd.text == text
+                    && token.command_substitutions.as_slice() == std::slice::from_ref(pwd)
+                {
+                    // Command substitution removes the builtin's newline and
+                    // any trailing newlines in the directory name itself.
+                    return Some(cwd.trim_end_matches('\n').to_owned());
+                }
                 crate::support::static_command_substitution_output_with_cwd(
                     text,
                     session,
@@ -9715,6 +9930,9 @@ fn refresh_substitution_argument_fields(
     .cloned()
     .unwrap_or(caushell_runner::EffectiveCwd::Unknown);
     let cwd_reliable = !entry.inherited_scope.static_input_cwd_unproven && cwd.as_known().is_some();
+    let entry_pwd = cwd.as_known()
+        .filter(|path| cwd_reliable && *path == request.shell_state_before.cwd())
+        .and_then(|_| static_entry_pwd_producer(registry, ctx, entry, command));
     let fields = static_substitution_argument_fields(
         command,
         caushell_query::QuerySession::from_session(&session),
@@ -9726,6 +9944,7 @@ fn refresh_substitution_argument_fields(
         cwd_reliable,
         request.home.as_deref(),
         max_depth - entry.depth,
+        entry_pwd,
     );
     if fields.is_empty()
         || (*normalized != "find" && fields.iter().all(|proof| proof.exact_fields().is_none()))

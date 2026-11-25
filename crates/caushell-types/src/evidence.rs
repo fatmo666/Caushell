@@ -480,6 +480,7 @@ pub enum EvidenceKind {
     StaticLoopbackScope { node_id: String, endpoints: Vec<String> },
     StaticCleartextScope { node_id: String, endpoints: Vec<String> },
     StaticOptionEnvironmentDefault { name: String },
+    StaticBashEntryVariable { name: String },
     StaticEmptyJobTargets { node_id: String, command: String },
     DirectoryTree(crate::DirectoryTreeEvidence),
     ModuleContract(crate::ModuleContractEvidence),
