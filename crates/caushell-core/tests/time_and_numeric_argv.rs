@@ -168,6 +168,50 @@ fn integer_loop_members_prove_awk_assignment_width_with_observed_ifs() {
 }
 
 #[test]
+fn literal_loop_members_preserve_one_path_field_under_observed_splitting() {
+    let command = "for v in release debug; do echo \"$v\"; nm -C /app/$v | grep marker; done";
+    let default_ifs = ShellEnvironmentValue::Present {
+        value: " \t\n".into(),
+    };
+    let request = |command, ifs| {
+        let mut request = observed(command, false, None, ifs);
+        request
+            .shell_state_before
+            .execution_frame
+            .as_mut()
+            .unwrap()
+            .variables
+            .push(ShellEnvironmentSnapshot {
+                name: "v".into(),
+                value: ShellEnvironmentValue::Absent,
+            });
+        request
+    };
+    check(request(command, default_ifs.clone()), Decision::Allow);
+    for ifs in [
+        ShellEnvironmentValue::Present { value: "e".into() },
+        ShellEnvironmentValue::Unknown,
+    ] {
+        check(request(command, ifs), Decision::NeedApproval);
+    }
+    check(
+        observed(command, false, None, default_ifs.clone()),
+        Decision::NeedApproval,
+    );
+    for candidate in [
+        "for v in release debug; do nm -C /app/$v; IFS=e; done",
+        "for v in release debug; do read v; nm -C /app/$v; done",
+        "for v in /app/*; do nm -C /app/$v; done",
+        "for v in release debug; do nm -C /app/$v; done; rm victim",
+    ] {
+        check(
+            request(candidate, default_ifs.clone()),
+            Decision::NeedApproval,
+        );
+    }
+}
+
+#[test]
 fn facts_and_entry_coverage_never_supply_authority() {
     for command in [
         "start=$SECONDS; echo $((start)); rm /workspace/out",

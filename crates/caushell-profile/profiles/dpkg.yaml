@@ -81,7 +81,7 @@ forms:
       kind: none
     surface:
       kind: pager
-      requires_tty: true
+      requires_stdout_tty: true
       capabilities:
       - spawn_shell
       - run_command

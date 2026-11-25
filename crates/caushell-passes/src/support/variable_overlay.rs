@@ -203,8 +203,16 @@ pub(super) fn apply_variable_overlay(
                     super::loop_overlay::iteration_domain(iteration, &bindings, parsed.shell_kind);
                 let integer_scalar =
                     super::loop_overlay::integer_iteration(iteration, &bindings, parsed.shell_kind);
-                if let Some(domain) = domain {
-                    bindings.insert_argument_domain(&iteration.variable, domain);
+                if let Some((domain, complete_literal_members)) = domain {
+                    let complete_literal_members = complete_literal_members
+                        && super::loop_overlay::preserves_literal_iteration_state(
+                            iteration, parsed, &bindings, registry,
+                        );
+                    bindings.insert_iteration_argument_domain(
+                        &iteration.variable,
+                        domain,
+                        complete_literal_members,
+                    );
                 } else {
                     bindings.insert_opaque_dynamic(
                         &iteration.variable,

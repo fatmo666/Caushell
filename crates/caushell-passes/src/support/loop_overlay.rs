@@ -124,7 +124,7 @@ pub(super) fn iteration_domain(
     iteration: &ForLoopFact,
     bindings: &SessionBindings,
     shell_kind: caushell_types::ShellKind,
-) -> Option<RuntimeArgumentDomain> {
+) -> Option<(RuntimeArgumentDomain, bool)> {
     const MAX_ITEMS: usize = 256;
     if bindings.runtime_variable_target_is_unresolved(&iteration.variable) {
         return None;
@@ -142,7 +142,7 @@ pub(super) fn iteration_domain(
             };
             roots.push(value.clone());
         }
-        return path_domain(roots);
+        return path_domain(roots).map(|domain| (domain, false));
     };
     if items.len() > MAX_ITEMS {
         return None;
@@ -155,6 +155,10 @@ pub(super) fn iteration_domain(
     if materialized.invocation.args.len() > MAX_ITEMS {
         return None;
     }
+    let mut complete_literal_members = items.iter().all(|item| {
+        caushell_parse::decode_static_shell_argument(&item.text, item.quoted, &item.node_kind)
+            .is_some()
+    });
     for (arg, resolution) in materialized
         .invocation
         .args
@@ -162,10 +166,11 @@ pub(super) fn iteration_domain(
         .zip(&materialized.arg_resolutions)
     {
         if let Some(domain) = &arg.runtime_argument_domain {
+            complete_literal_members = false;
             // Keep nested domains without collapsing a template or choosing a
             // representative member. Mixed abstract lists stay conservative.
             if materialized.invocation.args.len() == 1 {
-                return Some(domain.clone());
+                return Some((domain.clone(), false));
             }
             let RuntimeArgumentDomain::PathSet {
                 roots: candidates,
@@ -185,6 +190,7 @@ pub(super) fn iteration_domain(
         } else if let Some(value) = caushell_profile::argument_structure(arg).exact_value() {
             roots.push(value.to_string());
         } else {
+            complete_literal_members = false;
             // Reuse the pathname-generation proof, then retain its RAW producer
             // spelling. Normalizing ./ away would break argv prefix/affix proofs.
             let Some(PathResolution::BoundedPathSet {
@@ -212,7 +218,7 @@ pub(super) fn iteration_domain(
             return None;
         }
     }
-    path_domain(roots)
+    path_domain(roots).map(|domain| (domain, complete_literal_members))
 }
 
 fn path_domain(mut roots: Vec<String>) -> Option<RuntimeArgumentDomain> {
@@ -233,6 +239,82 @@ fn path_domain(mut roots: Vec<String>) -> Option<RuntimeArgumentDomain> {
         dot_relative_components: false,
         execdir_leaf: false,
     })
+}
+
+/// In later iterations the entry IFS must still apply. An assignment,
+/// arithmetic expansion, indirect dispatch, or opaque same-shell command
+/// anywhere in the body can invalidate it on the back edge.
+pub(super) fn preserves_literal_iteration_state(
+    iteration: &ForLoopFact,
+    parsed: &caushell_parse::ParsedCommandArtifact,
+    bindings: &SessionBindings,
+    registry: Option<&caushell_profile::ProfileRegistry>,
+) -> bool {
+    use caushell_profile::{EffectKind, ProfileSourceKind, VariablePresence};
+
+    let Some(registry) = registry else {
+        return false;
+    };
+    let in_body = |span: &caushell_parse::SourceSpan| {
+        span.start_byte >= iteration.body_span.start_byte
+            && span.end_byte <= iteration.body_span.end_byte
+    };
+    if iteration.top_level_span != iteration.span
+        || iteration.conditional_execution
+        // Existing scalar attributes may change assignment semantics. An
+        // absent receiver is a fresh, ordinary shell variable.
+        || bindings.variable_presence(&iteration.variable) != VariablePresence::Absent
+        || bindings.shell_state_uncertainty().is_some()
+        || parsed.for_loops.iter().any(|item| in_body(&item.span))
+        || parsed.declaration_commands.iter().any(|item| in_body(&item.span))
+        || parsed.assignment_commands.iter().any(|item| in_body(&item.span))
+        || parsed.unset_commands.iter().any(|item| in_body(&item.span))
+        || parsed.function_definitions.iter().any(|item| in_body(&item.span))
+        || parsed.shell_evaluations.iter().any(|item| {
+            in_body(&item.input.span)
+                && !matches!(&item.kind, caushell_parse::ShellEvaluationKind::ParameterReference { name }
+                    if name == &iteration.variable)
+        })
+        || parsed.redirections.iter().any(|item| in_body(&item.span))
+    {
+        return false;
+    }
+    parsed
+        .commands
+        .iter()
+        .filter(|command| in_body(&command.span))
+        .all(|command| {
+            let Some(name) = command.command_name.as_deref() else {
+                return false;
+            };
+            if !command.prefix_assignments.is_empty()
+                || bindings.retained_function_binding(name).is_some()
+                || bindings.profile_has_alias_shadow(name)
+            {
+                return false;
+            }
+            registry.lookup(name).profile.is_some_and(|profile| {
+                profile.trust.source == ProfileSourceKind::BuiltIn
+                    && profile.subcommands.is_none()
+                    && profile.dispatch_overrides.is_empty()
+                    && profile.native_variable_writes.is_none()
+                    && profile
+                        .forms
+                        .iter()
+                        .flat_map(|f| &f.effects)
+                        .chain(profile.modifiers.iter().flat_map(|m| &m.effects))
+                        .chain(&profile.selection_failure_effects)
+                        .all(|effect| {
+                            matches!(
+                                effect.kind,
+                                EffectKind::ReadPath
+                                    | EffectKind::TargetPath
+                                    | EffectKind::ConsumeStdin
+                                    | EffectKind::TransformData
+                            )
+                        })
+            })
+        })
 }
 
 #[cfg(test)]

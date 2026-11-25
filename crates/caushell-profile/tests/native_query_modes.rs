@@ -1,6 +1,6 @@
 use caushell_parse::parse_command;
 use caushell_profile::{
-    BoundInvocation, EffectKind, InvocationRuntimeContext, ProfileRegistry,
+    BoundInvocation, BoundValue, EffectKind, InvocationRuntimeContext, ProfileRegistry,
     ResolveInvocationResult, resolve_invocation,
 };
 use caushell_types::ShellKind;
@@ -158,6 +158,19 @@ fn repository_queries_own_native_filters_and_do_not_create_host_writes() {
         ("git ls-tree -r HEAD path/in/tree", "inspect_tree"),
         ("git rev-list --all", "inspect_revision_list"),
         ("git status --short", "inspect_worktree_status"),
+        ("git merge-base main topic", "inspect_merge_base"),
+        (
+            "git merge-base --is-ancestor HEAD main",
+            "inspect_merge_base",
+        ),
+        (
+            "git --no-pager log --oneline --graph --all --decorate -n 10",
+            "inspect_history_no_pager",
+        ),
+        (
+            "git --no-pager log --graph --decorate=full -n 6 HEAD",
+            "inspect_history_no_pager",
+        ),
         (
             "git --no-pager log --oneline -20",
             "inspect_history_no_pager",
@@ -187,7 +200,7 @@ fn repository_queries_own_native_filters_and_do_not_create_host_writes() {
             "{source}: {bound:#?}"
         );
     }
-    let paged = resolved(&registry, "git log --oneline -25");
+    let paged = resolved(&registry, "git log --oneline --graph --decorate -25");
     assert!(
         paged
             .effects
@@ -201,4 +214,52 @@ fn repository_queries_own_native_filters_and_do_not_create_host_writes() {
             .iter()
             .any(|e| e.kind == EffectKind::OpenInteractiveEscapeSurface)
     );
+}
+
+#[test]
+fn readelf_hex_dump_consumes_section_names_without_creating_file_operands() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    for (source, sections) in [
+        ("readelf -x .init_array release", vec![".init_array"]),
+        ("readelf --hex-dump=5 release", vec!["5"]),
+        (
+            "readelf -x .text --hex-dump=.data release",
+            vec![".text", ".data"],
+        ),
+    ] {
+        let bound = resolved(&registry, source);
+        assert_eq!(bound.form_id.as_str(), "inspect_elf_files");
+        assert!(!bound.operation_semantics_unresolved, "{bound:#?}");
+        let values = |name: &str| {
+            bound
+                .bound_parameters
+                .iter()
+                .filter(|parameter| parameter.name.as_str() == name)
+                .flat_map(|parameter| &parameter.values)
+                .map(|value| match value {
+                    BoundValue::Argument { text, .. } => text.as_str(),
+                    other => panic!("{source}: {other:#?}"),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(values("elf_paths"), ["release"]);
+        assert_eq!(values("sections"), sections);
+        assert_eq!(bound.effects.len(), 1);
+        assert_eq!(bound.effects[0].kind, EffectKind::ReadPath);
+    }
+
+    for source in [
+        "readelf -x",
+        "readelf -x @options release",
+        "readelf --hex-dump=@options release",
+    ] {
+        let parsed = parse_command(source, ShellKind::Bash).unwrap();
+        assert!(
+            !matches!(
+                resolve_invocation(&registry, &parsed.commands[0], InvocationRuntimeContext::new()),
+                ResolveInvocationResult::Resolved(r) if !r.bound.operation_semantics_unresolved
+            ),
+            "{source}",
+        );
+    }
 }

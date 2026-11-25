@@ -84,7 +84,7 @@ fn native_gcc_and_reflog_contracts_survive_real_cli_round_trips() {
         ),
         (
             "gcc -lstdc++ source.c -o build/tool",
-            Decision::NeedApproval,
+            Decision::Allow,
         ),
         (
             "gcc -Wl,-Map,/outside/map source.c -o build/tool",

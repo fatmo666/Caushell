@@ -43,6 +43,14 @@ forms:
     effects: [{kind: read_path, path_access: content_open, target: {kind: slot, name: elf_paths}}]
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: data, stdout_dependency: inputs, stderr_dependency: inputs}
 modifiers:
+  - id: hex_dump
+    matcher: {kind: any_flag, flags: ['-x', '--hex-dump']}
+    parameters:
+      - name: sections
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_many
+        value_constraints: [{kind: require_match, pattern: '[A-Za-z0-9_.][A-Za-z0-9_.+-]*'}]
   - {id: all, matcher: {kind: any_flag, flags: ['-a', '--all']}}
   - {id: display, matcher: {kind: any_flag, flags: ['-W', '--wide', '-T', '--silent-truncation', '-h', '--file-header', '-l', '--program-headers', '--segments', '-S', '--section-headers', '--sections', '-g', '--section-groups', '-t', '--section-details', '-e', '--headers', '-s', '--syms', '--symbols', '--dyn-syms', '--lto-syms', '-n', '--notes', '-r', '--relocs', '-u', '--unwind', '-d', '--dynamic', '-V', '--version-info', '-A', '--arch-specific', '-D', '--use-dynamic', '-L', '--lint', '--enable-checks', '-c', '--archive-index', '-I', '--histogram', '--quiet']}}
   - {id: help, matcher: {kind: any_flag, flags: ['-H', '--help']}}

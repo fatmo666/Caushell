@@ -2,6 +2,8 @@ dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 option_scope: permuted_options
 opaque_on_unresolved: true
+argument_files:
+- {prefix: '@', possible_effects: [read_path, write_path]}
 identity:
   canonical_name: rustc
   aliases: []
@@ -120,15 +122,18 @@ forms:
       kind: positional_at
       index: 0
     cardinality: required_one
+    value_constraints: [{kind: exclude_literal, value: '-'}]
   effects:
   - kind: read_path
     target:
       kind: slot
       name: source_path
   - kind: write_path
+    namespace_effect: regular_file_write
     target:
       kind: slot
       name: output_path
+  extensions: {caushell.form/require_proven_option_ownership: true}
 modifiers:
 - id: explain
   matcher:
@@ -149,7 +154,8 @@ modifiers:
     binding:
       kind: following_matched_flag
       operand_mode: next_arg
-    cardinality: optional_one
+    cardinality: required_one
+    value_constraints: [{kind: exclude_literal, value: '-'}]
 - id: information
   matcher:
     kind: any_flag

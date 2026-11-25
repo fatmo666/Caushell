@@ -113,6 +113,19 @@ fn library_names_remain_selectors_with_unproved_native_search() {
     assert_eq!(values(&r, "input_paths"), ["source.c"]);
     assert!(r.effects.iter().any(|e| e.kind == EffectKind::LoadConfig
         && matches!(&e.target, EffectTarget::ConfiguredPath(p) if p.sources.is_empty())));
+    let destinations: Vec<_> = r
+        .effects
+        .iter()
+        .filter(|effect| effect.kind == EffectKind::WritePath)
+        .map(|effect| &effect.target)
+        .collect();
+    assert!(
+        matches!(destinations.as_slice(), [EffectTarget::Slot(slot)] if slot.as_str() == "output_path")
+    );
+
+    let default = resolve("gcc source.c -lm");
+    assert!(default.effects.iter().any(|e| e.kind == EffectKind::WritePath
+        && matches!(&e.target, EffectTarget::ConfiguredPath(p) if p.sources.is_empty())));
 }
 #[test]
 fn invalid_and_missing_operands_keep_known_effects_and_incompleteness() {

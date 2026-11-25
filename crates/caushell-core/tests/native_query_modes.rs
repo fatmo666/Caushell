@@ -81,6 +81,77 @@ fn query_coverage_keeps_independent_policy_floors() {
 }
 
 #[test]
+fn dpkg_listing_pager_depends_on_the_command_stdout() {
+    let piped = check("dpkg -l 2>/dev/null | grep bash | head");
+    assert_eq!(piped.decision, Decision::Allow, "{:?}", piped.reasons);
+
+    for command in ["dpkg -l", "dpkg -l >/dev/tty | grep bash"] {
+        let result = check(command);
+        assert!(
+            result
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| proposal.rule_id == RuleId::InteractiveEscapeSurface),
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+    let mutation = check("dpkg -l | grep bash; dpkg -i package.deb");
+    assert_eq!(mutation.decision, Decision::NeedApproval);
+}
+
+#[test]
+fn read_only_profiles_preserve_independent_approval_reasons() {
+    for command in [
+        "git merge-base HEAD main",
+        "git merge-base --is-ancestor HEAD main",
+        "git --no-pager log --oneline --graph --all --decorate -n 10",
+        "readelf -x .init_array release",
+    ] {
+        let result = check(command);
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+    for (command, rule) in [
+        (
+            "git log --oneline --graph --decorate -n 10",
+            RuleId::InteractiveEscapeSurface,
+        ),
+        ("git merge-base HEAD main; rm victim", RuleId::FileDeletion),
+        (
+            "readelf -x .init_array release > /outside/log",
+            RuleId::OutsideWorkspaceMutation,
+        ),
+        (
+            "ldd release; readelf -x .init_array release",
+            RuleId::NoProfile,
+        ),
+    ] {
+        let result = check(command);
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .decision_trace
+                .decision_proposals
+                .iter()
+                .any(|proposal| proposal.rule_id == rule),
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+}
+
+#[test]
 fn repository_query_coverage_keeps_mutations_and_opaque_execution_separate() {
     for command in [
         "git bundle list-heads arbitrary.bundle",

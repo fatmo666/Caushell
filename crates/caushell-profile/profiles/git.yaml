@@ -1311,7 +1311,15 @@ subcommands:
                 kind: none
             - {kind: open_interactive_escape_surface, target: {kind: none}, surface: {kind: pager, requires_stdout_tty: true, capabilities: [spawn_shell, run_command, launch_external_editor]}}
       modifiers:
-        - {id: history_modes, matcher: {kind: any_flag, flags: ["--oneline", "--all", "--no-decorate"]}}
+        - {id: history_modes, matcher: {kind: any_flag, flags: ["--oneline", "--all", "--graph", "--no-decorate"]}}
+        - id: decorate
+          matcher: {kind: any_flag, flags: [--decorate]}
+          parameters:
+            - name: decoration_mode
+              semantic: {kind: plain_value}
+              binding: {kind: following_matched_flag, operand_mode: optional_inline_only}
+              cardinality: optional_many
+              value_constraints: [{kind: require_match, pattern: '(?:short|full|auto|no)'}]
         - {id: history_changed_names, matcher: {kind: any_flag, flags: [--name-only]}}
         # Explicit display fields avoid repository-defined format aliases and
         # placeholders that request signature verification or other helpers.
@@ -1426,6 +1434,31 @@ subcommands:
               target:
                 kind: none
       modifiers: []
+      children: []
+      default_behavior: reject_unknown
+      extensions: {}
+
+    - name: merge-base
+      option_scope: permuted_options
+      aliases: []
+      forms:
+        - id: inspect_merge_base
+          selector:
+            kind: all
+            items:
+              - {kind: has_positional_at, index: 1}
+              - {kind: not, item: {kind: has_positional_at, index: 2}}
+          parameters:
+            - name: commits
+              semantic: {kind: plain_value}
+              binding: {kind: remaining_positionals}
+              cardinality: required_many
+          stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque}
+          effects:
+            - {kind: read_path, target: {kind: none}}
+            - {kind: transform_data, target: {kind: none}}
+      modifiers:
+        - {id: is_ancestor, matcher: {kind: any_flag, flags: [--is-ancestor]}}
       children: []
       default_behavior: reject_unknown
       extensions: {}

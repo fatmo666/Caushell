@@ -171,16 +171,29 @@ forms:
       - {kind: read_path, path_access: content_open, target: {kind: slot, name: response_file_path}}
     # Response files may contain additional options and alter inputs/outputs; do not infer stream or mutation effects from their contents.
 
-  - id: compile_to_explicit_output
+  - id: link_to_explicit_output
     selector:
       kind: all
       items:
-        - {kind: not, item: {kind: has_modifier, modifier: version}}
-        - {kind: has_modifier, modifier: output_path}
-        - {kind: not, item: {kind: has_modifier, modifier: preprocess_only}}
-        - kind: not
-          item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
-    parameters:
+        - &explicit_output_compile
+          kind: all
+          items:
+            - {kind: not, item: {kind: has_modifier, modifier: version}}
+            - {kind: has_modifier, modifier: output_path}
+            - {kind: not, item: {kind: has_modifier, modifier: preprocess_only}}
+            - kind: not
+              item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^@'}}
+        - &ordinary_link_mode
+          kind: all
+          items:
+            - {kind: has_modifier, modifier: link_library}
+            - {kind: has_positional_at, index: 0}
+            - {kind: not, item: {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+            - {kind: not, item: {kind: has_modifier, modifier: compile_mode}}
+            - {kind: not, item: {kind: has_modifier, modifier: specs_file}}
+            - {kind: not, item: {kind: has_modifier, modifier: plugin}}
+            - {kind: not, item: {kind: has_modifier, modifier: wrapper_program}}
+    parameters: &compiler_inputs
       - name: input_paths
         semantic:
           kind: path
@@ -190,10 +203,26 @@ forms:
           kind: remaining_positionals
         cardinality: optional_many
     effects:
-      - kind: read_path
+      - &compiler_input_read
+        kind: read_path
         target:
           kind: slot
           name: input_paths
+      # Library search can introduce implicit reads. GNU ld gives the
+      # command-line output priority over OUTPUT in an input linker script.
+      - &library_search_input
+        kind: load_config
+        target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}
+    extensions: {caushell.form/require_proven_option_ownership: true}
+
+  - id: compile_to_explicit_output
+    selector:
+      kind: all
+      items:
+        - *explicit_output_compile
+        - {kind: not, item: *ordinary_link_mode}
+    parameters: *compiler_inputs
+    effects: [*compiler_input_read]
 
   - id: compile_to_default_output
     selector:
@@ -269,14 +298,11 @@ modifiers:
         binding: {kind: following_matched_flag, operand_mode: word_attached_or_next_arg}
         cardinality: required_many
         value_constraints: [{kind: require_match, pattern: ':?[A-Za-z0-9_+.-]+'}]
-    # A library selector is not a host path. Native search may select an ld
-    # script or LTO input; without resolved search/content evidence its control
-    # input stays unknown, independently of lexical argv ownership.
+    # The explicit link form supplies the library input effect. Other forms
+    # retain the fallback when the output or native driver behavior is unproved.
+    effects_when: {unless_forms: [link_to_explicit_output]}
     effects:
-      - kind: load_config
-        target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}
-      # A selected ld script can redirect outputs. Retain that possible write
-      # until native library search and the selected content are established.
+      - *library_search_input
       - kind: write_path
         target: {kind: configured_path, sources: [], missing: unknown, purpose: generic_operand}
   # GCC 13.3 documented optimization modes are complete single-prefix words.
@@ -493,6 +519,7 @@ extensions:
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Directory-Options.html
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Link-Options.html
     - https://sourceware.org/binutils/docs-2.40/ld/Options.html
+    - https://sourceware.org/binutils/docs/ld/File-Commands.html
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Optimize-Options.html
     - https://github.com/gcc-mirror/gcc/blob/releases/gcc-13.3.0/gcc/opts.cc
     - https://gcc.gnu.org/onlinedocs/gcc-13.3.0/gcc/Instrumentation-Options.html

@@ -77,7 +77,7 @@ pub struct SessionBindings {
     aliases: BTreeMap<String, SessionAliasBinding>,
     // Local abstract values, not observed bytes and never persisted as a
     // concrete session variable. Scalar writes invalidate this metadata.
-    argument_domains: BTreeMap<String, caushell_types::RuntimeArgumentDomain>,
+    argument_domains: BTreeMap<String, ArgumentDomainBinding>,
     positional_argument_domains: BTreeMap<usize, caushell_types::RuntimeArgumentDomain>,
     inherited_environment: BindingMap<SessionValue>,
     // $0 belongs to the shell frame, not to the list changed by set/shift.
@@ -93,6 +93,14 @@ pub struct SessionBindings {
     // for an external program. None records a proven absence (e.g. unset).
     child_environment: BindingMap<Option<SessionValue>>,
     child_environment_complete: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ArgumentDomainBinding {
+    domain: caushell_types::RuntimeArgumentDomain,
+    // Only exact shell iteration has this property. Ordinary path roots
+    // can denote directories with unknown descendant spellings.
+    complete_literal_members: bool,
 }
 
 impl PartialEq for SessionBindings {
@@ -262,8 +270,13 @@ impl SessionBindings {
         self.variables_complete &= other.variables_complete;
         self.unresolved_runtime_variable_targets
             .extend(other.unresolved_runtime_variable_targets.iter().cloned());
-        self.argument_domains
-            .retain(|name, domain| other.argument_domains.get(name) == Some(domain));
+        self.argument_domains.retain(|name, binding| {
+            let Some(peer) = other.argument_domains.get(name) else {
+                return false;
+            };
+            binding.complete_literal_members &= peer.complete_literal_members;
+            binding.domain == peer.domain
+        });
         self.native_variants
             .retain(|name, value| other.native_variants.get(name) == Some(value));
         if environment_differs {
@@ -1130,16 +1143,40 @@ impl SessionBindings {
         self.set_argument_domain(name, domain);
     }
 
+    pub fn insert_iteration_argument_domain(
+        &mut self,
+        name: &str,
+        domain: caushell_types::RuntimeArgumentDomain,
+        complete_literal_members: bool,
+    ) {
+        self.insert_opaque_dynamic(name, "bounded shell iteration value");
+        self.argument_domains.insert(
+            name.into(),
+            ArgumentDomainBinding {
+                domain,
+                complete_literal_members,
+            },
+        );
+    }
+
     pub fn set_argument_domain(
         &mut self,
         name: &str,
         domain: caushell_types::RuntimeArgumentDomain,
     ) {
-        self.argument_domains.insert(name.into(), domain);
+        self.argument_domains.insert(
+            name.into(),
+            ArgumentDomainBinding {
+                domain,
+                complete_literal_members: false,
+            },
+        );
     }
 
     pub fn argument_domain(&self, name: &str) -> Option<&caushell_types::RuntimeArgumentDomain> {
-        self.argument_domains.get(name)
+        self.argument_domains
+            .get(name)
+            .map(|binding| &binding.domain)
     }
 
     pub fn environment_value(&self, name: &str) -> EnvironmentValueRef<'_> {
@@ -1242,7 +1279,7 @@ impl SessionBindings {
             SessionValue::opaque_dynamic("tool-generated environment value"),
         );
         if let Some(domain) = domain {
-            self.argument_domains.insert(name.into(), domain);
+            self.set_argument_domain(name, domain);
         }
     }
 
@@ -3047,6 +3084,12 @@ pub fn materialize_argument_domain(
     {
         return None;
     }
+    if !whole_double_quoted
+        && bindings.shell_kind() == caushell_types::ShellKind::Bash
+        && let Some(domain) = literal_loop_path_fields(arg, bindings)
+    {
+        return Some(domain);
+    }
     let reference = exact_shell_parameter_reference(&arg.text);
     if whole_double_quoted
         && bindings.shell_kind() == caushell_types::ShellKind::Bash
@@ -3088,7 +3131,8 @@ pub fn materialize_argument_domain(
     if arg.text.contains(MARKER) {
         return None;
     }
-    for (name, domain) in &bindings.argument_domains {
+    for (name, binding) in &bindings.argument_domains {
+        let domain = &binding.domain;
         if !whole_double_quoted
             && (!ordinary_field_separators || !domain.unquoted_generated_field())
         {
@@ -3118,6 +3162,67 @@ pub fn materialize_argument_domain(
         }
     }
     None
+}
+
+fn literal_loop_path_fields(
+    arg: &ProjectedArg,
+    bindings: &SessionBindings,
+) -> Option<caushell_types::RuntimeArgumentDomain> {
+    use caushell_parse::ScalarArgumentPart::{Literal, Parameter, UnquotedParameter};
+    use caushell_types::RuntimeArgumentDomain::PathSet;
+
+    let parts = caushell_parse::scalar_word_parts(&arg.text, arg.quoted, &arg.node_kind, true)?;
+    let mut references = parts.iter().filter(|part| !matches!(part, Literal(_)));
+    let (Parameter(reference) | UnquotedParameter(reference)) = references.next()? else {
+        return None;
+    };
+    if references.next().is_some() {
+        return None;
+    }
+    let ShellParameterReference::Variable(name) = exact_shell_parameter_reference(reference)?
+    else {
+        return None;
+    };
+    let ArgumentDomainBinding {
+        domain:
+            PathSet {
+                roots: members,
+                may_escape: false,
+                ..
+            },
+        complete_literal_members: true,
+    } = bindings.argument_domains.get(&name)?
+    else {
+        return None;
+    };
+    let mut proof_bindings = bindings.clone();
+    let mut paths = Vec::with_capacity(members.len());
+    for member in members {
+        proof_bindings.insert_exact_scalar(&name, member);
+        let fragments =
+            crate::materialize_shell_field_fragments(parts.clone(), &proof_bindings, |_| None)?;
+        let fields = crate::materialize_bash_field_fragments(&fragments, &proof_bindings)?;
+        let [path] = fields.as_slice() else {
+            return None;
+        };
+        if !path.starts_with('/') || path.len() > 4096 || path.contains('\0') {
+            return None;
+        }
+        paths.push(path.clone());
+    }
+    paths.sort();
+    paths.dedup();
+    if paths.is_empty() {
+        return None;
+    }
+    Some(PathSet {
+        roots: paths,
+        may_escape: false,
+        basename_suffix: None,
+        no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
+    })
 }
 
 fn parameter_argument_domain<'a>(

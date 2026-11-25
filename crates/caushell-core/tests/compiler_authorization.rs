@@ -30,12 +30,12 @@ fn native_compile_operands_reuse_path_authority_without_option_gaps() {
     );
 }
 #[test]
-fn native_compile_operands_keep_unknown_libraries_deletion_and_deny_separate() {
+fn native_compile_operands_keep_unknown_outputs_deletion_and_deny_separate() {
     for command in [
         "gcc -DRELEASE input.c -o /outside/tool",
         "gcc -DRELEASE -Wl,-Map,/outside/map input.c -o build/tool",
         "gcc -Wl,-plugin,/outside/plugin.so input.c -o build/tool",
-        "gcc -lstdc++ input.c -o build/tool",
+        "gcc -lm input.c",
         "gcc -xunknown input.c -o build/tool",
         "gcc -L=lib input.c -o build/tool",
         "gcc -DRELEASE -fplugin=/outside/plugin.so input.c -o build/tool",
@@ -70,6 +70,128 @@ fn native_compile_operands_keep_unknown_libraries_deletion_and_deny_separate() {
             1,
         ));
     assert_eq!(result.decision, Decision::NeedApproval);
+}
+
+#[test]
+fn ordinary_linking_checks_the_explicit_output_and_keeps_other_boundaries() {
+    for command in [
+        "gcc source.c -lm -o build/tool",
+        "g++ -g -Lvendor -Wl,-Bstatic -lstdc++ -Wl,-Bdynamic source.cc -o build/tool",
+    ] {
+        let result = with_namespace().check(request(command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+    for command in [
+        "gcc source.c -lm -o /outside/tool",
+        "gcc source.c -lm -o build/tool > /outside/log",
+        "gcc source.c -lm -o build/tool -Wl,-Map,/outside/map",
+        "gcc source.c -lm -o build/tool -Wl,-T,custom.ld",
+        "gcc source.c -lm -o build/tool -specs=custom.specs",
+        "gcc source.c -lm -o build/tool -fplugin=./plugin.so",
+        "gcc @options source.c -lm -o build/tool",
+        "gcc source.c -lm -o build/tool && /outside/program",
+    ] {
+        let result = with_namespace().check(request(command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+    let ns = Arc::new(Namespace::default());
+    ns.0.lock().unwrap().insert(
+        "/workspace/build".into(),
+        FilesystemEntry::Symlink {
+            target: "/outside".into(),
+        },
+    );
+    let result = ShellQueryCore::new()
+        .with_filesystem_view(ns)
+        .check(request("gcc source.c -lm -o build/tool", 1));
+    assert_eq!(
+        result.decision,
+        Decision::NeedApproval,
+        "{:?}",
+        result.reasons
+    );
+}
+
+#[test]
+fn rustc_explicit_output_proves_the_guarded_executable_path() {
+    for command in [
+        "rustc fixture.rs -o build/tool && ./build/tool",
+        concat!(
+            "rustc fixture.rs -o build/tool && g++ -x c++ fixture.rs -o build/cpp",
+            " && for n in 1 3; do printf '%s %s\\n' \"$(./build/tool $n)\" \"$(./build/cpp $n)\"; done"
+        ),
+    ] {
+        let result = with_namespace().check(request(command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result.decision_trace.path_targets.iter().any(|target| {
+                target.namespace_proofs.iter().any(|proof| {
+                    proof.path == "/workspace/build/tool"
+                        && proof.effect == PathNamespaceEffect::RegularFileWrite
+                })
+            }),
+            "{command}: missing proof of the Rust output path"
+        );
+    }
+}
+
+#[test]
+fn rustc_explicit_output_still_requires_known_arguments_and_contained_paths() {
+    for command in [
+        "rustc fixture.rs -o /outside/tool",
+        "rustc fixture.rs -o build/tool > /outside/log",
+        "rustc @options -o build/tool && ./build/tool",
+        "rustc fixture.rs -o @options && ./@options",
+        "rustc fixture.rs -o build/tool -o build/other",
+        "rustc fixture.rs -o",
+        "rustc fixture.rs -o - && ./-",
+        "rustc - -o build/tool && ./build/tool",
+        "rustc fixture.rs --emit=metadata -o build/tool && ./build/tool",
+        "rustc fixture.rs -C linker=custom-linker -o build/tool",
+        "rustc fixture.rs -o build/tool; rm build/tool",
+    ] {
+        let result = with_namespace().check(request(command, 1));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+
+    for path in ["/workspace/build", "/workspace/build/tool"] {
+        let ns = Arc::new(Namespace::default());
+        ns.0.lock().unwrap().insert(
+            path.into(),
+            FilesystemEntry::Symlink {
+                target: "/outside/tool".into(),
+            },
+        );
+        let result = ShellQueryCore::new()
+            .with_filesystem_view(ns)
+            .check(request("rustc fixture.rs -o build/tool && ./build/tool", 1));
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{path}: {:?}",
+            result.reasons
+        );
+    }
 }
 
 use caushell_core::ShellQueryCore;
