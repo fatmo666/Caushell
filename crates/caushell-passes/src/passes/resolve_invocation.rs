@@ -9789,36 +9789,43 @@ fn decode_xargs_delimiter(word: &str) -> Option<String> {
     byte.is_ascii().then(|| char::from(byte).to_string())
 }
 
+fn static_entry_command(
+    ctx: &RunnerContext,
+    entry: &ExpandedFrontierEntry,
+    command: &caushell_parse::CommandFact,
+) -> bool {
+    if entry.origin_kind != ExecutionUnitOriginKind::TopLevel
+        || command.command_name_runtime_data
+        || command.conditional_execution
+        || !command.prefix_assignments.is_empty()
+    {
+        return false;
+    }
+    let raw = &ctx.request().command;
+    let only_whitespace = |text: &str| text.trim_matches([' ', '\t', '\n']).is_empty();
+    let (Some(first_arg), Some(name)) = (command.tokens.first(), command.command_name.as_deref()) else {
+        return false;
+    };
+    &entry.parsed_scope.raw_command == raw
+        && raw.get(..command.span.start_byte).is_some_and(only_whitespace)
+        && raw.get(command.span.start_byte..first_arg.span.start_byte)
+            .is_some_and(|word| word.trim_end_matches([' ', '\t', '\n']) == name)
+}
+
 fn static_entry_pwd_producer<'a>(
     registry: &ProfileRegistry,
     ctx: &RunnerContext,
     entry: &ExpandedFrontierEntry,
     command: &'a caushell_parse::CommandFact,
 ) -> Option<&'a caushell_parse::CommandSubstitutionFact> {
-    if entry.origin_kind != ExecutionUnitOriginKind::TopLevel
-        || command.command_name_runtime_data
-        || command.conditional_execution
-        || !command.prefix_assignments.is_empty()
+    if !static_entry_command(ctx, entry, command)
         || !ctx.evidence.iter().any(|e| matches!(&e.kind,
             caushell_types::EvidenceKind::StaticBashEntryVariable { name } if name == "PWD"))
     {
         return None;
     }
-
     let request = ctx.request();
     let raw = &request.command;
-    let only_whitespace = |text: &str| text.trim_matches([' ', '\t', '\n']).is_empty();
-    if &entry.parsed_scope.raw_command != raw
-        || !raw.get(..command.span.start_byte).is_some_and(only_whitespace)
-    {
-        return None;
-    }
-    let first_arg = command.tokens.first()?;
-    let name = command.command_name.as_deref()?;
-    if raw.get(command.span.start_byte..first_arg.span.start_byte)?.trim_end_matches([' ', '\t', '\n']) != name {
-        return None;
-    }
-
     // Bind the first substitution after literal words at shell entry. No
     // prior shell statement or expanding argument can change the builtin or
     // the logical directory before this occurrence.
@@ -9845,6 +9852,87 @@ fn static_entry_pwd_producer<'a>(
     Some(producer)
 }
 
+fn static_entry_path_stdout<'a>(
+    registry: &ProfileRegistry,
+    ctx: &RunnerContext,
+    entry: &ExpandedFrontierEntry,
+    command: &'a caushell_parse::CommandFact,
+    entry_pwd: Option<&caushell_parse::CommandSubstitutionFact>,
+) -> Option<(&'a caushell_parse::CommandSubstitutionFact, String)> {
+    use caushell_profile::{CommandLookupDomain, ProfileSourceKind};
+
+    let domain = entry.bindings.command_lookup_domain();
+    if !static_entry_command(ctx, entry, command)
+        || command.in_pipeline
+        || command.guarded
+        || command.terminator == Some(caushell_parse::StatementTerminator::Background)
+        || !entry.parsed_scope.redirections.is_empty()
+        || !matches!(domain, CommandLookupDomain::Shell)
+        || !ctx.evidence.iter().any(|e| matches!(&e.kind,
+            caushell_types::EvidenceKind::StaticBashEntryVariable { name } if name == "IFS"))
+    {
+        return None;
+    }
+    let request = ctx.request();
+    let state = &request.shell_state_before;
+    let has_lookup_override = state
+        .environment
+        .iter()
+        .map(|value| value.name.as_str())
+        .chain(state.variables.iter().map(|value| value.name.as_str()))
+        .any(|name| {
+            matches!(name, "PATH" | "BASH_CMDS")
+                || name.starts_with("LD_")
+                || name.starts_with("DYLD_")
+        });
+    if has_lookup_override
+        || !caushell_parse::parse_process_substitutions(&request.command, request.shell_kind)
+            .is_ok_and(|substitutions| substitutions.is_empty())
+    {
+        return None;
+    }
+
+    // An earlier unproved expansion could change the lookup namespace.
+    // Literal fields and the independently proved entry pwd are admissible.
+    let token = command.tokens.iter().find(|token| {
+        if entry_pwd.is_some_and(|pwd| {
+            token.text == pwd.text
+                && token.command_substitutions.as_slice() == std::slice::from_ref(pwd)
+        }) {
+            return false;
+        }
+        !token.command_substitutions.is_empty()
+            || caushell_parse::decode_static_shell_argument(
+                &token.text, token.quoted, &token.node_kind,
+            ).is_none()
+    })?;
+    let [substitution] = token.command_substitutions.as_slice() else {
+        return None;
+    };
+    let parsed = caushell_parse::parse_command(&substitution.body_text, entry.shell_kind).ok()?;
+    let producer = crate::support::plain_single_producer(&parsed)?;
+    let name = producer.command_name.as_deref()?;
+    let profile = registry.lookup_in_domain(name, false, domain).profile?;
+    if producer.command_name_runtime_data
+        || name != profile.primary_name()
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || entry.bindings.profile_has_alias_shadow(name)
+        || entry.bindings.function_binding(name).is_some()
+    {
+        return None;
+    }
+    let decoder = profile.native_path_stdout?;
+    let projection = caushell_profile::project_invocation(
+        producer,
+        InvocationRuntimeContext::new().with_shell_kind(entry.shell_kind),
+    );
+    let args = projection.args.iter().map(|arg| {
+        caushell_profile::argument_structure(arg).exact_value().map(str::to_owned)
+    }).collect::<Option<Vec<_>>>()?;
+    let output = decoder.output(&args)?;
+    Some((substitution, output.trim_end_matches('\n').to_string()))
+}
+
 fn static_substitution_argument_fields(
     command: &caushell_parse::CommandFact,
     session: caushell_query::QuerySession<'_>,
@@ -9856,6 +9944,7 @@ fn static_substitution_argument_fields(
     home: Option<&str>,
     remaining_depth: u8,
     entry_pwd: Option<&caushell_parse::CommandSubstitutionFact>,
+    entry_path_stdout: Option<(&caushell_parse::CommandSubstitutionFact, &str)>,
 ) -> Vec<caushell_profile::ArgumentFieldsProof> {
     use caushell_profile::ShellFieldFragment::UnquotedExpansion;
     if shell_kind != caushell_types::ShellKind::Bash || remaining_depth == 0 {
@@ -9883,6 +9972,12 @@ fn static_substitution_argument_fields(
                     // Command substitution removes the builtin's newline and
                     // any trailing newlines in the directory name itself.
                     return Some(cwd.trim_end_matches('\n').to_owned());
+                }
+                if let Some((producer, output)) = entry_path_stdout
+                    && producer.text == text
+                    && token.command_substitutions.as_slice() == std::slice::from_ref(producer)
+                {
+                    return Some(output.to_owned());
                 }
                 crate::support::static_command_substitution_output_with_cwd(
                     text,
@@ -10002,6 +10097,7 @@ fn refresh_substitution_argument_fields(
     let entry_pwd = cwd.as_known()
         .filter(|path| cwd_reliable && *path == request.shell_state_before.cwd())
         .and_then(|_| static_entry_pwd_producer(registry, ctx, entry, command));
+    let entry_path_stdout = static_entry_path_stdout(registry, ctx, entry, command, entry_pwd);
     let fields = static_substitution_argument_fields(
         command,
         caushell_query::QuerySession::from_session(&session),
@@ -10014,6 +10110,7 @@ fn refresh_substitution_argument_fields(
         request.home.as_deref(),
         max_depth - entry.depth,
         entry_pwd,
+        entry_path_stdout.as_ref().map(|(producer, output)| (*producer, output.as_str())),
     );
     if fields.is_empty()
         || (*normalized != "find" && fields.iter().all(|proof| proof.exact_fields().is_none()))

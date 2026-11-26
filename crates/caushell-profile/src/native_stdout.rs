@@ -5,6 +5,54 @@ use caushell_types::ShellKind;
 
 const MAX_LITERAL_STDOUT_BYTES: usize = 1_048_576;
 
+/// Portable, single-path argument forms with deterministic stdout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativePathStdout {
+    Basename,
+    Dirname,
+}
+
+impl NativePathStdout {
+    pub fn output(self, args: &[String]) -> Option<String> {
+        let (path, suffix) = match (self, args) {
+            (Self::Basename | Self::Dirname, [path]) => (path, None),
+            (Self::Basename, [path, suffix]) => (path, Some(suffix.as_str())),
+            _ => return None,
+        };
+        if path.is_empty()
+            || path.starts_with("//")
+            || args.iter().any(|arg| {
+                arg.starts_with('-')
+                    || arg.contains(['\0', '\n'])
+                    || arg.len() >= MAX_LITERAL_STDOUT_BYTES
+            })
+        {
+            return None;
+        }
+
+        let path = path.trim_end_matches('/');
+        let value = match self {
+            _ if path.is_empty() => "/",
+            Self::Basename => {
+                let leaf = path.rsplit('/').next()?;
+                suffix
+                    .and_then(|suffix| leaf.strip_suffix(suffix))
+                    .filter(|stem| !stem.is_empty())
+                    .unwrap_or(leaf)
+            }
+            Self::Dirname => match path.rsplit_once('/') {
+                Some((parent, _)) => {
+                    let parent = parent.trim_end_matches('/');
+                    if parent.is_empty() { "/" } else { parent }
+                }
+                None => ".",
+            },
+        };
+        Some(format!("{value}\n"))
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NativeOutputOrigin {
     BashBuiltin,
@@ -307,6 +355,29 @@ fn echo(origin: NativeOutputOrigin, args: &[String]) -> Option<Vec<u8>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_path_stdout_models_only_portable_single_path_forms() {
+        use super::NativePathStdout::{Basename, Dirname};
+
+        for (decoder, fields, expected) in [
+            (Dirname, &["{}"][..], Some(".\n")),
+            (Dirname, &["parent///leaf/"][..], Some("parent\n")),
+            (Dirname, &["/leaf"][..], Some("/\n")),
+            (Basename, &["{}", ".html"][..], Some("{}\n")),
+            (Basename, &["parent/leaf.html/", ".html"][..], Some("leaf\n")),
+            (Basename, &["parent/leaf", "leaf"][..], Some("leaf\n")),
+            (Basename, &["/"][..], Some("/\n")),
+            (Basename, &["-a", "a"][..], None),
+            (Basename, &["a", "b", "c"][..], None),
+            (Dirname, &["a", "b"][..], None),
+            (Dirname, &["//parent"][..], None),
+            (Dirname, &[""][..], None),
+        ] {
+            let args = fields.iter().map(|field| field.to_string()).collect::<Vec<_>>();
+            assert_eq!(decoder.output(&args).as_deref(), expected, "{decoder:?} {fields:?}");
+        }
+    }
+
     use super::*;
     #[test]
     fn native_stdout_claimed_bytes_match_captured_native_process_output() {

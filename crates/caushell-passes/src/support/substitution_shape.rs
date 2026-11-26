@@ -730,7 +730,7 @@ fn only_numeric_affixes(
             .all(|b| b.is_ascii_digit() || matches!(b, b'+' | b'-'))
 }
 
-pub(super) fn plain_single_producer(parsed: &ParsedCommandArtifact) -> Option<&CommandFact> {
+pub(crate) fn plain_single_producer(parsed: &ParsedCommandArtifact) -> Option<&CommandFact> {
     if parsed.status != ParseStatus::Complete
         || !parsed.diagnostics.is_empty()
         || parsed.commands.len() != 1

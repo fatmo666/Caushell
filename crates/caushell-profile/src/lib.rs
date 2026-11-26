@@ -60,7 +60,7 @@ mod runtime_matcher;
 mod runtime_variables;
 mod native_variable_writes;
 mod native_stdout;
-pub use native_stdout::{NativeOutputOrigin, NativeStdoutSource, decode_native_stdout};
+pub use native_stdout::{NativeOutputOrigin, NativePathStdout, NativeStdoutSource, decode_native_stdout};
 pub use types::NativeVariableWrites;
 mod shell_read;
 mod field_splitting;

@@ -2380,6 +2380,8 @@ pub struct CommandProfile {
     pub option_environment: Option<OptionEnvironment>,
     /// Shape eligible for pathname defaults in an independent Bash entry.
     pub static_bash_pathname_defaults: Option<crate::StaticBashPathnameDefaults>,
+    /// Deterministic native stdout for the registered single-path grammar.
+    pub native_path_stdout: Option<crate::NativePathStdout>,
     pub archive_extraction: Option<ArchiveExtraction>,
     pub implicit_config_files: Vec<ImplicitConfigFile>,
     pub configuration_files: Option<ConfigurationFileContract>,
@@ -2469,6 +2471,7 @@ impl CommandProfile {
             environment_inputs: Vec::new(),
             option_environment: None,
             static_bash_pathname_defaults: None,
+            native_path_stdout: None,
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
