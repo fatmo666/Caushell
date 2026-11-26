@@ -148,11 +148,40 @@ fn timestamp_mutates_archive_not_ignored_output_directory() {
     }
 }
 #[test]
+fn standalone_dash_dash_before_archive_preserves_infozip_effects() {
+    for flags in ["-l", "-tq", "-p"] {
+        let command = format!("unzip {flags} -- archive.zip");
+        check(&command, Decision::Allow);
+        assert!(!graph(&command).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::PathFact {
+                role: ResolvedPathRole::Write,
+                ..
+            }
+        )));
+    }
+
+    let command = "unzip -o -- archive.zip -d /opt/out";
+    let response = check(command, Decision::NeedApproval);
+    assert!(
+        graph(command).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::PathFact { role: ResolvedPathRole::Write, resolution, .. }
+                if resolution.concrete_path() == Some("/opt/out")
+        )),
+        "{response:#?}"
+    );
+}
+
+#[test]
 fn unresolved_controls_cannot_silently_enable_file_extraction() {
     for command in [
         "unzip -p --p archive.zip",
         "unzip -p -p--p archive.zip",
-        "unzip -p -- archive.zip",
+        "unzip -- -l archive.zip",
+        "unzip -l -- \"$archive\"",
+        "unzip -l -- -- archive.zip",
+        "unzip -l archive.zip -- item.txt",
         "unzip -p - -T archive.zip",
         "unzip -pt archive.zip",
         "unzip -pu archive.zip",

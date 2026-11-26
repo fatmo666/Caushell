@@ -2389,6 +2389,9 @@ pub struct CommandProfile {
     /// Opt-in flat leading grammar: after the first positional, recognize only
     /// these complete option names (and their declared attached operands).
     pub trailing_option_words: Vec<FlagName>,
+    /// A standalone trailing minus in the leading option phase is inert
+    /// immediately before an exact non-option operand.
+    pub dash_dash_before_operand: bool,
     /// Opt-in full-word operand grammar for words beginning with an option
     /// prefix. Tested before option decoding; it does not rewrite argv.
     pub option_operand_matcher: Option<OptionOperandMatcher>,
@@ -2463,6 +2466,7 @@ impl CommandProfile {
             option_prefixes: OptionPrefixPolicy::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_operand_matcher: None,
             subcommands: None,
             dispatch_overrides: Vec::new(),

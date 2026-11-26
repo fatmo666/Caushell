@@ -379,6 +379,7 @@ pub(crate) fn scan_leading_options(
     operand_matcher: Option<&crate::OptionOperandMatcher>,
     exact_option_words: &[FlagName],
     trailing_option_words: &[FlagName],
+    dash_dash_before_operand: bool,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         exact_argv: false,
@@ -468,6 +469,26 @@ pub(crate) fn scan_leading_options(
         }
         let token = projection.args[index].text.as_str();
         if prefixes.is_terminator(token) {
+            if dash_dash_before_operand {
+                // Info-ZIP carries a minus into the next leading option.
+                // With a plain archive operand next, option scanning ends
+                // before the minus can affect any option.
+                let next = index + 1;
+                if trailing
+                    || !structure.exact
+                    || next == scope.end_index
+                    || !crate::argument_structure(&projection.args[next]).exact
+                    || projection.args[next].text.is_empty()
+                    || projection.args[next].text.starts_with('-')
+                {
+                    result.error = Some("unsupported standalone -- placement".into());
+                    break;
+                }
+                result.terminator = Some(index);
+                index = next;
+                result.scope.end_index = index;
+                continue;
+            }
             if permuted && result.error.is_some() {
                 // A preceding unknown arity may consume this word as data.
                 // Retain hazards in either possible tail; do not certify a

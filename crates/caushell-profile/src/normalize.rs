@@ -310,6 +310,13 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .into_iter()
         .map(FlagName::new)
         .collect::<Vec<_>>();
+    if raw.dash_dash_before_operand
+        && (trailing_option_words.is_empty() || option_prefixes != OptionPrefixPolicy::DashOnly)
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "dash_dash_before_operand requires dash-only leading and trailing options".into(),
+        ));
+    }
     if !trailing_option_words.is_empty() {
         if option_scope != OptionScopePolicy::LeadingOptions
             || !raw.argument_regions.is_empty()
@@ -647,6 +654,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         option_prefixes,
         exact_option_words,
         trailing_option_words,
+        dash_dash_before_operand: raw.dash_dash_before_operand,
         option_operand_matcher,
         subcommands,
         dispatch_overrides,
@@ -4489,6 +4497,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4705,6 +4714,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4835,6 +4845,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4965,6 +4976,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -5216,6 +5228,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),

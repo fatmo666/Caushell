@@ -33,6 +33,7 @@ pub struct RawCommandProfile {
     pub option_matching: RawOptionMatchingPolicy,
     pub exact_option_words: Vec<String>,
     pub trailing_option_words: Vec<String>,
+    pub dash_dash_before_operand: bool,
     pub option_prefixes: RawOptionPrefixPolicy,
     pub option_operand_matcher: Option<RawValueMatcher>,
     pub subcommands: Option<RawSubcommandTree>,
