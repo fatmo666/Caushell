@@ -630,7 +630,8 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                     .chain(suffix.chars().map(SpellingPart::Literal))
                     .collect());
             }
-            Some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix }) => {
+            Some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix }
+                | caushell_types::RuntimeArgumentDomain::CalendarFilename { prefix, suffix }) => {
                 structure.static_prefix = prefix.clone();
                 structure.static_suffix = suffix.clone();
             }

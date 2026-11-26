@@ -28,7 +28,8 @@ pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<Runt
             may_escape: false,
             root_membership: RootMembership::StrictDescendants,
         }),
-        RuntimeArgumentDomain::ArithmeticTemplate { prefix, suffix } => {
+        RuntimeArgumentDomain::ArithmeticTemplate { prefix, suffix }
+        | RuntimeArgumentDomain::CalendarFilename { prefix, suffix } => {
             let (parent, basename_prefix) = match prefix.rsplit_once('/') {
                 Some(("", leaf)) => ("/", leaf),
                 Some((directory, leaf)) => (directory, leaf),

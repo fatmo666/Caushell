@@ -258,6 +258,15 @@ pub(crate) fn substitution_shapes(
             }
             let quoted = token.quoted && token.node_kind == "string";
             if shell_kind == ShellKind::Bash
+                && quoted
+                && command.command_name.as_deref() == Some("zip")
+                && let Some((prefix, suffix)) = calendar_filename_affixes(token, substitution, true, false)
+                && calendar_date_format(registry, substitution, bindings, aliases, false)
+                    .is_some_and(|format| calendar_filename_format(&format, true))
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::CalendarFilename { prefix, suffix }));
+            }
+            if shell_kind == ShellKind::Bash
                 && !token.quoted
                 && command.command_name.as_deref() == Some("sed")
                 && token.text.strip_suffix('q') == Some(substitution.text.as_str())
@@ -367,47 +376,55 @@ fn calendar_filename_fields(
     aliases: &BTreeMap<String, SessionAliasBinding>,
     directory_prefix: bool,
 ) -> bool {
+    calendar_filename_affixes(token, capture, false, directory_prefix).is_some()
+        && calendar_date_format(registry, capture, bindings, aliases, directory_prefix)
+            .is_some_and(|format| calendar_filename_format(&format, false))
+}
+
+fn calendar_filename_affixes(
+    token: &CommandToken,
+    capture: &CommandSubstitutionFact,
+    quoted: bool,
+    directory_prefix: bool,
+) -> Option<(String, String)> {
     if token.text.len() > 8192 || capture.body_text.len() > 8192 {
-        return false;
+        return None;
     }
-    let Some((parts, marker)) = substitution_word_parts(token, capture) else {
-        return false;
-    };
-    let [
-        ScalarArgumentPart::Literal(prefix),
-        ScalarArgumentPart::UnquotedCommandSubstitution(word),
-        ScalarArgumentPart::Literal(suffix),
-    ] = parts.as_slice()
+    let (parts, marker) = substitution_word_parts(token, capture)?;
+    let [ScalarArgumentPart::Literal(prefix), capture, ScalarArgumentPart::Literal(suffix)] =
+        parts.as_slice()
     else {
-        return false;
+        return None;
+    };
+    match capture {
+        ScalarArgumentPart::CommandSubstitution(word) if quoted && word == marker => {}
+        ScalarArgumentPart::UnquotedCommandSubstitution(word) if !quoted && word == marker => {}
+        _ => return None,
     };
     let prefix_name = if directory_prefix {
-        let Some(name) = prefix.strip_suffix('/') else {
-            return false;
-        };
-        name
+        prefix.strip_suffix('/')?
     } else {
         prefix.as_str()
     };
     let name_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    if word != marker
-        || !prefix_name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-        || !prefix_name.bytes().all(name_byte)
-        || !suffix.strip_prefix('.').is_some_and(|s| !s.is_empty() && s.bytes().all(name_byte))
-    {
-        return false;
-    }
-    let Some(format) = calendar_date_format(registry, capture, bindings, aliases, directory_prefix)
-    else {
-        return false;
-    };
+    (prefix_name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        && prefix_name.bytes().all(|b| name_byte(b) || quoted && b == b'-')
+        && suffix.strip_prefix('.').is_some_and(|s| !s.is_empty() && s.bytes().all(name_byte)))
+        .then(|| (prefix.clone(), suffix.clone()))
+}
+
+fn calendar_filename_format(format: &str, allow_separator: bool) -> bool {
     let Some(rest) = format.strip_prefix("+%Y") else {
         return false;
     };
-    let chunks = rest.as_bytes().chunks_exact(2);
     !rest.is_empty()
-        && chunks.remainder().is_empty()
-        && chunks.into_iter().all(|part| matches!(part, b"%m" | b"%d" | b"%H" | b"%M" | b"%S"))
+        && (allow_separator || !rest.contains('_'))
+        && rest.split('_').all(|run| {
+            let chunks = run.as_bytes().chunks_exact(2);
+            !run.is_empty()
+                && chunks.remainder().is_empty()
+                && chunks.into_iter().all(|part| matches!(part, b"%m" | b"%d" | b"%H" | b"%M" | b"%S"))
+        })
 }
 
 fn calendar_date_format(
@@ -450,6 +467,11 @@ fn calendar_date_format(
             registry, producer, InvocationRuntimeContext::default(), bindings,
         ),
         ResolveInvocationArtifactResult::Resolved(r) if r.proven_arithmetic_stdout()
+            || (!allow_date_operand
+                && format.contains('_')
+                && calendar_filename_format(&format, true)
+                && r.bound.form_id.as_str() == "print_or_parse_date"
+                && r.proven_stream_contract().is_some())
     ).then_some(format)
 }
 

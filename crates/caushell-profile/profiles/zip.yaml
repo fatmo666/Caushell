@@ -85,13 +85,10 @@ forms:
     stream_contract: *diagnostic
   - id: test_archive
     selector: {kind: all, items: [*file_archive, *standalone_test, *explicit_extension]}
-    parameters:
-      - &plain_archive
-        {name: archive_path, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    parameters: [*archive_path]
     effects:
       - kind: read_path
-        target: &literal_archive
-          {kind: configured_path, sources: [{slot: archive_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}
+        target: &literal_archive {kind: slot, name: archive_path}
     stream_contract: *diagnostic
 
   - id: delete_archive_members_implicit_extension
@@ -120,7 +117,7 @@ forms:
     stream_contract: &operational {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
   - id: delete_archive_members
     selector: {kind: all, items: [*file_archive, *member_deletion, *explicit_extension]}
-    parameters: [*plain_archive, *member_patterns]
+    parameters: [*archive_path, *member_patterns]
     implicit_inputs: *name_list_input
     effects:
       - {kind: read_path, target: *literal_archive}
@@ -162,7 +159,7 @@ forms:
     stream_contract: *operational
   - id: add_files_to_archive
     selector: {kind: all, items: [*file_archive, *add_files, *explicit_extension]}
-    parameters: [*plain_archive, *input_paths]
+    parameters: [*archive_path, *input_paths]
     implicit_inputs: *name_list_input
     effects:
       - *read_sources
