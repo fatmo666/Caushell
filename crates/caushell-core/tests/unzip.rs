@@ -85,13 +85,17 @@ fn shell_effects_and_ordinary_extraction_remain_guarded() {
     for command in [
         "unzip -p archive.zip > /opt/out",
         "unzip -t archive.zip > /opt/log",
-        "unzip archive.zip",
+        "cd /opt && unzip archive.zip",
+        "cd \"$dir\" && unzip archive.zip",
+        "unzip archive.zip > /opt/out",
+        "unzip archive.zip && rm old.zip",
         "unzip -o archive.zip -d /opt/out",
         "unzip -n archive.zip -d ./out",
-        "unzip archive.zip -p",
-        "unzip archive.zip -t",
-        "unzip archive.zip -l",
-        "unzip archive.zip -h",
+        "cd /opt && unzip archive.zip -p",
+        "cd /opt && unzip archive.zip -t",
+        "cd /opt && unzip archive.zip -l",
+        "cd /opt && unzip archive.zip -h",
+        "UNZIPOPT='-d /opt/out' unzip archive.zip",
         "find . -name '*.zip' -exec unzip {} \\;",
         "unzip -l archive.zip; touch /opt/out",
     ] {
@@ -105,6 +109,32 @@ fn shell_effects_and_ordinary_extraction_remain_guarded() {
         NodeKind::PathFact {role: ResolvedPathRole::Write, resolution, ..}
         if resolution.concrete_path() == Some("/opt/out")))
     );
+}
+
+#[test]
+fn workspace_default_extraction_retains_unknown_member_paths() {
+    for command in [
+        "unzip archive.zip",
+        "unzip -o -- archive.zip",
+        "cd videos_backup && unzip archive.zip",
+    ] {
+        let result = check(command, Decision::Allow);
+        assert!(
+            result.decision_trace.path_targets.iter().any(|fact| {
+                fact.operation == PathTargetOperation::Write
+                    && matches!(
+                        &fact.lexical,
+                        PathResolution::DerivedUnresolved {
+                            rule: DerivedPathRule::ArchiveMembers,
+                            reason: DerivedPathUnresolvedReason::UnknownArchiveMembers,
+                            ..
+                        }
+                    )
+                    && matches!(&fact.resolution, SemanticResolution::Unresolved { .. })
+            }),
+            "{command}: {result:#?}"
+        );
+    }
 }
 #[test]
 fn timestamp_mutates_archive_not_ignored_output_directory() {

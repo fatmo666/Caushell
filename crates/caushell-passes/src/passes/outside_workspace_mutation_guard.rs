@@ -1,9 +1,17 @@
 use std::collections::BTreeSet;
 
-use caushell_profile::EffectKind;
-use caushell_runner::{PathOperation, RunnerContext, SessionAnalysisPass, SessionView};
-use caushell_types::{MutationExemptionOperation, PathMetadataMutationKind, RuleId};
+use caushell_profile::{ArgumentBindingSource, EffectKind, ResolveInvocationArtifactResult};
+use caushell_runner::{
+    EffectiveCwd, ExecutionUnitOriginKind, PathExemption, PathExemptionBasis, PathExemptionPolicy,
+    PathOperation, RunnerContext, SessionAnalysisPass, SessionView,
+};
+use caushell_types::{
+    DerivedPathRule, DerivedPathUnresolvedReason, MutationExemptionOperation,
+    PathMetadataMutationKind, PathResolution, PathTargetAccess, PathTargetFact,
+    PathTargetOperation, RuleId, SemanticGapKind, SemanticResolution,
+};
 
+use crate::path::namespace::NamespaceResolver;
 use crate::support::{
     bound_invocation, decision_for_rule_action, is_file_write_redirection_operator,
 };
@@ -16,7 +24,6 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
     }
 
     fn run(&self, _session: SessionView<'_>, staged: SessionView<'_>, ctx: &mut RunnerContext) {
-        use caushell_types::{PathTargetOperation, SemanticResolution};
         let facts = caushell_query::PathTargetQuery::new(ctx.request().sequence_no)
             .execute(caushell_query::QuerySession::from_session(&staged));
         let declared = ctx.execution_unit_resolve_records().iter().any(|record| {
@@ -63,6 +70,11 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                 let resolution = match &fact.resolution {
                     SemanticResolution::NotApplicable { .. } => continue,
                     SemanticResolution::Unresolved { gap } => {
+                        if gap.kind == SemanticGapKind::UnknownTarget
+                            && ordinary_unzip_member_in_workspace(&fact, ctx, policy)
+                        {
+                            continue;
+                        }
                         reasons.insert(format!(
                             "{} target for slot {} is unresolved ({:?}): {}",
                             mutation_name(fact.operation),
@@ -123,6 +135,73 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
             }
         }
     }
+}
+
+/// Decide the policy for default-directory extraction while retaining the
+/// unresolved member paths for other rules and later commands.
+fn ordinary_unzip_member_in_workspace(
+    fact: &PathTargetFact,
+    ctx: &RunnerContext,
+    policy: &PathExemptionPolicy,
+) -> bool {
+    if fact.operation != PathTargetOperation::Write
+        || !matches!(
+            &fact.lexical,
+            PathResolution::DerivedUnresolved {
+                rule: DerivedPathRule::ArchiveMembers,
+                reason: DerivedPathUnresolvedReason::UnknownArchiveMembers,
+                ..
+            }
+        )
+    {
+        return false;
+    }
+    let Some(record) = ctx.execution_unit_resolve_records().iter().find(|record| {
+        record.source_node_id.0 == fact.source_node_id
+            && record.origin_kind == ExecutionUnitOriginKind::TopLevel
+    }) else {
+        return false;
+    };
+    let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+        return false;
+    };
+    let bound = &resolved.bound;
+    if resolved.normalized_command_name != "unzip"
+        || bound.command_name.as_str() != "unzip"
+        || bound.form_id.as_str() != "extract_archive"
+        || bound.operation_semantics_unresolved
+        || !bound.residuals.is_empty()
+        || bound
+            .applied_modifiers
+            .iter()
+            .any(|id| id.as_str() == "output_directory")
+        || bound.owned_option_flags.iter().any(|flag| {
+            matches!(
+                flag,
+                ArgumentBindingSource::FollowingFlag { flag_name, .. } if flag_name.as_str() == "-:"
+            )
+        })
+        || bound
+            .effects
+            .iter()
+            .any(|effect| effect.kind == EffectKind::ExecutePayload)
+    {
+        return false;
+    }
+    let Some(cwd) = ctx
+        .execution_cwd_for_node(&record.source_node_id)
+        .and_then(EffectiveCwd::as_known)
+    else {
+        return false;
+    };
+    let (resolution, _) =
+        NamespaceResolver::new(ctx.filesystem_view()).resolve(cwd, PathTargetAccess::Follow);
+    matches!(
+        resolution,
+        SemanticResolution::Resolved { value }
+            if policy.check(&value, PathOperation::Write, RuleId::OutsideWorkspaceMutation)
+                == (PathExemption::Exempt { basis: PathExemptionBasis::Workspace })
+    )
 }
 
 fn mutation_name(kind: caushell_types::PathTargetOperation) -> &'static str {

@@ -109,6 +109,14 @@ fn unknown_command_and_compound_redirects_keep_target_obligations() {
 }
 
 #[test]
+fn unzip_default_directory_follows_an_observed_cwd_link() {
+    let view = Arc::new(MemoryFilesystem::default());
+    view.link("/workspace/linked", "/outside");
+    let response = core(view).check(request(1, "cd linked && unzip archive.zip"));
+    assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
+}
+
+#[test]
 fn unavailable_namespace_is_not_a_workspace_proof() {
     let mut core = ShellQueryCore::new()
         .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem));
