@@ -1,13 +1,15 @@
 use std::collections::BTreeMap;
 
 use caushell_parse::{CommandFact, ParsedCommandArtifact, StatementTerminator};
-use caushell_profile::{PathnamePattern, ResolveInvocationArtifactResult, argument_structure};
+use caushell_profile::{
+    DispatchWorkingDirectory, PathnamePattern, ResolveInvocationArtifactResult, argument_structure,
+};
 use caushell_runner::{
     DirectoryReadBudget, ExecutionUnitOriginKind, ExecutionUnitResolveRecord, RunnerContext,
 };
 use caushell_types::{
-    DirectoryTreeEvidence, PathNamespaceEffect, PathResolution, PathTargetOperation,
-    SemanticResolution, ShellKind,
+    DirectoryTreeEvidence, ImplicitInputSource, PathNamespaceEffect, PathResolution,
+    PathTargetOperation, RuntimeArgumentDomain, SemanticResolution, ShellKind,
 };
 
 use super::{
@@ -104,14 +106,7 @@ pub(super) fn prove_transfers(
     }
     let mut comparisons = 0;
     for (index, input) in inputs.iter().enumerate() {
-        if input.fact.operation != PathTargetOperation::Write
-            || input.fact.slot_name != "destination_path"
-            || !input
-                .fact
-                .spelling
-                .as_deref()
-                .is_some_and(|p| p.ends_with('/'))
-        {
+        if input.fact.operation != PathTargetOperation::Write {
             continue;
         }
         let Some(path) = input.fact.lexical.concrete_path() else {
@@ -123,21 +118,54 @@ pub(super) fn prove_transfers(
         let Some(transfer) = records.get(input.fact.source_node_id.as_str()) else {
             continue;
         };
-        let bounded_move = bounded_glob_move(transfer, input, &baselines[index], path);
-        if !bounded_move
-            && !(matches!(&baselines[index].0, SemanticResolution::Resolved { value }
-                if value.concrete_path() == Some(path))
-                && literal_transfer(transfer))
-        {
-            continue;
-        }
+        let exact_target = matches!(&baselines[index].0, SemanticResolution::Resolved { value }
+            if value.concrete_path() == Some(path));
+        let (successor, bounded_move) = match input.fact.slot_name.as_str() {
+            "destination_path"
+                if input
+                    .fact
+                    .spelling
+                    .as_deref()
+                    .is_some_and(|p| p.ends_with('/')) =>
+            {
+                let bounded_move = bounded_glob_move(transfer, input, &baselines[index], path);
+                if !bounded_move && !(exact_target && literal_transfer(transfer)) {
+                    continue;
+                }
+                (*transfer, bounded_move)
+            }
+            "destination_directory" if exact_target => {
+                comparisons += ctx.dispatch_projection_records().len();
+                if comparisons > 65536 {
+                    return proven;
+                }
+                let Some(find) = direct_find_transfer(ctx, records, transfer) else {
+                    continue;
+                };
+                if input.namespace_effect == Some(PathNamespaceEffect::EntryRelocation) {
+                    comparisons += inputs.len();
+                    if comparisons > 65536 {
+                        return proven;
+                    }
+                    if !disjoint_move_sources(inputs, baselines, input, path) {
+                        continue;
+                    }
+                }
+                (find, false)
+            }
+            _ => continue,
+        };
         for &setup_index in candidates {
             comparisons += 1;
             if comparisons > 65536 {
                 return proven;
             }
             let setup_node = &inputs[setup_index].fact.source_node_id;
-            if !guarded_by_success(ctx.parsed_command(), records[setup_node.as_str()], transfer) {
+            if !guarded_by_success(
+                ctx.parsed_command(),
+                records[setup_node.as_str()],
+                successor,
+            ) {
                 continue;
             }
             if bounded_move {
@@ -170,6 +198,79 @@ pub(super) fn prove_transfers(
         }
     }
     proven
+}
+
+fn direct_find_transfer<'a>(
+    ctx: &RunnerContext,
+    records: &BTreeMap<&str, &'a ExecutionUnitResolveRecord>,
+    transfer: &ExecutionUnitResolveRecord,
+) -> Option<&'a ExecutionUnitResolveRecord> {
+    let ResolveInvocationArtifactResult::Resolved(child) = &transfer.result else {
+        return None;
+    };
+    if transfer.origin_kind != ExecutionUnitOriginKind::Dispatch
+        || !matches!(child.normalized_command_name.as_str(), "cp" | "mv")
+        || child.bound.form_id.as_str() != "target_directory"
+        || child.bound.operation_semantics_unresolved
+        || !child.bound.residuals.is_empty()
+    {
+        return None;
+    }
+    let parent = *records.get(transfer.parent_execution_node_id.0.as_str())?;
+    let ResolveInvocationArtifactResult::Resolved(find) = &parent.result else {
+        return None;
+    };
+    if parent.origin_kind != ExecutionUnitOriginKind::TopLevel
+        || find.normalized_command_name != "find"
+    {
+        return None;
+    }
+    // The child has synthetic spans. Use the parent's shell condition after
+    // identifying the exact native callback, including its working directory.
+    let projection = &ctx
+        .dispatch_projection_records()
+        .iter()
+        .find(|record| record.source_node_id == parent.source_node_id)?
+        .projection;
+    let [callback] = projection.resolved.as_slice() else {
+        return None;
+    };
+    let [flag, directory, source] = callback.argv.as_slice() else {
+        return None;
+    };
+    (projection.unresolved.is_empty()
+        && callback.dispatch_index == transfer.origin_index
+        && callback.command.slot.as_str() == "exec_command"
+        && callback.working_directory == DispatchWorkingDirectory::Inherit
+        && flag.runtime_data
+        && matches!(flag.text.as_str(), "-t" | "--target-directory")
+        && directory.runtime_data
+        && source.implicit_input_source == Some(ImplicitInputSource::DispatchOutput)
+        && matches!(&source.runtime_argument_domain,
+            Some(RuntimeArgumentDomain::PathSet { roots, may_escape: false, .. })
+                if !roots.is_empty() && roots.iter().all(|p| !p.is_empty() && !p.starts_with('-'))))
+    .then_some(parent)
+}
+
+fn disjoint_move_sources(
+    inputs: &[Input],
+    baselines: &[Baseline],
+    destination: &Input,
+    path: &str,
+) -> bool {
+    let mut sources = inputs.iter().zip(baselines).filter(|(input, _)| {
+        input.fact.source_node_id == destination.fact.source_node_id
+            && input.fact.operation == PathTargetOperation::MoveSource
+    });
+    let Some((_, baseline)) = sources.next() else {
+        return false;
+    };
+    sources.next().is_none()
+        && matches!(&baseline.0, SemanticResolution::Resolved {
+            value: PathResolution::BoundedPathSet { roots, may_escape: false },
+        } if !roots.is_empty() && roots.iter().all(|root|
+            !caushell_query::path_is_within_root(root, path)
+                && !caushell_query::path_is_within_root(path, root)))
 }
 
 fn literal_transfer(record: &ExecutionUnitResolveRecord) -> bool {

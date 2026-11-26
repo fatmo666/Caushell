@@ -237,6 +237,67 @@ fn directory_setup_orders_bounded_glob_moves_and_preserves_path_checks() {
 }
 
 #[test]
+#[cfg(unix)]
+fn directory_setup_orders_direct_find_transfers_and_preserves_path_checks() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-find-{}", std::process::id()));
+    let source = root.join("source");
+    let destination = root.join("out");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("report.txt"), "fixture").unwrap();
+
+    let check = |command| {
+        let mut input = request(1, command);
+        let cwd = root.to_str().unwrap();
+        input.workspace_root = Some(cwd.into());
+        input.shell_state_before = ShellStateSnapshot::new(cwd);
+        ShellQueryCore::new().check(input)
+    };
+    let copy = "mkdir -p out && find . -name report.txt -exec cp -t out {} +";
+    let move_files = "mkdir -p out && find source -name report.txt -exec mv -t out {} +";
+    let ordered_copy = check(copy);
+    let ordered_move = check(move_files);
+    let unordered = check("mkdir -p out & find . -name report.txt -exec cp -t out {} +");
+    let different_cwd = check("mkdir -p out && find source -name report.txt -execdir cp -t out {} +");
+    let overlapping = check("mkdir -p out && find . -name report.txt -exec mv -t out {} +");
+
+    std::fs::create_dir(&destination).unwrap();
+    std::os::unix::fs::symlink(source.join("report.txt"), destination.join("report.txt")).unwrap();
+    let linked_destination = check(copy);
+    std::fs::remove_file(destination.join("report.txt")).unwrap();
+    std::os::unix::fs::symlink(destination.join("report.txt"), source.join("linked.txt")).unwrap();
+    let linked_source = check(move_files);
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for result in [&ordered_copy, &ordered_move] {
+        assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.slot_name == "destination_directory"
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &[destination.to_str().unwrap()])
+        }));
+    }
+    assert!(ordered_move.decision_trace.path_targets.iter().any(|fact| {
+        fact.operation == PathTargetOperation::MoveSource
+            && matches!(&fact.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, may_escape: false },
+            } if roots == &[source.to_str().unwrap()])
+    }));
+    assert!(!different_cwd.decision_trace.path_targets.iter().any(|fact| {
+        fact.slot_name == "destination_directory"
+            && matches!(&fact.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, .. },
+            } if roots == &[destination.to_str().unwrap()])
+    }));
+    for result in [unordered, overlapping, linked_destination, linked_source] {
+        assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    }
+}
+
+#[test]
 fn unavailable_namespace_is_not_a_workspace_proof() {
     let mut core = ShellQueryCore::new()
         .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem));
