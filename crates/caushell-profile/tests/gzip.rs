@@ -49,6 +49,28 @@ fn streams(bound: &BoundInvocation) -> StreamContract {
 }
 
 #[test]
+fn pathname_defaults_require_a_keep_flag_and_a_literal_suffix_glob() {
+    let profile = profile();
+    let defaults = profile.static_bash_pathname_defaults.as_ref().unwrap();
+    for (command, expected) in [
+        ("gzip -k *index.html", true),
+        ("gzip --keep *.txt", true),
+        ("gzip -k *", false),
+        ("gzip -k '*index.html'", false),
+        ("gzip -k nested/*index.html", false),
+        ("gzip -k *index*.html", false),
+        ("gzip -kf *index.html", false),
+        ("gzip -c *index.html", false),
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let [flag, glob] = parsed.commands[0].tokens.as_slice() else {
+            panic!("expected a flag and one glob in {command}");
+        };
+        assert_eq!(defaults.matches(flag, glob), expected, "{command}");
+    }
+}
+
+#[test]
 fn stdin_is_data_not_a_path_or_executable_payload() {
     for command in ["gzip", "gzip -", "gzip -d", "gzip -d -", "gzip -9 - -"] {
         let b = bind(command);

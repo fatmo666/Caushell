@@ -7,6 +7,7 @@ use caushell_types::ShellKind;
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum StaticBashPathnameDefaults {
     FlagsAndStarPath { flags: Vec<String> },
+    FlagsAndLiteralSuffixGlob { flags: Vec<String> },
     SubstitutionAndSuffixGlob,
 }
 
@@ -25,6 +26,14 @@ impl StaticBashPathnameDefaults {
                     && flags.contains(&leading.text)
                     && glob.text.contains('/')
                     && glob.text.split('/').all(|component| component == "*")
+            }
+            Self::FlagsAndLiteralSuffixGlob { flags } => {
+                !leading.quoted
+                    && flags.contains(&leading.text)
+                    && glob.text.strip_prefix('*').is_some_and(|suffix| {
+                        !suffix.is_empty()
+                            && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'.')
+                    })
             }
             Self::SubstitutionAndSuffixGlob => {
                 leading.node_kind == "raw_string"

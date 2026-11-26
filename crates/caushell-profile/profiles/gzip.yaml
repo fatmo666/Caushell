@@ -19,6 +19,7 @@ platform:
 
 option_scope: permuted_options
 opaque_on_unresolved: true
+static_bash_pathname_defaults: {kind: flags_and_literal_suffix_glob, flags: &keep_flags [-k, --keep]}
 
 # GNU gzip 1.12 native controls and GNU gzip 1.14 documentation. File names
 # are CLI operands, not extension-based classifications of their purpose.
@@ -294,7 +295,7 @@ forms:
 modifiers:
   - {id: stdout, matcher: {kind: any_flag, flags: [-c, --stdout, --to-stdout]}}
   - {id: decompress, matcher: {kind: any_flag, flags: [-d, --decompress, --uncompress]}}
-  - {id: keep, matcher: {kind: any_flag, flags: [-k, --keep]}}
+  - {id: keep, matcher: {kind: any_flag, flags: *keep_flags}}
   - {id: list, matcher: {kind: any_flag, flags: [-l, --list]}}
   - {id: test, matcher: {kind: any_flag, flags: [-t, --test]}}
   - {id: help, matcher: {kind: any_flag, flags: [-h, --help]}}
