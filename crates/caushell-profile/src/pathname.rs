@@ -1,6 +1,42 @@
 use crate::{ProjectedArg, WordContext};
 use caushell_types::ShellKind;
 
+/// The complete argument shape for which a trusted Profile can use the
+/// independent Bash entry defaults. Normal argv and effect checks still run.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum StaticBashPathnameDefaults {
+    FlagsAndStarPath { flags: Vec<String> },
+    SubstitutionAndSuffixGlob,
+}
+
+impl StaticBashPathnameDefaults {
+    pub fn matches(
+        &self,
+        leading: &caushell_parse::CommandToken,
+        glob: &caushell_parse::CommandToken,
+    ) -> bool {
+        if leading.runtime_data || glob.runtime_data || glob.quoted {
+            return false;
+        }
+        match self {
+            Self::FlagsAndStarPath { flags } => {
+                !leading.quoted
+                    && flags.contains(&leading.text)
+                    && glob.text.contains('/')
+                    && glob.text.split('/').all(|component| component == "*")
+            }
+            Self::SubstitutionAndSuffixGlob => {
+                leading.node_kind == "raw_string"
+                    && glob.text.strip_prefix("*.").is_some_and(|suffix| {
+                        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                    })
+                    && crate::rename_payload::is_static_substitution(&leading.text)
+            }
+        }
+    }
+}
+
 pub(crate) fn snapshot(
     state: &caushell_types::ShellStateSnapshot,
 ) -> Option<caushell_types::ShellPathnameSnapshot> {

@@ -536,6 +536,13 @@ fn transliteration(text: &str, delimiter: u8) -> Result<Vec<char>> {
     Ok(out)
 }
 
+pub(crate) fn is_static_substitution(text: &str) -> bool {
+    text.starts_with("s/")
+        && text.len() <= 65_536
+        && matches!(Program::parse(text, 1), Ok(Program(ops))
+            if matches!(ops.as_slice(), [Operation::Substitute { .. }]))
+}
+
 impl Program {
     fn parse(text: &str, budget: usize) -> Result<Self> {
         if text.contains('\0') {

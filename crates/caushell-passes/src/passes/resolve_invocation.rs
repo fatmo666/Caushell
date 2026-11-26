@@ -640,17 +640,12 @@ fn static_pathname_defaults<'a>(
     let [command] = parsed.commands.as_slice() else {
         return None;
     };
-    let [option, glob] = command.tokens.as_slice() else {
+    let [leading, glob] = command.tokens.as_slice() else {
         return None;
     };
     let name = command.command_name.as_deref()?;
     let profile = registry.lookup(name).profile?;
-    let supported = profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
-        && !option.quoted
-        && profile.static_bash_pathname_flags.contains(&option.text)
-        && glob.text.contains('/')
-        && glob.text.split('/').all(|component| component == "*");
-    if !supported
+    if profile.trust.source != caushell_profile::ProfileSourceKind::BuiltIn
         || name != profile.primary_name()
         || command.command_name_runtime_data
         || command.shell_scope_span.is_some()
@@ -658,7 +653,6 @@ fn static_pathname_defaults<'a>(
         || command.terminator == Some(caushell_parse::StatementTerminator::Background)
         || !command.prefix_assignments.is_empty()
         || !parsed.redirections.is_empty()
-        || glob.quoted
         || state.aliases.iter().any(|alias| alias.name == name)
         || state.functions.iter().any(|function| function.name == name)
         || summary.alias_binding(name).is_some()
@@ -676,6 +670,9 @@ fn static_pathname_defaults<'a>(
             || state.variables.iter().any(|entry| entry.name == name)
             || summary.variable_binding(name).is_some()
     }) {
+        return None;
+    }
+    if !profile.static_bash_pathname_defaults.as_ref()?.matches(leading, glob) {
         return None;
     }
     // These patterns need neither locale-dependent character classes nor

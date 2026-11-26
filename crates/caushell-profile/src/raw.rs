@@ -15,6 +15,8 @@ pub struct RawCommandProfile {
     pub argument_files: Vec<RawArgumentFileRule>,
     pub environment_inputs: Vec<RawEnvironmentInput>,
     pub option_environment: Option<crate::OptionEnvironment>,
+    pub static_bash_pathname_defaults: Option<crate::StaticBashPathnameDefaults>,
+    // Accept Profiles authored before the pathname shapes were generalized.
     pub static_bash_pathname_flags: Vec<String>,
     pub archive_extraction: Option<crate::ArchiveExtraction>,
     pub implicit_config_files: Vec<crate::ImplicitConfigFile>,

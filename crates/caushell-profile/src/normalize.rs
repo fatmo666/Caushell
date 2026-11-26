@@ -630,6 +630,18 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
             ));
         }
     }
+    let static_bash_pathname_defaults = if raw.static_bash_pathname_flags.is_empty() {
+        raw.static_bash_pathname_defaults
+    } else {
+        if raw.static_bash_pathname_defaults.is_some() {
+            return Err(NormalizeError::InvalidOptionScope(
+                "conflicting static Bash pathname default declarations".into(),
+            ));
+        }
+        Some(crate::StaticBashPathnameDefaults::FlagsAndStarPath {
+            flags: raw.static_bash_pathname_flags,
+        })
+    };
     Ok(CommandProfile {
         word_context: raw.word_context,
         identity,
@@ -638,7 +650,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         argument_files,
         environment_inputs,
         option_environment: raw.option_environment,
-        static_bash_pathname_flags: raw.static_bash_pathname_flags,
+        static_bash_pathname_defaults,
         archive_extraction: raw.archive_extraction,
         implicit_config_files: raw.implicit_config_files,
         configuration_files: raw.configuration_files,
@@ -4504,6 +4516,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_defaults: None,
             static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
@@ -4721,6 +4734,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_defaults: None,
             static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
@@ -4852,6 +4866,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_defaults: None,
             static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
@@ -4983,6 +4998,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_defaults: None,
             static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
@@ -5235,6 +5251,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_defaults: None,
             static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),

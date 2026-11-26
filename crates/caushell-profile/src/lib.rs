@@ -35,7 +35,7 @@ mod materialize;
 mod observation_requirements;
 mod pathname;
 pub use observation_requirements::execution_frame_requirements;
-pub use pathname::{PathnameComponent, PathnamePattern};
+pub use pathname::{PathnameComponent, PathnamePattern, StaticBashPathnameDefaults};
 mod diff_pagination;
 mod native_effect_envelope;
 pub use native_effect_envelope::{

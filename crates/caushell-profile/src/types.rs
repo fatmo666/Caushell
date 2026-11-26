@@ -2378,9 +2378,8 @@ pub struct CommandProfile {
     pub argument_files: Vec<ArgumentFileRule>,
     pub environment_inputs: Vec<EnvironmentInput>,
     pub option_environment: Option<OptionEnvironment>,
-    /// In an independent Bash entry, permit default pathname expansion for
-    /// a single listed flag word followed by a slash-separated star path.
-    pub static_bash_pathname_flags: Vec<String>,
+    /// Shape eligible for pathname defaults in an independent Bash entry.
+    pub static_bash_pathname_defaults: Option<crate::StaticBashPathnameDefaults>,
     pub archive_extraction: Option<ArchiveExtraction>,
     pub implicit_config_files: Vec<ImplicitConfigFile>,
     pub configuration_files: Option<ConfigurationFileContract>,
@@ -2469,7 +2468,7 @@ impl CommandProfile {
             argument_files: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
-            static_bash_pathname_flags: Vec::new(),
+            static_bash_pathname_defaults: None,
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,

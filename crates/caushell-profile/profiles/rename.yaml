@@ -1,6 +1,7 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
 opaque_on_unresolved: true
+static_bash_pathname_defaults: {kind: substitution_and_suffix_glob}
 # The native projection owns complete argv, including short-option clusters.
 option_matching: exact_names
 
