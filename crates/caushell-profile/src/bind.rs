@@ -49,6 +49,7 @@ pub struct InvocationShape {
     pub subcommand_path: Vec<String>,
     pub stdin_payload_available: bool,
     pub interactive_session: bool,
+    pub native_variant: Option<String>,
 }
 
 impl InvocationShape {
@@ -453,10 +454,18 @@ pub fn select_invocation<'a>(
     profile: &'a CommandProfile,
     projection: &ProjectedInvocation,
 ) -> Result<InvocationSelection<'a>, BindError> {
+    select_invocation_for_native_variant(profile, projection, None)
+}
+
+pub(crate) fn select_invocation_for_native_variant<'a>(
+    profile: &'a CommandProfile,
+    projection: &ProjectedInvocation,
+    native_variant: Option<&str>,
+) -> Result<InvocationSelection<'a>, BindError> {
     let prefixed = projection.with_option_prefixes(profile.option_prefixes);
     let projection = prefixed.as_ref();
     if let Some(subcommands) = &profile.subcommands {
-        return select_subcommand_invocation(profile, projection, subcommands);
+        return select_subcommand_invocation(profile, projection, subcommands, native_variant);
     }
 
     let scope = ArgumentScope::for_invocation(projection);
@@ -520,6 +529,7 @@ pub fn select_invocation<'a>(
         &[],
         option_scope.as_ref(),
         profile.option_matching,
+        native_variant,
     )?;
 
     if let Some(options) = &mut option_scope
@@ -1706,6 +1716,7 @@ fn select_subcommand_invocation<'a>(
     profile: &'a CommandProfile,
     projection: &ProjectedInvocation,
     subcommands: &'a SubcommandTree,
+    native_variant: Option<&str>,
 ) -> Result<InvocationSelection<'a>, BindError> {
     // Successful selection and partial binding share the same ownership scan.
     let SubcommandScan {
@@ -1736,6 +1747,7 @@ fn select_subcommand_invocation<'a>(
             &path,
             node_options.as_ref(),
             profile.option_matching,
+            native_variant,
         )
         .map_err(|problem| BindError::IndeterminateDispatch {
             command_name: profile.primary_name().to_owned(),
@@ -1776,6 +1788,7 @@ fn select_subcommand_invocation<'a>(
                 &[],
                 root_options.as_ref(),
                 profile.option_matching,
+                native_variant,
             )?;
 
             return Ok(InvocationSelection {
@@ -1815,6 +1828,7 @@ fn select_subcommand_invocation<'a>(
         &path,
         node_options.as_ref(),
         node.option_matching,
+        native_variant,
     ) {
         Ok(form) => Ok(InvocationSelection {
             option_matching: node.option_matching,
@@ -1884,6 +1898,7 @@ fn select_form_for_scope<'a>(
     subcommand_path: &[String],
     options: Option<&crate::ScopedOptions>,
     matching: OptionMatchingPolicy,
+    native_variant: Option<&str>,
 ) -> Result<&'a Form, BindError> {
     let needs_exact_count = forms.iter().any(|form| {
         selector_needs_exact_count(&form.selector)
@@ -1899,6 +1914,7 @@ fn select_form_for_scope<'a>(
         matching,
         needs_exact_count,
     );
+    shape.native_variant = native_variant.map(str::to_owned);
     if shape
         .argument_templates
         .values()
@@ -1935,6 +1951,7 @@ fn select_form_for_scope<'a>(
             needs_exact_count,
         );
         populate_argument_selector(&form.remaining_selector, projection, &mut remaining_shape);
+        remaining_shape.native_variant.clone_from(&shape.native_variant);
         if scoped_selector_certainty(&form.remaining_selector, &remaining_shape)
             .ok_or_else(unresolved)?
         {
@@ -4821,6 +4838,9 @@ fn predicate_matches(predicate: &SelectorPredicate, shape: &InvocationShape) -> 
         SelectorPredicate::InteractiveSession => shape.interactive_session,
         SelectorPredicate::HasSubcommandPath(path) => shape.subcommand_path == *path,
         SelectorPredicate::HasRuntimeFeature(feature) => runtime_feature_matches(*feature, shape),
+        SelectorPredicate::HasNativeVariant(variant) => {
+            shape.native_variant.as_deref() == Some(variant.as_str())
+        }
     }
 }
 

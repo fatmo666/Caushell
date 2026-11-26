@@ -460,6 +460,7 @@ pub enum ShellSourceCwdAnchor {
 // final decision phase after earlier passes have contributed evidence.
 pub struct RunnerContext {
     assume_protected_defaults: bool,
+    protected_native_variants: std::collections::BTreeMap<String, String>,
     module_contract_scope: Option<crate::ModuleContractScope>,
     resource_authority: Option<crate::ResourceAuthoritySnapshot>,
     filesystem: crate::filesystem::FilesystemViewHandle,
@@ -503,6 +504,7 @@ impl RunnerContext {
     pub fn with_policy(request: CheckRequest, policy: PolicyConfig) -> Self {
         Self {
             assume_protected_defaults: false,
+            protected_native_variants: Default::default(),
             module_contract_scope: None,
             resource_authority: None,
             filesystem: Default::default(),
@@ -544,8 +546,20 @@ impl RunnerContext {
         self.assume_protected_defaults = true;
     }
 
+    pub fn set_protected_native_variants_for_static_judgment(
+        &mut self,
+        native_variants: std::collections::BTreeMap<String, String>,
+    ) {
+        self.set_protected_defaults_for_static_judgment();
+        self.protected_native_variants = native_variants;
+    }
+
     pub fn assumes_protected_defaults(&self) -> bool {
         self.assume_protected_defaults
+    }
+
+    pub fn protected_native_variants(&self) -> &std::collections::BTreeMap<String, String> {
+        &self.protected_native_variants
     }
 
     pub fn set_module_contract_scope(&mut self, scope: crate::ModuleContractScope) {

@@ -231,6 +231,9 @@ impl SessionPositionalParameters {
 
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionSummary {
+    // The offline resolver seeds this only in its temporary entry view.
+    #[serde(skip)]
+    protected_native_variants: BTreeMap<String, String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     execution_frame_executor: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -249,6 +252,14 @@ pub struct SessionSummary {
 }
 
 impl SessionSummary {
+    pub fn set_protected_native_variants(&mut self, variants: BTreeMap<String, String>) {
+        self.protected_native_variants = variants;
+    }
+
+    pub fn protected_native_variants(&self) -> &BTreeMap<String, String> {
+        &self.protected_native_variants
+    }
+
     pub fn execution_frame_executor(&self) -> Option<&str> {
         self.execution_frame_executor.as_deref()
     }

@@ -760,6 +760,17 @@ fn static_bash_entry_summary(
             kind: EvidenceKind::StaticBashEntryVariable { name: name.into() },
         });
     }
+    let variants = ctx.protected_native_variants();
+    if !variants.is_empty()
+        && !state.environment.iter().map(|binding| binding.name.as_str())
+            .chain(state.variables.iter().map(|binding| binding.name.as_str()))
+            .any(|name| {
+                matches!(name, "PATH" | "BASH_CMDS")
+                    || name.starts_with("LD_") || name.starts_with("DYLD_")
+            })
+    {
+        entry.get_or_insert_with(|| summary.clone()).set_protected_native_variants(variants.clone());
+    }
     entry
 }
 

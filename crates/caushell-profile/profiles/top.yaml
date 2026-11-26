@@ -44,6 +44,27 @@ forms:
     stream_contract: *query_stream
     stdout_growth: {kind: continuous, records: lines, finite_count_slots: [samples]}
 
+  # procps handles keys only between frames. Match the complete argv so an
+  # additional option or operand cannot change which count actually applies.
+  - id: procps_single_frame
+    selector: &procps_single_frame
+      kind: all
+      items:
+        - {kind: has_native_variant, variant: procps_ng}
+        - kind: any
+          items:
+            - kind: all
+              items:
+                - {kind: exact_argument_count, count: 1}
+                - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: "-n1"}}
+            - kind: all
+              items:
+                - {kind: exact_argument_count, count: 2}
+                - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: "-n"}}
+                - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: "1"}}
+    remaining_selector: *no_operands
+    stream_contract: *query_stream
+
   - id: interactive
     selector:
       kind: all
@@ -51,6 +72,7 @@ forms:
         - *running
         - {kind: not, item: *batch}
         - {kind: any, items: [{kind: not, item: *logging}, *force_interactive]}
+        - {kind: not, item: *procps_single_frame}
     remaining_selector: *no_operands
     stream_contract:
       stdin_mode: ignored
@@ -133,5 +155,5 @@ extensions:
     - https://github.com/apple-oss-distributions/top/blob/main/options.c
     - https://github.com/apple-oss-distributions/top/blob/main/top.1
   caushell.profile/known_limitations:
-    - Native dialects differ in display-option arity. The declared union preserves known noninteractive mode controls; unresolved ownership and unsupported options require approval. Refresh/process counts alone never prove noninteraction.
+    - Native dialects differ in display-option arity. Single-frame queries require a trusted procps identity and exact argv. Unresolved ownership and unsupported options require approval.
     - Config-defined interactive inspection commands are not decoded; interactive forms retain the existing approval boundary.

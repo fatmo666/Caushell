@@ -50,6 +50,7 @@ pub struct ShellVariableFacts {
 #[derive(Debug, Clone, Default)]
 pub struct SessionBindings {
     native_variants: BTreeMap<String, String>,
+    protected_native_lookup: bool,
     pathname_options: Option<caushell_types::ShellPathnameSnapshot>,
     pathname_fields: Vec<caushell_types::PathnameFieldsEvidence>,
     entry_variables: Option<SessionSummary>,
@@ -110,6 +111,7 @@ impl PartialEq for SessionBindings {
         }
         same!(
             native_variants,
+            protected_native_lookup,
             pathname_options,
             pathname_fields,
             shell_kind,
@@ -279,6 +281,7 @@ impl SessionBindings {
         });
         self.native_variants
             .retain(|name, value| other.native_variants.get(name) == Some(value));
+        self.protected_native_lookup &= other.protected_native_lookup;
         if environment_differs {
             // A missing export is not a proved absence. Do not let a safe
             // environment on one path hide configuration on the other.
@@ -827,6 +830,9 @@ impl SessionBindings {
                 }
             }
             bindings.native_variants = frame.native_variants.clone();
+        } else if !summary.protected_native_variants().is_empty() {
+            bindings.native_variants = summary.protected_native_variants().clone();
+            bindings.protected_native_lookup = true;
         }
         bindings.pathname_options = crate::pathname::snapshot(shell_state);
 
@@ -1299,7 +1305,11 @@ impl SessionBindings {
             .collect();
         self.variable_facts
             .retain(|name, _| exported_scalars.contains(name));
-        self.native_variants.clear();
+        // An executor observation binds the parent frame only. An offline
+        // inventory covers protected default lookup in child shells too.
+        if !self.protected_native_lookup {
+            self.native_variants.clear();
+        }
         self.pathname_options = None;
         self.pathname_fields.clear();
         self.aliases.clear();

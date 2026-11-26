@@ -1842,6 +1842,9 @@ fn normalize_selector_expr(raw: RawSelectorExpr) -> Result<SelectorExpr, Normali
         RawSelectorExpr::HasRuntimeFeature { feature } => Ok(SelectorExpr::Predicate(
             SelectorPredicate::HasRuntimeFeature(normalize_runtime_feature(feature)),
         )),
+        RawSelectorExpr::HasNativeVariant { variant } => Ok(SelectorExpr::Predicate(
+            SelectorPredicate::HasNativeVariant(variant),
+        )),
     }
 }
 

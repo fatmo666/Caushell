@@ -323,6 +323,7 @@ pub enum SelectorPredicate {
     InteractiveSession,
     HasSubcommandPath(Vec<String>),
     HasRuntimeFeature(RuntimeFeature),
+    HasNativeVariant(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

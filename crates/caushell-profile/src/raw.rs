@@ -366,6 +366,9 @@ pub enum RawSelectorExpr {
     HasRuntimeFeature {
         feature: RawRuntimeFeature,
     },
+    HasNativeVariant {
+        variant: String,
+    },
 }
 
 impl Default for RawSelectorExpr {

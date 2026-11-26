@@ -1,8 +1,10 @@
 //! Decision and execution-semantic checks only, never native top execution.
 use caushell_core::ShellQueryCore;
 use caushell_types::*;
-fn check(command: &str, decision: Decision) -> CheckResponse {
-    let req = CheckRequest {
+use std::collections::BTreeMap;
+
+fn request(command: &str) -> CheckRequest {
+    CheckRequest {
         session_id: SessionId::new("top-profile"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
@@ -15,10 +17,40 @@ fn check(command: &str, decision: Decision) -> CheckResponse {
             tool_name: Some("Bash".into()),
             shell_runtime_capabilities: ShellRuntimeCapabilities::persistent_shell(),
         },
-    };
-    let r = ShellQueryCore::new().check(req);
+    }
+}
+
+fn check(command: &str, decision: Decision) -> CheckResponse {
+    let r = ShellQueryCore::new().check(request(command));
     assert_eq!(r.decision, decision, "{command}: {r:#?}");
     r
+}
+
+#[test]
+fn protected_procps_lookup_enables_only_proven_single_frame_queries() {
+    use Decision::{Allow, NeedApproval};
+
+    for (command, variant, expected) in [
+        ("top -n 1", Some("procps_ng"), Allow),
+        ("watch -d 'top -n1 | grep fixture'", Some("procps_ng"), Allow),
+        ("top -n 2", Some("procps_ng"), NeedApproval),
+        ("top -n \"$FRAMES\"", Some("procps_ng"), NeedApproval),
+        ("top -n1 -n2", Some("procps_ng"), NeedApproval),
+        ("PATH=./bin:$PATH top -n1", Some("procps_ng"), NeedApproval),
+        ("top -n1", Some("busybox"), NeedApproval),
+        ("top -n1", None, NeedApproval),
+    ] {
+        let mut req = request(command);
+        req.runtime.shell_runtime_capabilities = ShellRuntimeCapabilities::request_only();
+        let inventory: BTreeMap<_, _> = variant
+            .map(|variant| ("top".into(), variant.into()))
+            .into_iter()
+            .collect();
+        let response = ShellQueryCore::new()
+            .try_judge_static_shell_with_native_variants(req, &inventory)
+            .unwrap();
+        assert_eq!(response.decision, expected, "{command} [{variant:?}]");
+    }
 }
 #[test]
 fn explicit_batch_and_logging_queries_allow_without_interactive_findings() {

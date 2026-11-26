@@ -1,14 +1,13 @@
 use caushell_parse::{CommandFact, CommandToken, CommandTokenKind};
 use caushell_types::{ResolveGapKind, SessionSummary};
 
-use crate::bind::bind_modifier_only_invocation;
+use crate::bind::{bind_modifier_only_invocation, select_invocation_for_native_variant};
 use crate::materialize::materialize_argument_text_with_tilde;
 use crate::{
     BindError, BoundArgumentMaterialization, BoundInvocation, BoundValue, CommandProfile,
     InvocationRuntimeContext, InvocationSelection, MaterializedProjectedInvocation,
     ProfileRegistry, ProjectedInvocation, SessionBindings, ValueMaterialization, bind_invocation,
     materialize_command_name, project_invocation,
-    select_invocation,
 };
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -434,6 +433,10 @@ fn resolve_invocation_with_proofs<'a>(
     } else {
         bindings
     };
+    let literal_executable = command
+        .command_name
+        .as_deref()
+        .filter(|_| !command.command_name_runtime_data);
     let recovered_command = materialize_structured_command(command, bindings)
         .map(|command| (command, true))
         .or_else(|| recover_ifs_field_split_command(command, bindings));
@@ -621,7 +624,23 @@ fn resolve_invocation_with_proofs<'a>(
     let original_projection = brief_diff
         .as_ref()
         .unwrap_or(&materialized_projection.invocation);
-    let original_selection = select_invocation(profile, original_projection);
+    let native_variant = literal_executable
+        .filter(|name| {
+            *name == profile.primary_name()
+                && *name == command_name
+                && profile.trust.source == crate::ProfileSourceKind::BuiltIn
+                && matches!(
+                    lookup_domain,
+                    crate::CommandLookupDomain::Shell | crate::CommandLookupDomain::External
+                )
+                && !command.command_name_runtime_data
+                && command.prefix_assignments.is_empty()
+                && !bindings.profile_has_alias_shadow(name)
+                && bindings.function_binding(name).is_none()
+        })
+        .and_then(|name| bindings.native_variant(name));
+    let original_selection =
+        select_invocation_for_native_variant(profile, original_projection, native_variant);
     // A symbolic control word can fail lexical option selection before the
     // native effect closure is reached. Recover only a certified exact prefix,
     // then retain the entire symbolic tail as possible inputs in the shared
@@ -631,7 +650,7 @@ fn resolve_invocation_with_proofs<'a>(
         .flatten();
     let binding_projection = symbolic_prefix.as_ref().unwrap_or(original_projection);
     let selection = match symbolic_prefix.as_ref() {
-        Some(prefix) => select_invocation(profile, prefix),
+        Some(prefix) => select_invocation_for_native_variant(profile, prefix, None),
         None => original_selection,
     };
     match selection {

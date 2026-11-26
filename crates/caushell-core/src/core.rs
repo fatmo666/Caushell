@@ -249,7 +249,7 @@ impl ShellQueryCore {
         request: CheckRequest,
         intent: caushell_types::CheckIntent,
     ) -> Result<CheckOutcome, ShellQueryCoreError> {
-        self.try_check_internal(request, intent, false)
+        self.try_check_internal(request, intent, None)
     }
 
     /// Offline judgment under the protected-defaults threat model. This API
@@ -258,7 +258,23 @@ impl ShellQueryCore {
         &mut self,
         request: CheckRequest,
     ) -> Result<CheckResponse, ShellQueryCoreError> {
-        let static_context = request.shell_state_before.execution_frame.is_none();
+        self.try_judge_static_shell_with_native_variants(request, &Default::default())
+    }
+
+    /// Judge original shell input under the offline executor's declared native
+    /// inventory. Entries belong to protected executable lookup, including
+    /// default child shells. They are supplied by the evaluator, never by a
+    /// runtime request or inferred from the host OS.
+    pub fn try_judge_static_shell_with_native_variants(
+        &mut self,
+        request: CheckRequest,
+        variants: &BTreeMap<String, String>,
+    ) -> Result<CheckResponse, ShellQueryCoreError> {
+        let static_context = request
+            .shell_state_before
+            .execution_frame
+            .is_none()
+            .then_some(variants);
         self.try_check_internal(request, caushell_types::CheckIntent::JudgeOnly, static_context)
             .map(|outcome| outcome.response)
     }
@@ -267,7 +283,7 @@ impl ShellQueryCore {
         &mut self,
         mut request: CheckRequest,
         intent: caushell_types::CheckIntent,
-        assume_protected_defaults: bool,
+        protected_native_variants: Option<&BTreeMap<String, String>>,
     ) -> Result<CheckOutcome, ShellQueryCoreError> {
         let original_request = request
             .shell_state_before
@@ -305,8 +321,8 @@ impl ShellQueryCore {
         let session = sessions.entry(session_id).or_insert_with(SessionState::new);
 
         let mut ctx = RunnerContext::with_policy(request, self.policy.clone());
-        if assume_protected_defaults {
-            ctx.set_protected_defaults_for_static_judgment();
+        if let Some(variants) = protected_native_variants {
+            ctx.set_protected_native_variants_for_static_judgment(variants.clone());
         }
         ctx.set_filesystem_view(self.filesystem.clone());
         let module_scope = self.module_contract_scope.take();
