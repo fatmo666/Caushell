@@ -1,13 +1,13 @@
 use std::collections::BTreeMap;
 
 use caushell_parse::{CommandFact, ParsedCommandArtifact, StatementTerminator};
-use caushell_profile::{ResolveInvocationArtifactResult, argument_structure};
+use caushell_profile::{PathnamePattern, ResolveInvocationArtifactResult, argument_structure};
 use caushell_runner::{
     DirectoryReadBudget, ExecutionUnitOriginKind, ExecutionUnitResolveRecord, RunnerContext,
 };
 use caushell_types::{
     DirectoryTreeEvidence, PathNamespaceEffect, PathResolution, PathTargetOperation,
-    SemanticResolution,
+    SemanticResolution, ShellKind,
 };
 
 use super::{
@@ -117,18 +117,18 @@ pub(super) fn prove_transfers(
         let Some(path) = input.fact.lexical.concrete_path() else {
             continue;
         };
-        if !matches!(&baselines[index].0, SemanticResolution::Resolved { value }
-            if value.concrete_path() == Some(path))
-        {
-            continue;
-        }
         let Some(candidates) = setups.get(path) else {
             continue;
         };
         let Some(transfer) = records.get(input.fact.source_node_id.as_str()) else {
             continue;
         };
-        if !literal_transfer(transfer) {
+        let bounded_move = bounded_glob_move(transfer, input, &baselines[index], path);
+        if !bounded_move
+            && !(matches!(&baselines[index].0, SemanticResolution::Resolved { value }
+                if value.concrete_path() == Some(path))
+                && literal_transfer(transfer))
+        {
             continue;
         }
         for &setup_index in candidates {
@@ -139,6 +139,12 @@ pub(super) fn prove_transfers(
             let setup_node = &inputs[setup_index].fact.source_node_id;
             if !guarded_by_success(ctx.parsed_command(), records[setup_node.as_str()], transfer) {
                 continue;
+            }
+            if bounded_move {
+                // The relocation pass has already checked the complete source
+                // and destination family. Only the execution order is new.
+                proven.insert(input.fact.source_node_id.clone(), setup_node.clone());
+                break;
             }
             let mut family = input.clone();
             family.fact.lexical = PathResolution::BoundedPathSet {
@@ -195,4 +201,71 @@ fn literal_transfer(record: &ExecutionUnitResolveRecord) -> bool {
             .args
             .iter()
             .all(|arg| argument_structure(arg).exact_value().is_some())
+}
+
+fn bounded_glob_move(
+    record: &ExecutionUnitResolveRecord,
+    destination: &Input,
+    baseline: &Baseline,
+    path: &str,
+) -> bool {
+    let Some(scope) = &destination.relocation_scope else {
+        return false;
+    };
+    let Some((parent, name)) = path.rsplit_once('/') else {
+        return false;
+    };
+    if parent != scope.root
+        || !name.is_ascii()
+        || scope.ordinary_source.is_some()
+        || scope.disjoint_destination.is_some()
+        || !matches!(&baseline.0, SemanticResolution::Resolved {
+            value: PathResolution::BoundedPathSet { roots, may_escape: false },
+        } if roots == &[path])
+    {
+        return false;
+    }
+
+    let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+        return false;
+    };
+    let bound = &resolved.bound;
+    if record.shell_kind != ShellKind::Bash
+        || resolved.normalized_command_name != "mv"
+        || bound.form_id.as_str() != "default_move"
+        || bound.operation_semantics_unresolved
+        || !bound.residuals.is_empty()
+    {
+        return false;
+    }
+
+    let [options @ .., separator, glob, directory] =
+        resolved.materialized_projection.invocation.args.as_slice()
+    else {
+        return false;
+    };
+    let verbose_or_empty = match options {
+        [] => true,
+        [option] => matches!(
+            argument_structure(option).exact_value(),
+            Some("-v" | "--verbose")
+        ),
+        _ => false,
+    };
+    // A variable-width source is data after --. With zero matches under
+    // nullglob, only the directory operand remains and mv cannot move it.
+    if !verbose_or_empty
+        || argument_structure(separator).exact_value() != Some("--")
+        || !argument_structure(directory)
+            .exact_value()
+            .is_some_and(|v| v.ends_with('/'))
+    {
+        return false;
+    }
+    let Ok(Some(pattern)) = PathnamePattern::from_argument(glob, record.shell_kind) else {
+        return false;
+    };
+    !pattern.absolute
+        && pattern.supports_option_independent_match_bound()
+        && matches!(pattern.components.as_slice(), [component] if !component.matches(name, true, true))
 }

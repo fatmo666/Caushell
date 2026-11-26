@@ -253,6 +253,19 @@ fn unmatched_fields_obey_nullglob_and_failglob() {
 }
 
 #[test]
+fn nullglob_zero_match_move_has_no_mutation_targets() {
+    let mut input = request("mv -- *.py templates/");
+    input.shell_state_before.pathname.as_mut().unwrap().nullglob = true;
+    let result = check(input, Files::new(&["input.txt"]));
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert!(proofs(&result).iter().any(|p| p.complete && p.fields.is_empty()));
+    assert!(!result.decision_trace.path_targets.iter().any(|fact| matches!(
+        fact.operation,
+        PathTargetOperation::Write | PathTargetOperation::MoveSource
+    )));
+}
+
+#[test]
 fn dotfiles_case_and_character_width_follow_observed_shell_state() {
     let mut r = request("tar -cf output.tar -- *.txt");
     r.shell_state_before.pathname.as_mut().unwrap().nocaseglob = true;

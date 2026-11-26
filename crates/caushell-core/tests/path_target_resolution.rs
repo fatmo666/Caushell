@@ -192,6 +192,50 @@ fn directory_setup_checks_entries_in_an_existing_transfer_destination() {
     assert_eq!(linked.decision, Decision::NeedApproval, "{:?}", linked.reasons);
 }
 
+#[cfg(unix)]
+#[test]
+fn directory_setup_orders_bounded_glob_moves_and_preserves_path_checks() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-glob-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let checkout_root = root.to_str().unwrap();
+
+    let check = |command| {
+        let mut input = request(1, command);
+        input.workspace_root = Some(checkout_root.into());
+        input.shell_state_before = ShellStateSnapshot::new(checkout_root);
+        ShellQueryCore::new().check(input)
+    };
+    let with_nullglob = "mkdir -p templates && shopt -s nullglob && mv -- *.py templates/";
+    let zero_matches = check(with_nullglob);
+    std::fs::write(root.join("sample.py"), "fixture").unwrap();
+    let matched = check(with_nullglob);
+    let verbose = check("mkdir -p templates && mv -v -- *.py templates/");
+    let overlapping = check("mkdir -p templates.py && mv -- *.py templates.py/");
+    let unordered = check("mkdir -p templates & mv -- *.py templates/");
+
+    let destination = root.join("templates");
+    std::fs::create_dir(&destination).unwrap();
+    std::os::unix::fs::symlink("/outside/sample.py", destination.join("sample.py")).unwrap();
+    let linked = check("mkdir -p templates && mv -v -- *.py templates/");
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for result in [zero_matches, matched, verbose] {
+        assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.slot_name == "destination_path"
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &[destination.to_string_lossy().into_owned()])
+        }));
+    }
+    for result in [overlapping, unordered, linked] {
+        assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    }
+}
+
 #[test]
 fn unavailable_namespace_is_not_a_workspace_proof() {
     let mut core = ShellQueryCore::new()
