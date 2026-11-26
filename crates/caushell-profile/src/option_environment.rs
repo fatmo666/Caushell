@@ -1,6 +1,7 @@
 use crate::{
     CommandProfile, EnvironmentValueRef, MaterializedProjectedInvocation, ProjectedArg,
-    ProjectedArgKind, SessionBindings, SessionValue, ValueMaterialization, argument_structure,
+    OptionEnvironmentSyntax, ProjectedArgKind, SessionBindings, SessionValue, ValueMaterialization,
+    argument_structure,
 };
 
 pub fn option_environment_observation(
@@ -10,10 +11,30 @@ pub fn option_environment_observation(
 ) -> Option<(caushell_types::ShellEnvironmentSnapshot, bool)> {
     let input = profile.option_environment.as_ref()?;
     let prefix = crate::materialize_prefix_environment(command, bindings);
-    let from_prefix = prefix.iter().rev().find(|(name, _)| name == &input.name);
+    Some(observe(&input.name, &prefix, bindings))
+}
+
+pub fn option_environment_observations(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    bindings: &SessionBindings,
+) -> Vec<(caushell_types::ShellEnvironmentSnapshot, bool)> {
+    let Some(input) = &profile.option_environment else {
+        return Vec::new();
+    };
+    let prefix = crate::materialize_prefix_environment(command, bindings);
+    input.names().map(|name| observe(name, &prefix, bindings)).collect()
+}
+
+fn observe(
+    name: &str,
+    prefix: &[(String, SessionValue)],
+    bindings: &SessionBindings,
+) -> (caushell_types::ShellEnvironmentSnapshot, bool) {
+    let from_prefix = prefix.iter().rev().find(|(key, _)| key == name);
     let value = from_prefix
         .map(|(_, v)| EnvironmentValueRef::Present(v))
-        .unwrap_or_else(|| bindings.environment_value(&input.name));
+        .unwrap_or_else(|| bindings.environment_value(name));
     let value = match value {
         EnvironmentValueRef::Absent => caushell_types::ShellEnvironmentValue::Absent,
         EnvironmentValueRef::Present(SessionValue::ExactScalar(value))
@@ -24,13 +45,13 @@ pub fn option_environment_observation(
         }
         _ => caushell_types::ShellEnvironmentValue::Unknown,
     };
-    Some((
+    (
         caushell_types::ShellEnvironmentSnapshot {
-            name: input.name.clone(),
+            name: name.into(),
             value,
         },
         from_prefix.is_some(),
-    ))
+    )
 }
 
 pub(crate) fn prepend(
@@ -43,6 +64,64 @@ pub(crate) fn prepend(
         return Ok(());
     };
     let prefix = crate::materialize_prefix_environment(command, bindings);
+    if input.syntax == OptionEnvironmentSyntax::Bzip2 {
+        let mut args = Vec::new();
+        for name in input.names() {
+            let (observation, _) = observe(name, &prefix, bindings);
+            match observation.value {
+                caushell_types::ShellEnvironmentValue::Absent => continue,
+                caushell_types::ShellEnvironmentValue::Unknown => {
+                    if prefix.iter().any(|(key, _)| key == name)
+                        || bindings.environment_names().contains(name)
+                    {
+                        return Err(format!("{name} option bytes are unresolved"));
+                    }
+                }
+                caushell_types::ShellEnvironmentValue::Present { value } => {
+                    if value.len() > 65_536 || !value.is_ascii() || value.contains('\0') {
+                        return Err(format!("{name} option syntax is unsupported"));
+                    }
+                    for word in value.split(|ch: char| ch.is_ascii_whitespace() || ch == '\x0b')
+                        .filter(|word| !word.is_empty())
+                    {
+                        // Native bzip2 caps individual environment argument
+                        // lengths. Decline all spellings near that bound.
+                        if word.len() > 1000 || args.len() >= 4096 {
+                            return Err(format!("{name} option syntax exceeds its budget"));
+                        }
+                        args.push(native_arg(word, &command.span));
+                    }
+                }
+            }
+        }
+        if args.is_empty() {
+            return Ok(());
+        }
+        let mut native_environment = projection.invocation.clone();
+        native_environment.args = args;
+        let ownership = crate::root_option_ownership(profile, &native_environment)
+            .ok_or("bzip2 environment option grammar is unavailable")?;
+        if ownership.ownership_unresolved
+            || ownership.error.is_some()
+            || ownership.terminator.is_some()
+            || ownership.positionals.as_ref().is_some_and(|args| !args.is_empty())
+            || !ownership.additional_positionals.is_empty()
+        {
+            return Err("bzip2 environment contains unresolved options or operands".into());
+        }
+        args = native_environment.args;
+        if args.len() + projection.invocation.args.len() > 4096
+            || args.iter().chain(&projection.invocation.args).map(|arg| arg.text.len()).sum::<usize>() > 65_536
+        {
+            return Err("effective option argv exceeds its budget".into());
+        }
+        let mut resolutions = vec![ValueMaterialization::Static; args.len()];
+        args.append(&mut projection.invocation.args);
+        resolutions.append(&mut projection.arg_resolutions);
+        projection.invocation.args = args;
+        projection.arg_resolutions = resolutions;
+        return Ok(());
+    }
     let value = prefix
         .iter()
         .rev()
@@ -55,10 +134,7 @@ pub(crate) fn prepend(
         | EnvironmentValueRef::Present(SessionValue::RuntimeProduced { value: text, .. }) => text,
         _ => return Err(format!("{} option bytes are unresolved", input.name)),
     };
-    let words = match input.syntax {
-        crate::OptionEnvironmentSyntax::GnuTar => crate::dispatch_string::gnu_wordsplit(text),
-    }
-    .ok_or_else(|| {
+    let words = crate::dispatch_string::gnu_wordsplit(text).ok_or_else(|| {
         format!(
             "{} option syntax is unresolved or exceeds its budget",
             input.name

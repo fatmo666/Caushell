@@ -27,7 +27,7 @@ pub use configuration::{
     ConfigurationOption, ConfigurationParse, ConfigurationParseError, mark_configuration_pending,
     parse_configuration,
 };
-pub use option_environment::option_environment_observation;
+pub use option_environment::{option_environment_observation, option_environment_observations};
 pub use types::{ConfigurationFileContract, ConfigurationSyntax, NativeConfigurationSyntax};
 mod loader;
 mod lookup;
@@ -91,7 +91,10 @@ pub use structured_parameters::{
 mod types;
 pub use raw::RawDispatchOverride;
 pub use types::DispatchOverride;
-pub use types::{FirstArgumentDisable, ImplicitConfigFile, ImplicitConfigSource};
+pub use types::{
+    FirstArgumentDisable, ImplicitConfigFile, ImplicitConfigSource, ProtectedAccountDefaults,
+};
+pub use types::StaticOptionEnvironmentDefault;
 pub use types::{GeneratedEnvironment, GeneratedEnvironmentValue};
 mod value_projection;
 mod value_shape;

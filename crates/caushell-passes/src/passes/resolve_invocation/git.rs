@@ -29,6 +29,7 @@ struct Inputs<'a> {
     home: Option<String>,
     convention: String,
     source_conventions: BTreeMap<String, String>,
+    configuration_locations: Option<Vec<(String, PathResolution)>>,
 }
 impl Inputs<'_> {
     fn entry(&mut self, path: &str) -> caushell_types::FilesystemEntry {
@@ -195,11 +196,20 @@ impl Inputs<'_> {
             .map(Content::Known)
             .unwrap_or_else(|_| Content::Unknown("Git input is not UTF-8".into()))
     }
+    fn record_configuration_location(&mut self, path: PathResolution) {
+        if let Some(locations) = &mut self.configuration_locations
+            && locations.len() < 128
+        {
+            locations.push((self.convention.clone(), path));
+        }
+    }
+
     fn file(&mut self, state: &mut GitConfiguration, path: &str, depth: usize) {
         if depth > 8 || self.stack.iter().any(|p| p == path) {
             state.unresolved("Git include depth/cycle unresolved");
             return;
         }
+        self.record_configuration_location(PathResolution::Concrete { path: path.into() });
         match self.read(path) {
             Content::Absent => (),
             Content::Unknown(reason) => {
@@ -589,7 +599,7 @@ pub(super) fn refresh(
     let ResolveInvocationArtifactResult::Resolved(resolved) = &entry.result else {
         return;
     };
-    if resolved.normalized_command_name != "git" || resolved.bound.native_configuration_resolved {
+    if resolved.bound.native_configuration_resolved {
         return;
     }
     let hook_kind = crate::support::git_hooks::hook_kind(&resolved.bound);
@@ -727,6 +737,7 @@ pub(super) fn refresh(
         home,
         convention: String::new(),
         source_conventions: BTreeMap::new(),
+        configuration_locations: ctx.assumes_protected_defaults().then(Vec::new),
     };
     let mut repository = repository::Repository::Unknown;
     if let Some(base) = &cwd {
@@ -795,6 +806,7 @@ pub(super) fn refresh(
         if let Some(path) = source.resolution.concrete_path() {
             inputs.file(&mut state, path, 0)
         } else {
+            inputs.record_configuration_location(source.resolution.clone());
             inputs.paths.push(source.resolution);
             state.unresolved("Git configuration environment source unresolved");
         }
@@ -1337,6 +1349,14 @@ pub(super) fn refresh(
         }));
         resolved.bound.configured_inputs = named_inputs;
         resolved.bound.native_configuration_resolved = true;
+    }
+    if let Some(locations) = inputs.configuration_locations.take() {
+        super::super::configuration_policy::record_native_config_locations(
+            ctx,
+            &inputs.evidence.node_id,
+            &inputs.evidence.command,
+            locations,
+        );
     }
     ctx.add_evidence(caushell_types::Evidence {
         rule_id: caushell_types::RuleId::SelectionError,

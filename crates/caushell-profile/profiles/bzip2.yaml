@@ -4,6 +4,8 @@ identity: {canonical_name: bzip2, aliases: []}
 trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 option_scope: permuted_options
+option_environment: {name: BZIP2, additional_names: [BZIP], allow_unreported: true, syntax: bzip2, static_default: absent_for_direct_invocation}
+static_bash_pathname_flags: [-kv, -vk]
 opaque_on_unresolved: true
 forms:
   - id: information
@@ -178,7 +180,7 @@ subcommands: null
 extensions:
   caushell.profile/source_research: [https://sourceware.org/bzip2/manual/manual.html, https://sourceware.org/pub/bzip2/bzip2-1.0.8.tar.gz]
   caushell.profile/known_limitations:
-    - Native 1.0.8 CLI semantics. BZIP/BZIP2 environment defaults are not interpreted; caller environment is not dynamically inspected.
+    - Native 1.0.8 CLI semantics. Supplied BZIP2 and BZIP options enter argv before the command line. Unsupported environment layouts retain an unresolved operation.
     - Conflicting mode flags and mixed stdin/file mutation forms remain opaque. No last-option precedence or runtime filesystem/header probing is assumed.
     - Explicit dash operands remain opaque because the native CLI ignores a bare dash before -- and treats it as a filename after --; no false stdin provenance is assigned.
     - Mixed decode suffix lists may retain unresolved targets for operands not matching the selected suffix form. The fallback is a bounded sibling family, not a guessed concrete .out file.

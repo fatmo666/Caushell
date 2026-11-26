@@ -22,6 +22,7 @@ platform:
 
 implicit_config_files:
   - id: default_config
+    protected_account_defaults: {kind: search}
     disabled_by_first_argument:
       words: [--disable]
       prefixes: [-q]

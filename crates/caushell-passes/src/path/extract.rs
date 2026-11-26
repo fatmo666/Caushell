@@ -1862,12 +1862,14 @@ fn derive_slot_target_path_resolution(
             // `./` + `.gz` names a child, not a sibling of the cwd, and literal
             // materialized `$`/`~` bytes must not undergo shell expansion again.
             let spelling = match materialization {
-                Some(ValueMaterialization::ResolvedExactScalar { value, .. })
-                | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. })
-                | Some(ValueMaterialization::ResolvedShellWord { value }) => Some(value.clone()),
+                // Multiple argv fields can share one shell source span. The
+                // bound field owns its own bytes; a span lookup may find a sibling.
                 _ if !matches!(bound_materialization, BoundArgumentMaterialization::Literal) => {
                     Some(text.to_string())
                 }
+                Some(ValueMaterialization::ResolvedExactScalar { value, .. })
+                | Some(ValueMaterialization::ResolvedRuntimeProduced { value, .. })
+                | Some(ValueMaterialization::ResolvedShellWord { value }) => Some(value.clone()),
                 _ => caushell_parse::decode_static_shell_argument(text, *quoted, node_kind).map(
                     |word| {
                         if value.allows_shell_tilde_expansion()
@@ -3722,6 +3724,35 @@ mod tests {
                 path: "/workspace/project/$HOME/~/file".to_string(),
             }
         );
+    }
+
+    #[test]
+    fn derived_output_uses_the_bound_field_when_argv_fields_share_a_span() {
+        use caushell_profile::{ArgumentBindingSource, BoundParameter, BoundValue, PathRole,
+            PathSemantic, SemanticType, SlotName};
+
+        let span = caushell_parse::SourceSpan {
+            start_byte: 0, end_byte: 3, start_row: 0, end_row: 0, start_column: 0, end_column: 3,
+        };
+        let parameter = BoundParameter::new(
+            SlotName::new("inputs"),
+            SemanticType::Path(PathSemantic { role: PathRole::Read, purpose: None }),
+        );
+        let span_value = ValueMaterialization::ResolvedShellWord { value: "sub/first".into() };
+        let rule = caushell_types::DerivedPathRule::AppendSuffix { suffix: ".pack".into() };
+        for file in ["sub/first", "sub/$literal", "sub/second"] {
+            let value = BoundValue::argument(
+                file, false, span.clone(), ArgumentBindingSource::RemainingArg,
+            )
+            .with_materialization(BoundArgumentMaterialization::RuntimeData);
+            let derived = super::derive_slot_target_path_resolution(
+                &parameter, &value, "/workspace", None, Some(&span_value), "inputs", &rule,
+            );
+            assert_eq!(
+                derived.concrete_path(),
+                Some(format!("/workspace/{file}.pack").as_str()),
+            );
+        }
     }
 
     #[test]

@@ -153,19 +153,28 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
             || raw.subcommands.is_some())
     {
         return Err(NormalizeError::InvalidOptionScope(
-            "native archive options require a flat permuted_options grammar".into(),
+            "native option input requires a flat permuted_options grammar".into(),
         ));
     }
     if raw.option_environment.as_ref().is_some_and(|input| {
-        input.name.is_empty()
-            || !input
-                .name
-                .bytes()
-                .enumerate()
-                .all(|(i, c)| c == b'_' || c.is_ascii_alphabetic() || (i > 0 && c.is_ascii_digit()))
+        let mut seen = BTreeSet::new();
+        input.names().any(|name| {
+            name.is_empty()
+                || !seen.insert(name)
+                || !name.bytes().enumerate().all(|(index, byte)| {
+                    byte == b'_' || byte.is_ascii_alphabetic() || (index > 0 && byte.is_ascii_digit())
+                })
+        })
     }) {
         return Err(NormalizeError::InvalidOptionScope(
-            "option_environment requires an environment variable name".into(),
+            "option_environment requires distinct environment variable names".into(),
+        ));
+    }
+    if raw.option_environment.as_ref().is_some_and(|input| {
+        input.syntax == crate::OptionEnvironmentSyntax::GnuTar && !input.additional_names.is_empty()
+    }) {
+        return Err(NormalizeError::InvalidOptionScope(
+            "GNU tar accepts a single inherited option variable".into(),
         ));
     }
     let mut environment_inputs = Vec::new();
@@ -566,7 +575,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         });
     }
 
-    validate_implicit_configs(&raw.implicit_config_files)?;
+    validate_implicit_configs(&raw.implicit_config_files, &forms)?;
     if let Some(contract) = &raw.configuration_files {
         let invalid = |detail: &str| NormalizeError::InvalidConfigurationFiles(detail.into());
         let modifier = modifiers
@@ -629,6 +638,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         argument_files,
         environment_inputs,
         option_environment: raw.option_environment,
+        static_bash_pathname_flags: raw.static_bash_pathname_flags,
         archive_extraction: raw.archive_extraction,
         implicit_config_files: raw.implicit_config_files,
         configuration_files: raw.configuration_files,
@@ -654,7 +664,10 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
     })
 }
 
-fn validate_implicit_configs(inputs: &[crate::ImplicitConfigFile]) -> Result<(), NormalizeError> {
+fn validate_implicit_configs(
+    inputs: &[crate::ImplicitConfigFile],
+    forms: &[Form],
+) -> Result<(), NormalizeError> {
     let invalid = |detail: &str| NormalizeError::InvalidImplicitConfig(detail.into());
     let mut ids = BTreeSet::new();
     if inputs.len() > 16 {
@@ -670,6 +683,25 @@ fn validate_implicit_configs(inputs: &[crate::ImplicitConfigFile]) -> Result<(),
             return Err(invalid(
                 "implicit_config_files requires 1..32 ordered sources",
             ));
+        }
+        if let Some(crate::ProtectedAccountDefaults::StockInitialization {
+            form,
+            sole_argument,
+            config_slot,
+        }) = &input.protected_account_defaults
+        {
+            if !matches!(input.sources.as_slice(), [crate::ImplicitConfigSource::AccountHome { .. }])
+                || !forms.iter().any(|entry| entry.id.as_str() == form && entry.operation_semantics_unresolved)
+                || config_slot.is_empty()
+                || config_slot.contains('\0')
+                || sole_argument.is_empty()
+                || sole_argument.len() > 32
+                || sole_argument.iter().any(|argument| argument.is_empty() || argument.contains('\0'))
+            {
+                return Err(invalid(
+                    "stock initialization requires one account-home source, an unresolved root form, a configuration slot and literal arguments",
+                ));
+            }
         }
         let env_name = |name: &str| {
             let mut chars = name.chars();
@@ -4472,6 +4504,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
@@ -4688,6 +4721,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
@@ -4818,6 +4852,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
@@ -4948,6 +4983,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
@@ -5199,6 +5235,7 @@ mod tests {
             dispatch_overrides: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,

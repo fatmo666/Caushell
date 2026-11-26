@@ -1,11 +1,10 @@
 use std::collections::BTreeSet;
-use std::path::{Component, Path};
 
 use caushell_profile::{
     ArgumentFieldCount, BoundInvocation, ConfiguredPathMissing, ConfiguredPathTarget, Effect,
     EffectKind, EffectTarget, EnvironmentValueRef, ImplicitConfigFile, ImplicitConfigSource,
-    PathPurpose, PathRole, ProfileRegistry, ResolveInvocationArtifactResult, SessionValue,
-    argument_structure, materialize_command_name,
+    PathPurpose, PathRole, ProfileRegistry, ProtectedAccountDefaults, ResolveInvocationArtifactResult,
+    SessionValue, argument_structure, materialize_command_name,
 };
 use caushell_runner::{RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
@@ -13,9 +12,10 @@ use caushell_types::{
     ToolConfigInputEvidence, ToolConfigInputStatus,
 };
 
+use super::configuration_policy::{protected_account_defaults, registered_defaults, search_account_defaults};
 use crate::path::namespace::NamespaceResolver;
 use crate::path::{collect_effect_mutation_targets, collect_redirection_path_facts};
-use crate::support::{ExecutionEnvironment, ExecutionResolveRecordRef, graph_backed_execution_resolve_records};
+use crate::support::{ExecutionResolveRecordRef, graph_backed_execution_resolve_records};
 
 pub struct DiscoverToolConfigInputsPass {
     registry: ProfileRegistry,
@@ -52,7 +52,7 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
                     profile
                         .implicit_config_files
                         .iter()
-                        .any(|input| !disabled(input, *record))
+                        .any(|input| !stock_initialization(input) && !disabled(input, *record))
                 })
         });
         let writes = if active_search {
@@ -72,6 +72,11 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
             };
             let environment = record.environment();
             for input in &profile.implicit_config_files {
+                // Stock initialization is owned by the invocation stage. Its
+                // ordinary load/write effects remain on the bound tool form.
+                if stock_initialization(input) {
+                    continue;
+                }
                 if disabled(input, record) {
                     discovered.push(evidence(
                         record,
@@ -85,20 +90,24 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
                     ));
                     continue;
                 }
-                if command_name(record.result()) == Some("curl")
-                    && input.id == "default_config"
-                    && protected_static_curl_defaults(ctx, &environment, record)
+                let explicit = profile.configuration_files.as_ref().is_some_and(|contract| {
+                    matches!(record.result(), ResolveInvocationArtifactResult::Resolved(resolved)
+                        if resolved.bound.applied_modifiers.iter().any(|id| id.as_str() == contract.modifier))
+                });
+                if matches!(registered_defaults(profile, input), Some(ProtectedAccountDefaults::Search))
+                    && !explicit
+                    && matches!(record.result(), ResolveInvocationArtifactResult::Resolved(_))
+                    && let Some(suffixes) = search_account_defaults(ctx, &environment, &input.sources)
+                    && let Some(paths) = protected_account_defaults(ctx, &environment, &mut namespace, suffixes)
                 {
-                    discovered.push(evidence(
-                        record,
-                        input,
-                        0,
-                        "static_environment_model",
-                        None,
-                        ToolConfigInputStatus::AssumedProtected,
-                        Vec::new(),
-                        "unobserved implicit defaults belong to the static protected baseline",
-                    ));
+                    for path in paths {
+                        discovered.push(path.evidence(
+                            record.source_node_id().0.clone(),
+                            profile.primary_name(),
+                            &input.id,
+                            "implicit account configuration belongs to the protected static baseline",
+                        ));
+                    }
                     continue;
                 }
                 for (index, source) in input.sources.iter().enumerate() {
@@ -265,44 +274,11 @@ impl SessionTransformPass for DiscoverToolConfigInputsPass {
     }
 }
 
-fn protected_static_curl_defaults(
-    ctx: &RunnerContext,
-    environment: &ExecutionEnvironment,
-    record: ExecutionResolveRecordRef<'_>,
-) -> bool {
-    let clean_absolute_path = |path: &str| {
-        path.starts_with('/') && !path.contains('\0')
-            && !Path::new(path).components().any(|part| part == Component::ParentDir)
-    };
-    let request = ctx.request();
-    let (Some(home), Some(workspace)) = (request.home.as_deref(), request.workspace_root.as_deref()) else {
-        return false;
-    };
-    ctx.assumes_protected_defaults()
-        && request.shell_kind == caushell_types::ShellKind::Bash
-        && matches!(record.result(), ResolveInvocationArtifactResult::Resolved(resolved)
-            if !resolved.bound.applied_modifiers.iter().any(|id| id.as_str() == "config_input"))
-        && ["CURL_HOME", "XDG_CONFIG_HOME"].iter().all(|name| {
-            matches!(environment.value(name), EnvironmentValueRef::Unknown)
-        })
-        && match environment.value("HOME") {
-            EnvironmentValueRef::Unknown => true,
-            // The entry model seeds HOME from the request's declared home.
-            EnvironmentValueRef::Present(SessionValue::ExactScalar(value)) => value == home,
-            _ => false,
-        }
-        && !request.shell_state_before.environment.iter().any(|entry| {
-            matches!(entry.name.as_str(), "CURL_HOME" | "XDG_CONFIG_HOME" | "HOME")
-        })
-        && clean_absolute_path(home)
-        && clean_absolute_path(workspace)
-        && [".curlrc", ".config/curlrc"].iter().all(|name| {
-            let path = Path::new(home).join(name);
-            !std::iter::once(workspace)
-                .chain(caushell_types::DEFAULT_TEMPORARY_PATH_ROOTS.iter().copied())
-                .chain(ctx.policy().mutation_path_exemptions.iter().map(|entry| entry.root.as_str()))
-                .any(|root| path.starts_with(root))
-        })
+fn stock_initialization(input: &ImplicitConfigFile) -> bool {
+    matches!(
+        input.protected_account_defaults,
+        Some(ProtectedAccountDefaults::StockInitialization { .. })
+    )
 }
 
 fn command_name(result: &ResolveInvocationArtifactResult) -> Option<&str> {

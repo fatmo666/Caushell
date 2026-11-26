@@ -1,7 +1,7 @@
 mod git;
 mod argument_fields;
 mod bash_job_targets;
-mod svn;
+mod configuration;
 use std::{collections::BTreeMap, path::Path};
 
 use caushell_profile::{
@@ -106,33 +106,20 @@ impl ResolveInvocationPass {
             return;
         };
         let mut binding_request = ctx.request().clone();
-        let entry_summary = static_bash_entry_summary(ctx, session.summary(), &parsed, &binding_request);
-        if ctx.assumes_protected_defaults()
-            && binding_request.shell_kind == caushell_types::ShellKind::Bash
-            && binding_request.runtime.shell_runtime_capabilities
-                == caushell_types::ShellRuntimeCapabilities::request_only()
-            && binding_request.shell_state_before.observability.variables
-                == caushell_types::ShellStateKnowledge::Unknown
-            && session.summary().shell_state_uncertainty().is_none()
-            && session.summary().variable_binding("TAR_OPTIONS").is_none()
-            && !binding_request.shell_state_before.environment.iter().any(|e| e.name == "TAR_OPTIONS")
-            && !binding_request.shell_state_before.variables.iter().any(|v| v.name == "TAR_OPTIONS")
+        if let Some((command, defaults)) =
+            static_pathname_defaults(&self.registry, ctx, session.summary(), &parsed)
         {
-            // The offline entry model supplies no inherited tar options. Seed
-            // the private binding view before replaying this shell's effects,
-            // so prefix assignments and visible shell state take precedence.
-            binding_request.shell_state_before.environment.push(caushell_types::ShellEnvironmentSnapshot {
-                name: "TAR_OPTIONS".into(),
-                value: caushell_types::ShellEnvironmentValue::Absent,
-            });
+            binding_request.shell_state_before.pathname = Some(defaults);
             ctx.add_evidence(Evidence {
                 rule_id: caushell_types::RuleId::SelectionError,
-                summary: "offline entry model assumes no inherited TAR_OPTIONS".into(),
-                kind: caushell_types::EvidenceKind::StaticOptionEnvironmentDefault {
-                    name: "TAR_OPTIONS".into(),
-                },
+                summary: format!("offline entry model uses default Bash pathname expansion for {command}"),
+                kind: caushell_types::EvidenceKind::StaticPathnameDefaults { command: command.into() },
             });
         }
+        let entry_summary = static_bash_entry_summary(ctx, session.summary(), &parsed, &binding_request);
+        super::configuration_policy::seed_option_environment_defaults(
+            &self.registry, session.summary(), ctx, &mut binding_request,
+        );
         let staged_session = StagedSession::new(
             session.graph(),
             ctx.request(),
@@ -625,6 +612,89 @@ impl ResolvedCommandSeed {
             result,
         }
     }
+}
+
+fn static_pathname_defaults<'a>(
+    registry: &ProfileRegistry,
+    ctx: &RunnerContext,
+    summary: &caushell_types::SessionSummary,
+    parsed: &'a caushell_parse::ParsedCommandArtifact,
+) -> Option<(&'a str, caushell_types::ShellPathnameSnapshot)> {
+    use caushell_types::{ShellEnvironmentValue, ShellPathnameSnapshot};
+
+    let request = ctx.request();
+    let state = &request.shell_state_before;
+    if !ctx.assumes_protected_defaults()
+        || request.shell_kind != caushell_types::ShellKind::Bash
+        || request.runtime.shell_runtime_capabilities
+            != caushell_types::ShellRuntimeCapabilities::request_only()
+        || request.sequence_no != caushell_types::CommandSequenceNo(1)
+        || summary.last_sequence_no().is_some()
+        || state.pathname.is_some()
+        || state.execution_frame.is_some()
+        || summary.shell_state_uncertainty().is_some()
+        || parsed.status != caushell_parse::ParseStatus::Complete
+    {
+        return None;
+    }
+    let [command] = parsed.commands.as_slice() else {
+        return None;
+    };
+    let [option, glob] = command.tokens.as_slice() else {
+        return None;
+    };
+    let name = command.command_name.as_deref()?;
+    let profile = registry.lookup(name).profile?;
+    let supported = profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+        && !option.quoted
+        && profile.static_bash_pathname_flags.contains(&option.text)
+        && glob.text.contains('/')
+        && glob.text.split('/').all(|component| component == "*");
+    if !supported
+        || name != profile.primary_name()
+        || command.command_name_runtime_data
+        || command.shell_scope_span.is_some()
+        || command.text.trim() != parsed.raw_command.trim()
+        || command.terminator == Some(caushell_parse::StatementTerminator::Background)
+        || !command.prefix_assignments.is_empty()
+        || !parsed.redirections.is_empty()
+        || glob.quoted
+        || state.aliases.iter().any(|alias| alias.name == name)
+        || state.functions.iter().any(|function| function.name == name)
+        || summary.alias_binding(name).is_some()
+        || summary.function_binding(name).is_some()
+        || state.environment.iter().any(|entry| entry.name.starts_with("BASH_FUNC_"))
+    {
+        return None;
+    }
+    let startup_controls = [
+        "BASH_ENV", "ENV", "BASHOPTS", "SHELLOPTS", "GLOBIGNORE", "POSIXLY_CORRECT",
+        "LC_ALL", "LC_COLLATE", "LC_CTYPE", "LANG",
+    ];
+    if startup_controls.into_iter().any(|name| {
+        state.environment.iter().any(|entry| entry.name == name)
+            || state.variables.iter().any(|entry| entry.name == name)
+            || summary.variable_binding(name).is_some()
+    }) {
+        return None;
+    }
+    // These patterns need neither locale-dependent character classes nor
+    // case folding. Use the C matcher for the independent default entry.
+    Some((name, ShellPathnameSnapshot {
+        noglob: false,
+        nullglob: false,
+        failglob: false,
+        dotglob: false,
+        nocaseglob: false,
+        globstar: false,
+        extglob: false,
+        globskipdots: true,
+        globignore: ShellEnvironmentValue::Absent,
+        lc_all: ShellEnvironmentValue::Present { value: "C".into() },
+        lc_collate: ShellEnvironmentValue::Absent,
+        lc_ctype: ShellEnvironmentValue::Absent,
+        lang: ShellEnvironmentValue::Absent,
+    }))
 }
 
 fn static_bash_entry_summary(
@@ -4317,21 +4387,23 @@ fn collect_execution_unit_resolve_records(
             .get(entry.command_ref.command_index)
             && let Some(name) = command.command_name.as_deref()
             && let Some(profile) = registry.lookup(name).profile
-            && let Some((observation, from_prefix_assignment)) =
-                caushell_profile::option_environment_observation(profile, command, &entry.bindings)
         {
-            pathname_context.add_evidence(Evidence {
-                rule_id: caushell_types::RuleId::SelectionError,
-                summary: "tool option environment input".into(),
-                kind: caushell_types::EvidenceKind::ToolOptionEnvironment(
-                    caushell_types::ToolOptionEnvironmentEvidence {
-                        node_id: entry.source_node_id.0.clone(),
-                        name: observation.name,
-                        value: observation.value,
-                        from_prefix_assignment,
-                    },
-                ),
-            });
+            for (observation, from_prefix_assignment) in
+                caushell_profile::option_environment_observations(profile, command, &entry.bindings)
+            {
+                pathname_context.add_evidence(Evidence {
+                    rule_id: caushell_types::RuleId::SelectionError,
+                    summary: "tool option environment input".into(),
+                    kind: caushell_types::EvidenceKind::ToolOptionEnvironment(
+                        caushell_types::ToolOptionEnvironmentEvidence {
+                            node_id: entry.source_node_id.0.clone(),
+                            name: observation.name,
+                            value: observation.value,
+                            from_prefix_assignment,
+                        },
+                    ),
+                });
+            }
         }
         refresh_substitution_shape_proofs(
             registry,
@@ -4704,7 +4776,7 @@ fn collect_execution_unit_resolve_records(
             );
         }
 
-        svn::close_default_status_initialization(pathname_context, &mut entry);
+        configuration::resolve_stock_initialization(registry, pathname_context, &mut entry);
 
         let frontier_depth = entry.depth;
         let child_bindings = entry.bindings.clone();
@@ -4772,7 +4844,7 @@ fn collect_execution_unit_resolve_records(
             &entry,
             max_nested_parse_depth,
         );
-        git::refresh(
+        configuration::resolve_native_configuration(
             registry,
             session,
             request,

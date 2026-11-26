@@ -479,6 +479,9 @@ pub struct NonShellScriptExecutionEvidence {
 pub enum EvidenceKind {
     StaticLoopbackScope { node_id: String, endpoints: Vec<String> },
     StaticCleartextScope { node_id: String, endpoints: Vec<String> },
+    StaticPathnameDefaults {
+        command: String,
+    },
     StaticOptionEnvironmentDefault { name: String },
     StaticBashEntryVariable { name: String },
     StaticEmptyJobTargets { node_id: String, command: String },
@@ -598,6 +601,9 @@ pub enum ToolConfigInputStatus {
     AssumedProtected,
     Opaque,
     Unknown,
+    ProtectedLocation,
+    WritableLocation,
+    UnresolvedLocation,
 }
 
 #[cfg(test)]

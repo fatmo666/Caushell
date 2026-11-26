@@ -97,13 +97,34 @@ impl ProfileExecutionDomain {
 #[serde(deny_unknown_fields)]
 pub struct OptionEnvironment {
     pub name: String,
+    #[serde(default)]
+    pub additional_names: Vec<String>,
+    #[serde(default)]
+    pub allow_unreported: bool,
     pub syntax: OptionEnvironmentSyntax,
+    #[serde(default)]
+    pub static_default: Option<StaticOptionEnvironmentDefault>,
+}
+
+impl OptionEnvironment {
+    pub fn names(&self) -> impl Iterator<Item = &str> {
+        std::iter::once(self.name.as_str()).chain(self.additional_names.iter().map(String::as_str))
+    }
+}
+
+/// Default assumed by the independent, non-authorizing static entry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StaticOptionEnvironmentDefault {
+    Absent,
+    AbsentForDirectInvocation,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum OptionEnvironmentSyntax {
     GnuTar,
+    Bzip2,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
@@ -2357,6 +2378,9 @@ pub struct CommandProfile {
     pub argument_files: Vec<ArgumentFileRule>,
     pub environment_inputs: Vec<EnvironmentInput>,
     pub option_environment: Option<OptionEnvironment>,
+    /// In an independent Bash entry, permit default pathname expansion for
+    /// a single listed flag word followed by a slash-separated star path.
+    pub static_bash_pathname_flags: Vec<String>,
     pub archive_extraction: Option<ArchiveExtraction>,
     pub implicit_config_files: Vec<ImplicitConfigFile>,
     pub configuration_files: Option<ConfigurationFileContract>,
@@ -2445,6 +2469,7 @@ impl CommandProfile {
             argument_files: Vec::new(),
             environment_inputs: Vec::new(),
             option_environment: None,
+            static_bash_pathname_flags: Vec::new(),
             archive_extraction: None,
             implicit_config_files: Vec::new(),
             configuration_files: None,
@@ -2524,7 +2549,21 @@ pub struct ImplicitConfigFile {
     pub id: String,
     pub sources: Vec<ImplicitConfigSource>,
     #[serde(default)]
+    pub protected_account_defaults: Option<ProtectedAccountDefaults>,
+    #[serde(default)]
     pub disabled_by_first_argument: FirstArgumentDisable,
+}
+
+/// A protected RQ1 account-default input supplied by a reviewed tool profile.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProtectedAccountDefaults {
+    Search,
+    StockInitialization {
+        form: String,
+        sole_argument: Vec<String>,
+        config_slot: String,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Deserialize)]

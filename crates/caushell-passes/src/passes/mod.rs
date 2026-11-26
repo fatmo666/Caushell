@@ -8,6 +8,7 @@ mod compute_effective_cwd;
 pub(crate) use compute_effective_cwd::{
     command_may_change_current_shell_cwd, source_scope_execution_cwds,
 };
+mod configuration_policy;
 mod cwd_workspace_boundary;
 mod database_operation_guard;
 mod decision_assembly;

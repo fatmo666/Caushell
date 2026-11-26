@@ -19,7 +19,7 @@ platform:
 
 option_scope: permuted_options
 opaque_on_unresolved: true
-option_environment: {name: TAR_OPTIONS, syntax: gnu_tar}
+option_environment: {name: TAR_OPTIONS, syntax: gnu_tar, static_default: absent}
 archive_extraction: gnu_tar
 
 forms:

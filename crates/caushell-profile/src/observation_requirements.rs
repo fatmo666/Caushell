@@ -46,7 +46,7 @@ pub fn execution_frame_requirements<'a>(
             }
         }
         if let Some(options) = &profile.option_environment {
-            requirements.environment_names.insert(options.name.clone());
+            requirements.environment_names.extend(options.names().map(str::to_owned));
         }
         for input in &profile.environment_inputs {
             requirements
