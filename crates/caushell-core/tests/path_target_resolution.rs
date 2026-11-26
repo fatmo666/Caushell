@@ -125,6 +125,74 @@ fn unzip_explicit_directory_follows_an_observed_destination_link() {
 }
 
 #[test]
+fn directory_setup_orders_the_literal_transfer_on_success() {
+    for command in [
+        "mkdir -p temp && mv -- input temp/",
+        "mkdir -p temp && cp --backup=numbered input temp/",
+    ] {
+        let view = Arc::new(MemoryFilesystem::default());
+        view.0.lock().unwrap().extend([
+            ("/workspace/temp".into(), FilesystemEntry::Missing),
+            ("/workspace/input".into(), FilesystemEntry::File),
+        ]);
+        let result = core(view).check(request(1, command));
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.slot_name == "destination_path"
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &["/workspace/temp"])
+        }));
+    }
+}
+
+#[test]
+fn directory_setup_requires_success_and_a_stable_namespace() {
+    for command in [
+        "mkdir -p temp || mv -- input temp/",
+        "mkdir -p temp & mv -- input temp/",
+    ] {
+        let view = Arc::new(MemoryFilesystem::default());
+        view.0.lock().unwrap().extend([
+            ("/workspace/temp".into(), FilesystemEntry::Missing),
+            ("/workspace/input".into(), FilesystemEntry::File),
+        ]);
+        let result = core(view).check(request(1, command));
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+
+    let view = Arc::new(MemoryFilesystem::default());
+    view.link("/workspace/temp", "/outside/temp");
+    assert_eq!(
+        core(view).check(request(1, "mkdir -p temp && cp -- input temp/")).decision,
+        Decision::NeedApproval
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_setup_checks_entries_in_an_existing_transfer_destination() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-transfer-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let destination = root.join("temp");
+    std::fs::create_dir(&destination).unwrap();
+    std::fs::write(root.join("input"), "fixture").unwrap();
+    let mut input = request(1, "mkdir -p temp && cp -- input temp/");
+    input.workspace_root = Some(root.to_string_lossy().into_owned());
+    input.shell_state_before = ShellStateSnapshot::new(root.to_string_lossy());
+
+    let ordinary = ShellQueryCore::new().check(input.clone());
+    std::os::unix::fs::symlink("/outside/input", destination.join("input")).unwrap();
+    let linked = ShellQueryCore::new().check(input);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(ordinary.decision, Decision::Allow, "{:?}", ordinary.reasons);
+    assert_eq!(linked.decision, Decision::NeedApproval, "{:?}", linked.reasons);
+}
+
+#[test]
 fn unavailable_namespace_is_not_a_workspace_proof() {
     let mut core = ShellQueryCore::new()
         .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem));

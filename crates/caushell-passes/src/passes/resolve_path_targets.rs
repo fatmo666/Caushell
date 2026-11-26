@@ -21,6 +21,7 @@ use crate::support::{
 };
 
 mod consumption;
+mod directory_setup;
 mod directory_tree;
 mod entry_relocation;
 mod namespace_state;
@@ -153,13 +154,20 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             }
             baselines.push((resolution, observations));
         }
-        if namespace_operations_complete(ctx, true) {
+        let closed_tree = namespace_operations_complete(ctx, true);
+        let ordered_transfers = if closed_tree {
             tree_evidence.extend(entry_relocation::close_families(
                 &mut inputs, &mut baselines, &mut resolver,
                 ctx.filesystem_view(), &mut tree_budget,
                 ctx.request().shell_state_before.cwd(),
             ));
-        }
+            directory_setup::prove_transfers(
+                ctx, &inputs, &mut baselines, &records, &mut resolver, &mut tree_budget,
+                &mut tree_evidence,
+            )
+        } else {
+            std::collections::BTreeMap::new()
+        };
         let namespace_writes: Vec<_> = inputs
             .iter()
             .enumerate()
@@ -188,9 +196,10 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 writer,
                 &records,
                 ctx.parsed_command(),
-            )
+            ) || target.namespace_effect == Some(caushell_types::PathNamespaceEffect::DirectoryCreate)
+                && ordered_transfers.get(writer.fact.source_node_id.as_str())
+                    == Some(&target.fact.source_node_id)
         };
-        let closed_tree = namespace_operations_complete(ctx, true);
         let stable_producers = if namespace_operations_complete(ctx, false) {
             namespace_state::stable_producers(
                 &inputs,
