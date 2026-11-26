@@ -67,6 +67,7 @@ pub(crate) use stream_records::stdin_path_records;
 pub(crate) use stream_records::stdout_route_is_plain;
 pub(crate) use stream_semantics::{StreamSemanticsIndex, annotate_stream_output};
 mod top_level_units;
+pub(crate) mod unzip;
 mod variable_facts;
 mod variable_overlay;
 

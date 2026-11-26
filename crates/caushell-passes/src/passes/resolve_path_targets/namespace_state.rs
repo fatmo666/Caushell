@@ -48,6 +48,7 @@ pub(super) fn stable_producers(
     writes: &[(usize, Option<String>)],
     comparisons: &mut usize,
     closed_tree: bool,
+    completes_before_writer: impl Fn(&Input, &Input) -> bool,
 ) -> BTreeSet<usize> {
     let mut candidates: BTreeSet<_> = writes
         .iter()
@@ -71,6 +72,7 @@ pub(super) fn stable_producers(
                 return BTreeSet::new();
             }
             if *other == producer
+                || completes_before_writer(&inputs[producer], &inputs[*other])
                 || !overlaps(&inputs[producer], &baselines[producer], root.as_deref())
             {
                 continue;

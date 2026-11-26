@@ -1,19 +1,18 @@
 use std::collections::BTreeSet;
 
-use caushell_profile::{ArgumentBindingSource, EffectKind, ResolveInvocationArtifactResult};
+use caushell_profile::EffectKind;
 use caushell_runner::{
-    EffectiveCwd, ExecutionUnitOriginKind, PathExemption, PathExemptionBasis, PathExemptionPolicy,
-    PathOperation, RunnerContext, SessionAnalysisPass, SessionView,
+    EffectiveCwd, PathExemption, PathExemptionBasis, PathExemptionPolicy, PathOperation,
+    RunnerContext, SessionAnalysisPass, SessionView,
 };
 use caushell_types::{
-    DerivedPathRule, DerivedPathUnresolvedReason, MutationExemptionOperation,
-    PathMetadataMutationKind, PathResolution, PathTargetAccess, PathTargetFact,
-    PathTargetOperation, RuleId, SemanticGapKind, SemanticResolution,
+    MutationExemptionOperation, PathMetadataMutationKind, PathResolution, PathTargetAccess,
+    PathTargetFact, PathTargetOperation, RuleId, SemanticGapKind, SemanticResolution,
 };
 
 use crate::path::namespace::NamespaceResolver;
 use crate::support::{
-    bound_invocation, decision_for_rule_action, is_file_write_redirection_operator,
+    bound_invocation, decision_for_rule_action, is_file_write_redirection_operator, unzip,
 };
 
 pub struct OutsideWorkspaceMutationGuardPass;
@@ -60,10 +59,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
             reasons.insert("declared filesystem effects have no target-scope proof".to_string());
         }
         if let Some(policy) = ctx.target_path_policy() {
-            for fact in facts
-                .into_iter()
-                .filter(|fact| fact.operation.is_mutation())
-            {
+            for fact in facts.iter().filter(|fact| fact.operation.is_mutation()) {
                 if fact.implicit_incidental_cache && fact.lexical.concrete_path().is_none() {
                     continue;
                 }
@@ -71,7 +67,7 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
                     SemanticResolution::NotApplicable { .. } => continue,
                     SemanticResolution::Unresolved { gap } => {
                         if gap.kind == SemanticGapKind::UnknownTarget
-                            && ordinary_unzip_member_in_workspace(&fact, ctx, policy)
+                            && ordinary_unzip_member_in_workspace(fact, &facts, ctx, policy)
                         {
                             continue;
                         }
@@ -137,57 +133,38 @@ impl SessionAnalysisPass for OutsideWorkspaceMutationGuardPass {
     }
 }
 
-/// Decide the policy for default-directory extraction while retaining the
-/// unresolved member paths for other rules and later commands.
+/// Apply workspace approval to the selected output directory. The graph
+/// continues to describe the members themselves as unresolved writes.
 fn ordinary_unzip_member_in_workspace(
     fact: &PathTargetFact,
+    facts: &[&PathTargetFact],
     ctx: &RunnerContext,
     policy: &PathExemptionPolicy,
 ) -> bool {
-    if fact.operation != PathTargetOperation::Write
-        || !matches!(
-            &fact.lexical,
-            PathResolution::DerivedUnresolved {
-                rule: DerivedPathRule::ArchiveMembers,
-                reason: DerivedPathUnresolvedReason::UnknownArchiveMembers,
-                ..
-            }
-        )
-    {
+    if !unzip::unknown_member_write(fact) {
         return false;
     }
-    let Some(record) = ctx.execution_unit_resolve_records().iter().find(|record| {
-        record.source_node_id.0 == fact.source_node_id
-            && record.origin_kind == ExecutionUnitOriginKind::TopLevel
-    }) else {
+    let Some(record) = ctx
+        .execution_unit_resolve_records()
+        .iter()
+        .find(|record| record.source_node_id.0 == fact.source_node_id)
+    else {
         return false;
     };
-    let ResolveInvocationArtifactResult::Resolved(resolved) = &record.result else {
+    let Some(bound) = unzip::ordinary_extraction(record) else {
         return false;
     };
-    let bound = &resolved.bound;
-    if resolved.normalized_command_name != "unzip"
-        || bound.command_name.as_str() != "unzip"
-        || bound.form_id.as_str() != "extract_archive"
-        || bound.operation_semantics_unresolved
-        || !bound.residuals.is_empty()
-        || bound
-            .applied_modifiers
+    if unzip::has_explicit_directory(bound) {
+        let mut directories = facts
             .iter()
-            .any(|id| id.as_str() == "output_directory")
-        || bound.owned_option_flags.iter().any(|flag| {
-            matches!(
-                flag,
-                ArgumentBindingSource::FollowingFlag { flag_name, .. } if flag_name.as_str() == "-:"
-            )
-        })
-        || bound
-            .effects
-            .iter()
-            .any(|effect| effect.kind == EffectKind::ExecutePayload)
-    {
-        return false;
+            .filter(|target| {
+                target.source_node_id == fact.source_node_id && unzip::directory_write(target)
+            })
+            .peekable();
+        return directories.peek().is_some()
+            && directories.all(|target| workspace_write(policy, &target.resolution));
     }
+
     let Some(cwd) = ctx
         .execution_cwd_for_node(&record.source_node_id)
         .and_then(EffectiveCwd::as_known)
@@ -196,10 +173,17 @@ fn ordinary_unzip_member_in_workspace(
     };
     let (resolution, _) =
         NamespaceResolver::new(ctx.filesystem_view()).resolve(cwd, PathTargetAccess::Follow);
+    workspace_write(policy, &resolution)
+}
+
+fn workspace_write(
+    policy: &PathExemptionPolicy,
+    resolution: &SemanticResolution<PathResolution>,
+) -> bool {
     matches!(
         resolution,
-        SemanticResolution::Resolved { value }
-            if policy.check(&value, PathOperation::Write, RuleId::OutsideWorkspaceMutation)
+        SemanticResolution::Resolved { value: value @ PathResolution::Concrete { .. } }
+            if policy.check(value, PathOperation::Write, RuleId::OutsideWorkspaceMutation)
                 == (PathExemption::Exempt { basis: PathExemptionBasis::Workspace })
     )
 }

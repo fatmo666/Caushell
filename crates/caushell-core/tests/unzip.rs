@@ -90,7 +90,10 @@ fn shell_effects_and_ordinary_extraction_remain_guarded() {
         "unzip archive.zip > /opt/out",
         "unzip archive.zip && rm old.zip",
         "unzip -o archive.zip -d /opt/out",
-        "unzip -n archive.zip -d ./out",
+        "unzip archive.zip -d \"$dir\"",
+        "cd \"$dir\" && unzip archive.zip -d ./out",
+        "unzip archive.zip -d ./out > /opt/out",
+        "unzip archive.zip -d ./out && rm old.zip",
         "cd /opt && unzip archive.zip -p",
         "cd /opt && unzip archive.zip -t",
         "cd /opt && unzip archive.zip -l",
@@ -135,6 +138,48 @@ fn workspace_default_extraction_retains_unknown_member_paths() {
             "{command}: {result:#?}"
         );
     }
+}
+
+#[test]
+fn workspace_explicit_extraction_keeps_setup_and_member_effects_distinct() {
+    for command in [
+        "unzip -n archive.zip -d ./out",
+        "unzip -o -- archive.zip -d ./out",
+        "mkdir -p out && [ -f archive.zip ] && unzip -d out archive.zip",
+    ] {
+        let result = check(command, Decision::Allow);
+        let targets = &result.decision_trace.path_targets;
+        assert!(targets.iter().any(|fact| {
+            fact.slot_name == "extraction_directory" && matches!(
+                &fact.resolution,
+                SemanticResolution::Resolved { value } if value.concrete_path() == Some("/workspace/out")
+            )
+        }), "{command}: {result:#?}");
+        assert!(
+            targets.iter().any(|fact| matches!(
+                &fact.lexical,
+                PathResolution::DerivedUnresolved {
+                    rule: DerivedPathRule::ArchiveMembers,
+                    reason: DerivedPathUnresolvedReason::UnknownArchiveMembers,
+                    ..
+                }
+            ) && matches!(
+                fact.resolution,
+                SemanticResolution::Unresolved { .. }
+            )),
+            "{command}: {result:#?}"
+        );
+    }
+    let result = check(
+        "unzip -d out archive.zip && mkdir -p out/nested",
+        Decision::NeedApproval,
+    );
+    assert!(result.decision_trace.path_targets.iter().any(|fact| {
+        fact.slot_name == "directory_paths" && matches!(
+            &fact.resolution,
+            SemanticResolution::Unresolved { gap } if gap.kind == SemanticGapKind::NamespaceMutation
+        )
+    }), "{result:#?}");
 }
 #[test]
 fn timestamp_mutates_archive_not_ignored_output_directory() {

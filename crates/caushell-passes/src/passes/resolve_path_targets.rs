@@ -24,6 +24,7 @@ mod consumption;
 mod directory_tree;
 mod entry_relocation;
 mod namespace_state;
+mod unzip_setup;
 
 pub struct ResolvePathTargetsPass;
 
@@ -159,15 +160,6 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 ctx.request().shell_state_before.cwd(),
             ));
         }
-        for proof in tree_evidence {
-            ctx.add_evidence(caushell_types::Evidence {
-                rule_id: caushell_types::RuleId::OutsideWorkspaceMutation,
-                summary: proof.gap.clone().unwrap_or_else(|| {
-                    "link-free directory output family resolved without granting authority".into()
-                }),
-                kind: caushell_types::EvidenceKind::DirectoryTree(proof),
-            });
-        }
         let namespace_writes: Vec<_> = inputs
             .iter()
             .enumerate()
@@ -190,6 +182,14 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             })
             .collect();
         let mut comparisons = 0usize;
+        let completes_before_writer = |target: &Input, writer: &Input| {
+            unzip_setup::completes_before_unzip(
+                target,
+                writer,
+                &records,
+                ctx.parsed_command(),
+            )
+        };
         let closed_tree = namespace_operations_complete(ctx, true);
         let stable_producers = if namespace_operations_complete(ctx, false) {
             namespace_state::stable_producers(
@@ -198,6 +198,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 &namespace_writes,
                 &mut comparisons,
                 closed_tree,
+                &completes_before_writer,
             )
         } else {
             // An opaque sibling may have no declared mutation target at all.
@@ -220,7 +221,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     if comparisons > 65536 {
                         return true;
                     }
-                    if *other == index {
+                    if *other == index || completes_before_writer(&inputs[index], &inputs[*other]) {
                         return false;
                     }
                     let overlaps = namespace_state::overlaps(
@@ -288,6 +289,15 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 .fact
                 .observations
                 .dedup_by(|a, b| a.path == b.path && a.entry == b.entry);
+        }
+        for proof in tree_evidence {
+            ctx.add_evidence(caushell_types::Evidence {
+                rule_id: caushell_types::RuleId::OutsideWorkspaceMutation,
+                summary: proof.gap.clone().unwrap_or_else(|| {
+                    "link-free directory output family resolved without granting authority".into()
+                }),
+                kind: caushell_types::EvidenceKind::DirectoryTree(proof),
+            });
         }
         for (index, input) in inputs.into_iter().enumerate() {
             ctx.stage_mutation(PendingMutation::AddPathTargetFact {
