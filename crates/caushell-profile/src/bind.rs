@@ -3611,7 +3611,19 @@ impl<'p, 'm> BindingState<'p, 'm> {
                         continue;
                     }
 
-                    if let Some(value) = self.consume_flag_operand_after(
+                    if operand_mode == FlagOperandMode::ZipPatternList {
+                        let (end, delimiter, _) = crate::option_scope::zip_pattern_list(
+                            &self.projection.args, index + 1, scope.end_index,
+                        );
+                        for preceding in index..end.saturating_sub(1) {
+                            values.extend(self.consume_immediate_arg_after(
+                                preceding, scope, binding_source.clone(), value_constraints,
+                            ));
+                        }
+                        if delimiter {
+                            self.consumed[end] = true;
+                        }
+                    } else if let Some(value) = self.consume_flag_operand_after(
                         index,
                         scope,
                         binding_source,
@@ -3713,7 +3725,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 }
                 Some(value)
             }
-            FlagOperandMode::InlineOnly
+            FlagOperandMode::ZipPatternList
+            | FlagOperandMode::InlineOnly
             | FlagOperandMode::WordAttached
             | FlagOperandMode::OptionalWordAttached
             | FlagOperandMode::OptionalInlineOnly
@@ -5143,6 +5156,10 @@ fn leading_positional_prefix_len(shape: &InvocationShape, matcher: &ValueMatcher
 
 pub(crate) fn argument_matches_value_matcher(text: &str, matcher: &ValueMatcher) -> bool {
     match matcher {
+        ValueMatcher::BasenameContainsDot => text
+            .rsplit('/')
+            .next()
+            .is_some_and(|basename| basename.contains('.')),
         ValueMatcher::StructuredValueContext(StructuredValueContext::AvFiltergraph) => {
             crate::av_filtergraph::data_only(text)
         }

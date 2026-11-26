@@ -2785,6 +2785,7 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
         RawFlagOperandMode::WordAttachedOrNextArg => FlagOperandMode::WordAttachedOrNextArg,
         RawFlagOperandMode::NextPositional => FlagOperandMode::NextPositional,
         RawFlagOperandMode::NextArg => FlagOperandMode::NextArg,
+        RawFlagOperandMode::ZipPatternList => FlagOperandMode::ZipPatternList,
         RawFlagOperandMode::OptionalNextArg => FlagOperandMode::OptionalNextArg,
         RawFlagOperandMode::SecondArg => FlagOperandMode::SecondArg,
         RawFlagOperandMode::FirstOfTwoArgs => FlagOperandMode::FirstOfTwoArgs,
@@ -2807,6 +2808,7 @@ fn normalize_value_matcher(raw: RawValueMatcher) -> Result<ValueMatcher, Normali
             ValueMatcher::StructuredValueContext(normalize_structured_value_context(context)),
         ),
         RawValueMatcher::Literal { value } => Ok(ValueMatcher::Literal(value)),
+        RawValueMatcher::BasenameContainsDot => Ok(ValueMatcher::BasenameContainsDot),
         RawValueMatcher::AsciiCaseInsensitiveLiterals { values } => {
             if values.is_empty() {
                 return Err(NormalizeError::EmptyIdentifier {

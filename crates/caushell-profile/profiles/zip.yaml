@@ -1,395 +1,254 @@
 dsl_version: caushell.profile/v1alpha1
 kind: command_profile
+identity: {canonical_name: zip, aliases: []}
+trust: {tier: tier_a, source: built_in}
+platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 option_scope: permuted_options
 option_matching: declared_short_words
 opaque_on_unresolved: true
-identity:
-  canonical_name: zip
-  aliases: []
-trust:
-  tier: tier_a
-  source: built_in
-platform:
-  os_families:
-  - posix
-  - linux
-  shell_families: []
-  requires_features: []
+
+environment_inputs:
+  - name: startup_options
+    environment: {name: ZIPOPT, empty_is_unset: true}
+    semantic: &native_options {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: alternate_startup_options
+    environment: {name: ZIP, empty_is_unset: true}
+    semantic: *native_options
+
 forms:
-- id: show_help
-  selector: {kind: has_modifier, modifier: information}
-- id: add_files_to_archive_implicit_extension
-  remaining_selector: &running {kind: not, item: {kind: has_modifier, modifier: information}}
-  implicit_inputs: &name_list_input
-  - {source: stdin_data, semantic: {kind: plain_value}}
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at
-      index: 0
-    - kind: not
-      item:
-        kind: has_positional_at_matching
-        index: 0
-        matcher:
-          kind: literal
-          value: "-"
-    - kind: not
-      item:
-        kind: all
-        items:
-        - kind: has_modifier
-          modifier: test_mode
-        - kind: has_modifier
-          modifier: test_command
-    - kind: not
-      item: &1
-        kind: has_positional_at_matching
-        index: 0
-        matcher:
-          kind: regex_pattern
-          pattern: "(^|/)[^/]*\\.[^/]+$"
-  parameters:
-  - name: archive_path
-    semantic: &3
-      kind: path
-      role: target
-      purpose: generic_operand
-    binding:
-      kind: next_positional
-    cardinality: required_one
-  - name: input_paths
-    semantic: &2
-      kind: path
-      role: read
-      purpose: generic_operand
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  effects:
-  - kind: read_path
-    target:
-      kind: slot
-      name: input_paths
-  - kind: write_path
-    target:
-      kind: derived_path
-      source:
-        kind: slot
-        name: archive_path
-      rule:
-        kind: append_suffix
-        suffix: ".zip"
-      purpose: generic_operand
-  stream_contract:
-    stdin_mode: data_optional
-    stdout_mode: opaque
-    stderr_mode: opaque
-- id: add_files_to_archive
-  remaining_selector: *running
-  implicit_inputs: *name_list_input
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at
-      index: 0
-    - kind: not
-      item:
-        kind: has_positional_at_matching
-        index: 0
-        matcher:
-          kind: literal
-          value: "-"
-    - kind: not
-      item:
-        kind: all
-        items:
-        - kind: has_modifier
-          modifier: test_mode
-        - kind: has_modifier
-          modifier: test_command
-    - *1
-  parameters:
-  - name: archive_path
-    semantic: &4
-      kind: plain_value
-    binding:
-      kind: next_positional
-    cardinality: required_one
-  - name: input_paths
-    semantic: *2
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  effects:
-  - kind: read_path
-    target:
-      kind: slot
-      name: input_paths
-  - kind: write_path
-    target:
-      kind: configured_path
-      sources:
-      - slot: archive_path
-        projection:
-          kind: identity
-      missing: unknown
-      purpose: generic_operand
-  stream_contract:
-    stdin_mode: data_optional
-    stdout_mode: opaque
-    stderr_mode: opaque
-- id: test_archive_implicit_extension
-  remaining_selector: *running
-  implicit_inputs: *name_list_input
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at
-      index: 0
-    - kind: not
-      item:
-        kind: has_positional_at_matching
-        index: 0
-        matcher:
-          kind: literal
-          value: "-"
-    - kind: all
+  # Zip requires the archive before --. The words after it cannot supply that
+  # missing archive name. The invocation exits at argument parsing.
+  - id: missing_archive_before_dashdash
+    selector:
+      kind: all
       items:
-      - kind: has_modifier
-        modifier: test_mode
-      - kind: has_modifier
-        modifier: test_command
-    - kind: not
-      item: *1
-  parameters:
-  - name: archive_path
-    semantic: *3
-    binding:
-      kind: next_positional
-    cardinality: required_one
-  - name: input_paths
-    semantic: *2
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  - name: test_payload_short
-    semantic:
-      kind: payload
-      language: opaque
-      source: inline_string
-      recursive: true
-    binding:
-      kind: following_flag
-      flag: "-TT"
-      operand_mode: next_arg
-    cardinality: optional_one
-  - name: test_payload_long
-    semantic:
-      kind: payload
-      language: opaque
-      source: inline_string
-      recursive: true
-    binding:
-      kind: following_flag
-      flag: "--unzip-command"
-      operand_mode: next_arg
-    cardinality: optional_one
-  effects:
-  - kind: read_path
-    target:
-      kind: slot
-      name: input_paths
-  - kind: write_path
-    target:
-      kind: derived_path
-      source:
-        kind: slot
-        name: archive_path
-      rule:
-        kind: append_suffix
-        suffix: ".zip"
-      purpose: generic_operand
-  - kind: execute_payload
-    target:
-      kind: slot
-      name: test_payload_short
-  - kind: execute_payload
-    target:
-      kind: slot
-      name: test_payload_long
-  stream_contract:
-    stdin_mode: data_optional
-    stdout_mode: opaque
-    stderr_mode: opaque
-- id: test_archive
-  remaining_selector: *running
-  implicit_inputs: *name_list_input
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at
-      index: 0
-    - kind: not
-      item:
-        kind: has_positional_at_matching
-        index: 0
-        matcher:
-          kind: literal
-          value: "-"
-    - kind: all
+        - &invalid_archive_order
+          kind: all
+          items:
+            - {kind: has_dash_dash}
+            - &no_archive_before_dashdash
+              {kind: not, item: {kind: has_positional_before_dash_dash_at, index: 0}}
+            - &not_information {kind: not, item: &information {kind: has_modifier, modifier: information}}
+        - {kind: not, item: &move {kind: has_modifier, modifier: move_sources}}
+    parameters: &ignored_arguments
+      - {name: ignored_arguments, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    stream_contract: &diagnostic {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+  # Options from the runtime environment can precede argv. Keep a request to
+  # delete host files unresolved when the supplied archive order is invalid.
+  - id: missing_archive_before_dashdash_with_move
+    selector: {kind: all, items: [*invalid_archive_order, *move]}
+    operation_semantics_unresolved: true
+    parameters: *ignored_arguments
+  - id: show_help
+    selector: *information
+    parameters: *ignored_arguments
+    stream_contract: *diagnostic
+
+  - id: test_archive_implicit_extension
+    selector:
+      kind: all
       items:
-      - kind: has_modifier
-        modifier: test_mode
-      - kind: has_modifier
-        modifier: test_command
-    - *1
-  parameters:
-  - name: archive_path
-    semantic: *4
-    binding:
-      kind: next_positional
-    cardinality: required_one
-  - name: input_paths
-    semantic: *2
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  - name: test_payload_short
-    semantic:
-      kind: payload
-      language: opaque
-      source: inline_string
-      recursive: true
-    binding:
-      kind: following_flag
-      flag: "-TT"
-      operand_mode: next_arg
-    cardinality: optional_one
-  - name: test_payload_long
-    semantic:
-      kind: payload
-      language: opaque
-      source: inline_string
-      recursive: true
-    binding:
-      kind: following_flag
-      flag: "--unzip-command"
-      operand_mode: next_arg
-    cardinality: optional_one
-  effects:
-  - kind: read_path
-    target:
-      kind: slot
-      name: input_paths
-  - kind: write_path
-    target:
-      kind: configured_path
-      sources:
-      - slot: archive_path
-        projection:
-          kind: identity
-      missing: unknown
-      purpose: generic_operand
-  - kind: execute_payload
-    target:
-      kind: slot
-      name: test_payload_short
-  - kind: execute_payload
-    target:
-      kind: slot
-      name: test_payload_long
-  stream_contract:
-    stdin_mode: data_optional
-    stdout_mode: opaque
-    stderr_mode: opaque
-- id: archive_to_stdout
-  remaining_selector: *running
-  implicit_inputs: *name_list_input
-  selector:
-    kind: all
-    items:
-    - kind: has_positional_at_matching
-      index: 0
-      matcher:
-        kind: literal
-        value: "-"
-    - kind: not
-      item:
-        kind: all
-        items:
-        - kind: has_modifier
-          modifier: test_mode
-        - kind: has_modifier
-          modifier: test_command
-  parameters:
-  - name: archive_sentinel
-    semantic: *4
-    binding:
-      kind: next_positional
-    cardinality: required_one
-  - name: input_paths
-    semantic: *2
-    binding:
-      kind: remaining_positionals
-    cardinality: optional_many
-  effects:
-  - kind: read_path
-    target:
-      kind: slot
-      name: input_paths
-  stream_contract:
-    stdin_mode: data_optional
-    stdout_mode: data
-    stderr_mode: opaque
-    stdout_dependency: inputs
+        - &file_archive
+          kind: all
+          items:
+            - *not_information
+            - {kind: not, item: *no_archive_before_dashdash}
+            - {kind: not, item: &stdout_archive {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}
+            # Native -T passes a quoted archive path to its external tester.
+            - kind: any
+              items:
+                - {kind: not, item: &test {kind: has_modifier, modifier: test_mode}}
+                - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: "^[^']+$"}}
+        - &standalone_test
+          kind: all
+          items:
+            - *test
+            - {kind: exact_positional_count, count: 1}
+            - kind: not
+              item:
+                kind: any
+                items:
+                  - &delete {kind: has_modifier, modifier: delete_members}
+                  - &update {kind: has_modifier, modifier: update}
+                  - &freshen {kind: has_modifier, modifier: freshen}
+                  - *move
+                  - {kind: has_modifier, modifier: filenames_from_stdin}
+        - &implicit_extension
+          {kind: not, item: &explicit_extension {kind: has_positional_at_matching, index: 0, matcher: {kind: basename_contains_dot}}}
+    parameters:
+      - &archive_path
+        {name: archive_path, semantic: {kind: path, role: target, purpose: generic_operand}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - kind: read_path
+        target: &suffixed_archive
+          {kind: derived_path, source: {kind: slot, name: archive_path}, rule: {kind: append_suffix, suffix: '.zip'}, purpose: generic_operand}
+    stream_contract: *diagnostic
+  - id: test_archive
+    selector: {kind: all, items: [*file_archive, *standalone_test, *explicit_extension]}
+    parameters:
+      - &plain_archive
+        {name: archive_path, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    effects:
+      - kind: read_path
+        target: &literal_archive
+          {kind: configured_path, sources: [{slot: archive_path, projection: {kind: identity}}], missing: unknown, purpose: generic_operand}
+    stream_contract: *diagnostic
+
+  - id: delete_archive_members_implicit_extension
+    selector:
+      kind: all
+      items:
+        - *file_archive
+        - &member_deletion
+          kind: all
+          items:
+            - *delete
+            - kind: not
+              item:
+                kind: any
+                items: [*update, *freshen, *move]
+        - *implicit_extension
+    parameters:
+      - *archive_path
+      - &member_patterns
+        {name: member_patterns, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    implicit_inputs: &name_list_input
+      - {source: stdin_data, semantic: {kind: plain_value}}
+    effects:
+      - {kind: read_path, target: *suffixed_archive}
+      - {kind: write_path, target: *suffixed_archive}
+    stream_contract: &operational {stdin_mode: data_optional, stdout_mode: opaque, stderr_mode: opaque}
+  - id: delete_archive_members
+    selector: {kind: all, items: [*file_archive, *member_deletion, *explicit_extension]}
+    parameters: [*plain_archive, *member_patterns]
+    implicit_inputs: *name_list_input
+    effects:
+      - {kind: read_path, target: *literal_archive}
+      - {kind: write_path, target: *literal_archive}
+    stream_contract: *operational
+
+  - id: add_files_to_archive_implicit_extension
+    selector:
+      kind: all
+      items:
+        - *file_archive
+        - &add_files
+          kind: not
+          item:
+            kind: any
+            items:
+              - *delete
+              - *standalone_test
+              - {kind: all, items: [*update, *freshen]}
+              # Move can delete inputs even when their names come from stdin
+              # or from entries selected by freshen/update without operands.
+              - &move_without_explicit_sources
+                kind: all
+                items:
+                  - *move
+                  - kind: any
+                    items:
+                      - {kind: has_modifier, modifier: filenames_from_stdin}
+                      - {kind: not, item: {kind: has_positional_at, index: 1}}
+        - *implicit_extension
+    parameters:
+      - *archive_path
+      - &input_paths
+        {name: input_paths, semantic: {kind: path, role: read, purpose: generic_operand}, binding: {kind: remaining_positionals}, cardinality: optional_many}
+    implicit_inputs: *name_list_input
+    effects:
+      - &read_sources {kind: read_path, target: {kind: slot, name: input_paths}}
+      - {kind: write_path, target: *suffixed_archive}
+    stream_contract: *operational
+  - id: add_files_to_archive
+    selector: {kind: all, items: [*file_archive, *add_files, *explicit_extension]}
+    parameters: [*plain_archive, *input_paths]
+    implicit_inputs: *name_list_input
+    effects:
+      - *read_sources
+      - {kind: write_path, target: *literal_archive}
+    stream_contract: *operational
+  - id: archive_to_stdout
+    selector:
+      kind: all
+      items:
+        - *not_information
+        - {kind: not, item: *no_archive_before_dashdash}
+        - *stdout_archive
+        - kind: not
+          item:
+            kind: any
+            items: [*delete, *update, *freshen, *test, *move_without_explicit_sources]
+    parameters:
+      - {name: archive_sentinel, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - *input_paths
+    implicit_inputs: *name_list_input
+    effects: [*read_sources]
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+
 modifiers:
-- id: information
-  matcher: {kind: any_flag, flags: ["-h", "-h2", "--help"]}
-- id: password
-  matcher: {kind: any_flag, flags: ["-P", "--password"]}
-  parameters:
-  - {name: password, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
-- id: move_sources
-  matcher: {kind: any_flag, flags: ["-m", "--move"]}
-  effects:
-  - {kind: delete_path, target: {kind: slot, name: input_paths}}
-- id: compression_level
-  matcher: {kind: any_flag, flags: ["-0", "-1", "-2", "-3", "-4", "-5", "-6", "-7", "-8", "-9"]}
-- id: archive_layout
-  matcher: {kind: any_flag, flags: ["-j", "--junk-paths", "-r", "--recurse-paths", "-q", "--quiet"]}
-- id: filenames_from_stdin
-  matcher: {kind: any_flag, flags: ["-@", "--names-stdin"]}
-  effects:
-  - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
-  - {kind: read_path, target: {kind: implicit_input, source: stdin_data}}
-- id: test_mode
-  matcher:
-    kind: any_flag
-    flags:
-    - "-T"
-    - "--test"
-- id: test_command
-  matcher:
-    kind: any_flag
-    flags:
-    - "-TT"
-    - "--unzip-command"
-  parameters:
-  - name: test_command
-    semantic: *4
-    binding:
-      kind: following_matched_flag
-      operand_mode: next_arg
-    cardinality: optional_one
+  - {id: information, matcher: {kind: any_flag, flags: ['-h', '-H', '-h2', '--help', '--more-help', '--version']}}
+  - {id: update, matcher: {kind: any_flag, flags: ['-u', '--update']}}
+  - {id: freshen, matcher: {kind: any_flag, flags: ['-f', '--freshen']}}
+  - {id: delete_members, matcher: {kind: any_flag, flags: ['-d', '--delete']}}
+  - id: password
+    matcher: {kind: any_flag, flags: ['-P', '--password']}
+    parameters:
+      - {name: password, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_one}
+  - id: move_sources
+    matcher: {kind: any_flag, flags: ['-m', '--move']}
+    effects: [{kind: delete_path, target: {kind: slot, name: input_paths}}]
+  - id: compression_level
+    matcher: {kind: any_flag, flags: ['-0', '-1', '-2', '-3', '-4', '-5', '-6', '-7', '-8', '-9']}
+  - id: archive_layout
+    matcher: {kind: any_flag, flags: ['-j', '--junk-paths', '-r', '--recurse-paths', '-q', '--quiet']}
+  - id: archive_attributes
+    matcher: {kind: any_flag, flags: ['-X', '--strip-extra', '-y', '--symlinks', '-fd', '--force-descriptors', '-fz', '--force-zip64']}
+  # These two-letter options take precedence over a cluster beginning in -d.
+  - id: diagnostics
+    matcher: {kind: any_flag, flags: ['-v', '--verbose', '-db', '--display-bytes', '-dc', '--display-counts', '-dd', '--display-dots', '-dg', '--display-globaldots', '-du', '--display-usize', '-dv', '--display-volume']}
+  - id: member_selection
+    matcher: {kind: any_flag, flags: ['-x', '--exclude', '-i', '--include']}
+    parameters:
+      - name: member_selection_patterns
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: zip_pattern_list}
+        cardinality: required_many
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '(?s)^@(.+)$', group: 1}
+              target:
+                name: pattern_files
+                semantic: {kind: path, role: read, purpose: generic_operand}
+    effects: [{kind: read_path, target: {kind: slot, name: pattern_files}}]
+  - id: filenames_from_stdin
+    matcher: {kind: any_flag, flags: ['-@', '--names-stdin']}
+    effects:
+      - {kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}
+      - {kind: read_path, target: {kind: implicit_input, source: stdin_data}}
+  - {id: test_mode, matcher: {kind: any_flag, flags: ['-T', '--test']}}
+  - id: test_command
+    matcher: {kind: any_flag, flags: ['-TT', '--unzip-command']}
+    parameters:
+      - name: test_template
+        semantic: {kind: plain_value}
+        binding: {kind: following_matched_flag, operand_mode: next_arg}
+        cardinality: required_one
+        structured_projection:
+          branches:
+            - matcher: {kind: regex_capture, pattern: '(?s)^(.*)$', group: 1}
+              requires_modifiers: [test_mode]
+              target:
+                name: test_payload
+                semantic: *native_options
+    effects: [{kind: execute_payload, target: {kind: slot, name: test_payload}}]
+    effects_when: {unless_forms: [show_help, missing_archive_before_dashdash]}
+
 extensions:
   caushell.profile/source_research:
-  - https://manpages.debian.org/bookworm/zip/zip.1.en.html
-  - https://infozip.sourceforge.net/Zip.html
+    - https://manpages.debian.org/bookworm/zip/zip.1.en.html
+    - https://sources.debian.org/src/zip/3.0-6/zip.c/
   caushell.profile/known_limitations:
-  - The -TT template becomes opaque executable payload only with -T/--test. Without
-    test mode it remains data. zip adds .zip when the basename has no extension; -
-    writes to stdout and is not a file. Template expansion, appended archive argv,
-    and external unzip defaults are not represented as fabricated Bash invocations.
-    Stdin filename lists are read dependencies, not shell payloads or invented concrete paths. Other update/move/delete modes remain unresolved.
-  - Stdin remains optional across these forms, since a '-' input operand also reads archive member bytes from stdin. Do not infer ignored stdin merely from the absence of -@.
+    - The default test invokes the native unzip tester. A configured -TT template used with -T remains opaque.
+    - Split archives, alternate output, explicit temp directories, logging, and repairs remain unresolved.
+    - Filename lists are read dependencies. A '-' source operand can also read member bytes from stdin.

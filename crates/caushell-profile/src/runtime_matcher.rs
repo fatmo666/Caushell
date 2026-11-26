@@ -237,6 +237,15 @@ pub(crate) fn matches(structure: &ArgumentStructure, matcher: &ValueMatcher) -> 
                 .all(|value| !folded.may_equal(&value.to_ascii_lowercase()))
                 .then_some(false)
         }
+        ValueMatcher::BasenameContainsDot if structure.fields == ArgumentFieldCount::ExactlyOne => {
+            let suffix = &structure.static_suffix;
+            if crate::bind::argument_matches_value_matcher(suffix, matcher) {
+                Some(true)
+            } else {
+                // A slash in the fixed tail establishes the entire basename.
+                suffix.contains('/').then_some(false)
+            }
+        }
         ValueMatcher::RegexPattern(pattern) if pattern.len() <= 4096 => {
             let plan = regex_plan(pattern)?;
             if structure.has_pathname_generation() {

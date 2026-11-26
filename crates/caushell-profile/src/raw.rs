@@ -656,6 +656,7 @@ pub enum RawFlagOperandMode {
     WordAttachedOrNextArg,
     NextPositional,
     NextArg,
+    ZipPatternList,
     OptionalNextArg,
     SecondArg,
     FirstOfTwoArgs,
@@ -732,6 +733,7 @@ pub enum RawValueMatcher {
     StructuredValueContext { context: RawStructuredValueContext },
     Literal { value: String },
     AsciiCaseInsensitiveLiterals { values: Vec<String> },
+    BasenameContainsDot,
     RegexPattern { pattern: String },
 }
 

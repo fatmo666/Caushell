@@ -730,6 +730,7 @@ pub enum ValueMatcher {
     StructuredValueContext(StructuredValueContext),
     Literal(String),
     AsciiCaseInsensitiveLiterals(Vec<String>),
+    BasenameContainsDot,
     RegexPattern(String),
 }
 
@@ -798,6 +799,8 @@ pub enum FlagOperandMode {
     WordAttachedOrNextArg,
     NextPositional,
     NextArg,
+    /// Zip include/exclude patterns: one attached value, or a separated list.
+    ZipPatternList,
     /// Attached/inline value, otherwise the immediate non-option argv value.
     /// Absence is valid only when the parameter's cardinality is optional.
     OptionalNextArg,
