@@ -9,6 +9,7 @@ pub enum StaticBashPathnameDefaults {
     FlagsAndStarPath { flags: Vec<String> },
     FlagsAndLiteralSuffixGlob { flags: Vec<String> },
     SubstitutionAndSuffixGlob,
+    SubstitutionAndPrefixOrSuffixGlob,
 }
 
 impl StaticBashPathnameDefaults {
@@ -35,10 +36,31 @@ impl StaticBashPathnameDefaults {
                             && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'.')
                     })
             }
-            Self::SubstitutionAndSuffixGlob => {
+            Self::SubstitutionAndSuffixGlob | Self::SubstitutionAndPrefixOrSuffixGlob => {
+                if matches!(self, Self::SubstitutionAndPrefixOrSuffixGlob)
+                    && glob.node_kind == "word"
+                    && glob.text.strip_suffix('*').is_some_and(|prefix| {
+                        prefix
+                            .as_bytes()
+                            .first()
+                            .is_some_and(u8::is_ascii_alphanumeric)
+                            && prefix.bytes().all(|b| {
+                                b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-')
+                            })
+                    })
+                {
+                    return crate::shell_word_structure(
+                        &leading.text,
+                        leading.quoted,
+                        &leading.node_kind,
+                    )
+                    .exact_value()
+                    .is_some_and(crate::rename_payload::is_static_substitution);
+                }
                 leading.node_kind == "raw_string"
                     && glob.text.strip_prefix("*.").is_some_and(|suffix| {
-                        !suffix.is_empty() && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
+                        !suffix.is_empty()
+                            && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric())
                     })
                     && crate::rename_payload::is_static_substitution(&leading.text)
             }
@@ -361,6 +383,39 @@ impl PathnamePattern {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_prefix_glob_requires_literal_substitution_and_single_component() {
+        let matches = |shape: StaticBashPathnameDefaults, arguments: &str| {
+            let parsed =
+                caushell_parse::parse_command(&format!("rename {arguments}"), ShellKind::Bash)
+                    .unwrap();
+            let [leading, glob] = parsed.commands[0].tokens.as_slice() else {
+                return false;
+            };
+            shape.matches(leading, glob)
+        };
+        let extended = StaticBashPathnameDefaults::SubstitutionAndPrefixOrSuffixGlob;
+        let suffix_only = StaticBashPathnameDefaults::SubstitutionAndSuffixGlob;
+        for arguments in ["s/old/new/ tag-*", "'s/^old/new/' old*"] {
+            assert!(matches(extended.clone(), arguments), "{arguments}");
+            assert!(!matches(suffix_only.clone(), arguments), "{arguments}");
+        }
+        assert!(matches(extended.clone(), "'s/old/new/' *.txt"));
+        assert!(matches(suffix_only, "'s/old/new/' *.txt"));
+        for arguments in [
+            "s/{old,other}/new/ tag-*",
+            "s/$from/new/ tag-*",
+            "'s/old/new/' 'tag-*'",
+            "'s/old/new/' -tag*",
+            "'s/old/new/' tag**",
+            "'s/old/new/' dir/tag*",
+            "'s/old/new/' tag?*",
+        ] {
+            assert!(!matches(extended.clone(), arguments), "{arguments}");
+        }
+    }
+
     #[test]
     fn quoting_keeps_literal_and_active_metacharacters_distinct() {
         let parse = |text: &str| {
