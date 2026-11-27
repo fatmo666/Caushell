@@ -13,6 +13,29 @@ pub(crate) struct SedTargets {
     pub stdout_emissions: Vec<usize>,
 }
 
+/// A quoted decimal capture can only supply the first numeric address. With
+/// no record the leading comma is invalid; with multiple records the first
+/// bare address has no command. Neither case introduces another operation.
+pub(crate) fn decimal_range_is_print_only(suffix: &str, max_records: Option<u64>) -> bool {
+    let Some(end) = suffix.strip_prefix(',').and_then(|text| text.strip_suffix('p')) else {
+        return false;
+    };
+    let end = end.strip_prefix('+').unwrap_or(end);
+    if end.is_empty() || !end.bytes().all(|byte| byte.is_ascii_digit()) {
+        return false;
+    }
+    if max_records.is_none_or(|count| count > 1) {
+        // The parser must stop on a bare first address, even when another
+        // address eventually forms a valid range with the literal suffix.
+        if decode(&format!("1\n2{suffix}"), 512, 1).is_ok() {
+            return false;
+        }
+    }
+    decode(&format!("1{suffix}"), 512, 1).is_ok_and(|targets| {
+        targets.reads.is_empty() && targets.writes.is_empty() && targets.executions.is_empty()
+    })
+}
+
 pub(crate) fn decode(text: &str, max_bytes: usize, max_operations: usize) -> Result<SedTargets> {
     if text.len() > max_bytes {
         return Err(ProjectionUnknownReason::PayloadBudgetExceeded);

@@ -606,6 +606,10 @@ pub(crate) fn retain_sed_substitution(
     bound: &mut crate::BoundInvocation,
 ) {
     use crate::*;
+    if let [(source, SubstitutionOutputProof::SedDecimalAddresses { suffix, max_records })] = proofs {
+        retain_sed_decimal_addresses(profile, command, projection, source, suffix, *max_records, bound);
+        return;
+    }
     let [argument] = projection.args.as_slice() else {
         return;
     };
@@ -672,6 +676,66 @@ pub(crate) fn retain_sed_substitution(
     reads.effects.push(file_read);
     retain_symbolic_argv_stream_contract(&mut reads, NativeArgvEffectEnvelope::ContentRead);
     *bound = reads;
+}
+
+fn retain_sed_decimal_addresses(
+    profile: &CommandProfile,
+    command: &caushell_parse::CommandFact,
+    projection: &crate::ProjectedInvocation,
+    source: &caushell_parse::SourceSpan,
+    suffix: &str,
+    max_records: Option<u64>,
+    bound: &mut crate::BoundInvocation,
+) {
+    use crate::*;
+    if profile.primary_name() != "sed"
+        || profile.trust.source != ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || projection.shell_kind != caushell_types::ShellKind::Bash
+        || command.command_name_runtime_data
+        || !command.prefix_assignments.is_empty()
+        || !matches!(bound.form_id.as_str(), "positional_script_transform_quiet" | "positional_script_transform_stdin_quiet")
+        || !crate::sed_payload::decimal_range_is_print_only(suffix, max_records)
+        || !bound.residuals.iter().all(|residual| {
+            residual.kind == ResidualKind::UnboundControlSurface
+                && residual.surface == ResidualSurface::Control
+                && residual.slot.is_none()
+                && residual.reason == crate::bind::ARGUMENT_REGION_OWNERSHIP_GAP
+        })
+    {
+        return;
+    }
+    let [script_projection] = bound.payload_projections.as_slice() else {
+        return;
+    };
+    let PayloadInputSource::Slot(script) = &script_projection.source else {
+        return;
+    };
+    if script_projection.format != PayloadFormat::SedProgram
+        || !bound.bound_parameters.iter().any(|parameter| {
+            parameter.name == *script
+                && matches!(parameter.values.as_slice(), [BoundValue::Argument { span, quoted: true, .. }] if span == source)
+        })
+        || projection.args.iter().any(|arg| arg.span != *source && argument_structure(arg).exact_value().is_none())
+    {
+        return;
+    }
+
+    // These slots come exclusively from the script. Preserve input operands
+    // and their read effects, and keep stdout dependent on the input data.
+    let slots = [
+        Some(&script_projection.reads), Some(&script_projection.writes),
+        Some(&script_projection.deletes), script_projection.executions.as_ref(),
+    ];
+    bound.bound_parameters.retain(|parameter| {
+        !parameter.payload_generated || !slots.iter().flatten().any(|slot| **slot == parameter.name)
+    });
+    bound.effects.retain(|effect| {
+        !matches!(&effect.target, EffectTarget::Slot(slot) if slots.iter().flatten().any(|s| *s == slot))
+    });
+    bound.payload_projections.clear();
+    bound.operation_semantics_unresolved = false;
+    bound.residuals.clear();
 }
 
 fn sed_day_template_only_transforms(literal_parts: &[String]) -> bool {

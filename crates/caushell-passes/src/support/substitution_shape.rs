@@ -8,7 +8,7 @@ use caushell_parse::{
 };
 use caushell_profile::{
     InvocationRuntimeContext, ProfileRegistry, ResolveInvocationArtifactResult, SessionBindings,
-    StdoutScalarShape, SubstitutionOutputProof, observed_ifs_value,
+    StdoutScalarShape, SubstitutionOutputProof, TextRecordFields, TextRecordStream, observed_ifs_value,
     resolve_invocation_artifact_with_bindings,
 };
 use caushell_types::{ARITHMETIC_STDOUT_CHARS, RuntimeArgumentDomain, SessionAliasBinding, ShellKind};
@@ -235,6 +235,11 @@ pub(crate) fn substitution_shapes(
             let [substitution] = token.command_substitutions.as_slice() else {
                 return None;
             };
+            if shell_kind == ShellKind::Bash && command.command_name.as_deref() == Some("sed")
+                && let Some(proof) = sed_decimal_addresses(registry, token, substitution, bindings, aliases)
+            {
+                return Some((token.span.clone(), proof));
+            }
             if let Some(domain) =
                 quoted_dirname_path(registry, token, substitution, shell_kind, bindings, aliases)
             {
@@ -367,6 +372,93 @@ pub(crate) fn substitution_shapes(
             Some((token.span.clone(), proof))
         })
         .collect()
+}
+
+fn sed_decimal_addresses(
+    registry: &ProfileRegistry,
+    token: &CommandToken,
+    substitution: &CommandSubstitutionFact,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+) -> Option<SubstitutionOutputProof> {
+    if !token.quoted || token.node_kind != "string" {
+        return None;
+    }
+    let suffix = token.text.strip_prefix(&substitution.text)?;
+    let suffix = caushell_parse::decode_static_shell_argument(suffix, true, "string")?;
+    // Only pass a script composed of a single capture and literal text.
+    if !suffix.starts_with(',') {
+        return None;
+    }
+    let records = pipeline_text_records(registry, &substitution.body_text, bindings, aliases)?;
+    (records.fields == TextRecordFields::Decimal).then_some(
+        SubstitutionOutputProof::SedDecimalAddresses { suffix, max_records: records.max_records },
+    )
+}
+
+fn pipeline_text_records(
+    registry: &ProfileRegistry,
+    body: &str,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+) -> Option<TextRecordStream> {
+    if body.len() > 8192 {
+        return None;
+    }
+    let parsed = parse_command(body, ShellKind::Bash).ok()?;
+    let first = parsed.commands.first()?;
+    let last = parsed.commands.last()?;
+    if parsed.status != ParseStatus::Complete
+        || !parsed.diagnostics.is_empty()
+        || !parsed.redirections.is_empty()
+        || !parsed.assignment_commands.is_empty()
+        || !parsed.declaration_commands.is_empty()
+        || !parsed.unset_commands.is_empty()
+        || !parsed.function_definitions.is_empty()
+        || first.pipeline_span.is_none()
+        || first.pipeline_position != Some(PipelinePosition::First)
+        || last.pipeline_position != Some(PipelinePosition::Last)
+        || !body.get(..first.span.start_byte)?.trim().is_empty()
+        || !body.get(last.span.end_byte..)?.trim().is_empty()
+        || parsed.commands.windows(2).any(|pair| {
+            body.get(pair[0].span.end_byte..pair[1].span.start_byte)
+                .is_none_or(|separator| separator.trim() != "|")
+        })
+    {
+        return None;
+    }
+    let mut records = None;
+    for command in &parsed.commands {
+        let name = command.command_name.as_deref()?;
+        if command.pipeline_span != first.pipeline_span
+            || command.guarded
+            || command.conditional_execution
+            || command.terminator.is_some()
+            || !command.prefix_assignments.is_empty()
+            || command.command_name_runtime_data
+            || aliases.contains_key(name)
+            || bindings.profile_has_alias_shadow(name)
+            || bindings.function_binding(name).is_some()
+            || !registry.lookup(name).profile.is_some_and(|profile| {
+                profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+            })
+        {
+            return None;
+        }
+        let ResolveInvocationArtifactResult::Resolved(resolved) =
+            resolve_invocation_artifact_with_bindings(
+                registry, command,
+                InvocationRuntimeContext::default().with_shell_kind(ShellKind::Bash), bindings,
+            )
+        else {
+            return None;
+        };
+        if resolved.normalized_command_name != name {
+            return None;
+        }
+        records = Some(resolved.proven_stdout_text_records(records, bindings)?);
+    }
+    records
 }
 
 fn quoted_dirname_path(
@@ -875,6 +967,40 @@ mod tests {
     use super::*;
     use caushell_profile::load_command_profile_from_str;
     const SOURCE: &str = "dsl_version: caushell.profile/v1alpha1\nkind: command_profile\nidentity: {canonical_name: arbitrary_absolute_producer}\noption_scope: all_arguments\nopaque_on_unresolved: true\nforms:\n  - id: path\n    stdout_scalar: absolute_path\n    stream_contract: {stdin_mode: ignored, stdout_mode: path_list, stderr_mode: opaque}\n";
+
+    #[test]
+    fn numbered_match_field_flows_through_record_prefixes() {
+        let registry = ProfileRegistry::built_in().unwrap();
+        let mut bindings = SessionBindings::new();
+        bindings.reset_child_environment(true);
+        let aliases = BTreeMap::new();
+        for (body, limit) in [
+            ("grep -a -n marker input | head -1 | cut -d: -f1", Some(1)),
+            ("grep --text --line-number marker input | head -n 3 | cut -f 1 -d :", Some(3)),
+            ("grep -a -n marker input | cut -d: -f1", None),
+        ] {
+            assert_eq!(
+                pipeline_text_records(&registry, body, &bindings, &aliases),
+                Some(TextRecordStream { fields: TextRecordFields::Decimal, max_records: limit }),
+                "{body}",
+            );
+        }
+        for body in [
+            "grep -n marker input | cut -d: -f1",
+            "grep -a -n -H marker input | cut -d: -f1",
+            "grep -a -n marker input another | cut -d: -f1",
+            "grep -a -n marker input | cut -d: -f2",
+            "grep -a -n marker input | cut -d/ -f1",
+            "grep -a -n marker input | cut -d: -f1 other",
+            "grep -a -n marker input | head -c1 | cut -d: -f1",
+            "grep -a -n marker input | head -v | cut -d: -f1",
+            "grep -a -n marker input | head -1 | /tmp/cut -d: -f1",
+            "grep -a -n marker input | head -1 other | cut -d: -f1",
+            "grep -a -n marker input |& cut -d: -f1",
+        ] {
+            assert_eq!(pipeline_text_records(&registry, body, &bindings, &aliases), None, "{body}");
+        }
+    }
 
     #[test]
     fn unquoted_affixes_require_the_observed_field_separator() {

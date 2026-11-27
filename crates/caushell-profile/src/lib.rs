@@ -81,6 +81,8 @@ pub use native_records::{
 };
 pub use types::StdoutRecordSyntax;
 mod stream_growth;
+mod text_records;
+pub use text_records::{TextRecordFields, TextRecordStream};
 mod structured_parameters;
 mod structured_projection;
 pub use structured_parameters::{

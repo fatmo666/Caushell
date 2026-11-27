@@ -592,7 +592,8 @@ fn resolve_invocation_with_proofs<'a>(
                     | crate::SubstitutionOutputProof::LocalMovePathFields
                     | crate::SubstitutionOutputProof::DecimalCalendarFields
                     | crate::SubstitutionOutputProof::LineCountQuit
-                    | crate::SubstitutionOutputProof::SedDayTemplate { .. } => {}
+                    | crate::SubstitutionOutputProof::SedDayTemplate { .. }
+                    | crate::SubstitutionOutputProof::SedDecimalAddresses { .. } => {}
                 }
             }
         }

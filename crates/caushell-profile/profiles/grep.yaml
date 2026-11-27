@@ -96,7 +96,7 @@ forms:
       projection: {kind: stdin}
       empty_slots: [input_paths]
       required_modifiers: [nul_data, as_text]
-      excluded_modifiers: [output_control, filename_output, numeric_context, context_before, context_after, context_around, group_separator, color, binary_files]
+      excluded_modifiers: [output_control, line_number, filename_output, numeric_context, context_before, context_after, context_around, group_separator, color, binary_files]
 
   - id: explicit_pattern_search_quiet
     selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, {kind: any, items: [{kind: has_modifier, modifier: inline_pattern}, {kind: has_modifier, modifier: pattern_file}]}, {kind: has_modifier, modifier: quiet}, {kind: not, item: {kind: any, items: [{kind: all, items: [{kind: not, item: {kind: has_positional_at, index: 0}}, {kind: not, item: {kind: has_modifier, modifier: recursive}}]}, {kind: has_positional_at_or_after_matching, index: 0, matcher: {kind: literal, value: '-'}}]}}]}
@@ -250,14 +250,14 @@ modifiers:
           operand_mode: next_arg
         cardinality: required_one
 
+  - {id: line_number, matcher: {kind: any_flag, flags: ['-n', '--line-number']}}
+
   - id: output_control
     matcher:
       kind: any_flag
       flags:
         - "-b"
         - "--byte-offset"
-        - "-n"
-        - "--line-number"
         - "--line-buffered"
         - "-H"
         - "--with-filename"

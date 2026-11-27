@@ -77,6 +77,9 @@ pub enum SubstitutionOutputProof {
     LineCountQuit,
     /// Exact literal segments around one or two quoted day-of-month results.
     SedDayTemplate { literal_parts: Vec<String> },
+    /// One quoted capture whose records contain only nonempty decimal fields.
+    /// Empty capture and multiple newline-separated records remain possible.
+    SedDecimalAddresses { suffix: String, max_records: Option<u64> },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

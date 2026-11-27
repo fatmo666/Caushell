@@ -5,6 +5,44 @@ use crate::{
 use caushell_types::{StreamGrowth, StreamRecordFraming};
 
 impl ResolvedInvocationArtifact {
+    pub(crate) fn proven_stdout_line_prefix_length(&self) -> Option<u64> {
+        let StreamGrowthContract::Prefix { default_count, default_unit, counters, .. } =
+            self.bound.stdout_growth.as_ref()?
+        else {
+            return None;
+        };
+        if !matches!(self.proven_stdout_growth(), Some(StreamGrowth::RecordPrefix {
+            records: StreamRecordFraming::Lines,
+        })) {
+            return None;
+        }
+        // An extent bound alone does not prove that a command copies its
+        // input's text records. Head's verbose header also changes them.
+        if self.normalized_command_name != "head"
+            || !self.bound.applied_modifiers.iter().all(|modifier| {
+                matches!(modifier.as_str(), "quiet" | "lines" | "legacy_count")
+            })
+        {
+            return None;
+        }
+        if self.bound.applied_modifiers.iter().any(|modifier| modifier.as_str() == "legacy_count") {
+            let [arg] = self.materialized_projection.invocation.args.as_slice() else {
+                return None;
+            };
+            let shape = crate::argument_structure(arg);
+            let digits = shape.exact_value()?.strip_prefix('-')?;
+            if !digits.bytes().all(|byte| byte.is_ascii_digit()) {
+                return None;
+            }
+            return digits.parse().ok();
+        }
+        match last_prefix_count(self, counters)? {
+            Some((text, StreamCountUnit::Records)) => text.parse().ok(),
+            None if *default_unit == StreamCountUnit::Records => Some(*default_count),
+            _ => None,
+        }
+    }
+
     pub fn proven_stdout_growth(&self) -> Option<StreamGrowth> {
         let contract = self.bound.stdout_growth.as_ref()?;
         let complete = self.bound.stdout_growth_complete && self.proven_stream_contract().is_some();
@@ -52,19 +90,8 @@ impl ResolvedInvocationArtifact {
                 if !complete {
                     return None;
                 }
-                let mut last = None;
-                for counter in counters {
-                    if let Some((position, text)) = last_count(self, &counter.slot) {
-                        if last.as_ref().is_some_and(|(p, _, _)| position == *p) {
-                            return None;
-                        }
-                        if last.as_ref().is_none_or(|(p, _, _)| position > *p) {
-                            last = Some((position, text, counter.unit));
-                        }
-                    }
-                }
-                let (count, unit) = match last {
-                    Some((_, text, unit)) => (finite_count(&text)?, unit),
+                let (count, unit) = match last_prefix_count(self, counters)? {
+                    Some((text, unit)) => (finite_count(&text)?, unit),
                     None => (*default_count == 0, *default_unit),
                 };
                 if count || unit == StreamCountUnit::Bytes {
@@ -85,6 +112,24 @@ impl ResolvedInvocationArtifact {
             }
         }
     }
+}
+
+fn last_prefix_count(
+    resolved: &ResolvedInvocationArtifact,
+    counters: &[crate::StreamCountSlot],
+) -> Option<Option<(String, StreamCountUnit)>> {
+    let mut last = None;
+    for counter in counters {
+        if let Some((position, text)) = last_count(resolved, &counter.slot) {
+            if last.as_ref().is_some_and(|(p, _, _)| position == *p) {
+                return None;
+            }
+            if last.as_ref().is_none_or(|(p, _, _)| position > *p) {
+                last = Some((position, text, counter.unit));
+            }
+        }
+    }
+    Some(last.map(|(_, text, unit)| (text, unit)))
 }
 
 fn slots_empty(resolved: &ResolvedInvocationArtifact, slots: &[String]) -> bool {
