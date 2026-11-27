@@ -205,6 +205,17 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 "invalid environment input semantic, name or modifier".into(),
             ));
         }
+        if input.unless_native_variant.as_deref().is_some_and(|variant| {
+            variant.is_empty()
+                || variant.len() > 128
+                || !variant.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')
+                })
+        }) {
+            return Err(NormalizeError::InvalidStructuredProjection(
+                "environment input native variant requires a bounded identifier".into(),
+            ));
+        }
         if let Some(grammar) = &parameter.structured_projection {
             if grammar.branches.iter().any(|branch| {
                 branch.unless_parameter_matches.is_some()
@@ -248,6 +259,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 .into_iter()
                 .map(ModifierId::new)
                 .collect(),
+            unless_native_variant: input.unless_native_variant,
         });
     }
     validate_effect_input_contracts(&forms, &modifiers)?;
@@ -1507,6 +1519,7 @@ fn normalize_stdout_records(
             formats_slot,
             syntax,
             escape_modifiers,
+            max_depth_slot,
         } => {
             ensure_non_empty(&roots_slot, "stdout_records.roots_slot")?;
             ensure_non_empty(&formats_slot, "stdout_records.formats_slot")?;
@@ -1524,9 +1537,12 @@ fn normalize_stdout_records(
                 formats_slot: SlotName::new(formats_slot),
                 syntax,
                 escape_modifiers: escape_modifiers.into_iter().map(ModifierId::new).collect(),
+                max_depth_slot: max_depth_slot.map(SlotName::new),
             }
         }
         crate::RawStdoutRecordProjection::Stdin => crate::StdoutRecordProjection::Stdin,
+        crate::RawStdoutRecordProjection::StdinTransform { transform } =>
+            crate::StdoutRecordProjection::StdinTransform { transform },
     };
     Ok(crate::StdoutRecordContract {
         native: raw.native,
@@ -1587,7 +1603,7 @@ fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(),
                 }
                 ids.extend(escape_modifiers);
             }
-            crate::StdoutRecordProjection::Stdin => {
+            crate::StdoutRecordProjection::Stdin | crate::StdoutRecordProjection::StdinTransform { .. } => {
                 if stream.stdin_mode == StreamInputMode::Ignored
                     || stream.stdout_mode == StreamOutputMode::Opaque
                 {
@@ -1600,6 +1616,7 @@ fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(),
                 roots_slot,
                 formats_slot,
                 escape_modifiers,
+                max_depth_slot,
                 ..
             } => {
                 if stream.stdout_mode == StreamOutputMode::Opaque
@@ -1615,6 +1632,11 @@ fn validate_stdout_records(forms: &[Form], modifiers: &[Modifier]) -> Result<(),
                                 && matches!(&p.semantic, SemanticType::StructuredValue(s)
                                     if s.context == crate::StructuredValueContext::FormatString)
                         })
+                    || max_depth_slot.as_ref().is_some_and(|slot| {
+                        !modifiers.iter().flat_map(|m| &m.parameters).any(|p| {
+                            p.name == *slot && matches!(p.semantic, SemanticType::PlainValue)
+                        })
+                    })
                 {
                     return Err(NormalizeError::InvalidStdoutRecords(
                         "formatted_paths requires nonopaque stdout, a path slot and a format_string slot".into(),
@@ -3215,7 +3237,9 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
         ));
     }
     if let Some(effect) = raw.namespace_effect {
-        let valid = raw.path_scope.is_none()
+        let valid = (raw.path_scope.is_none()
+            || effect == caushell_types::PathNamespaceEffect::EntryRelocation
+                && kind == EffectKind::WritePath)
             && match effect {
                 caushell_types::PathNamespaceEffect::EntryRelocation => {
                     matches!(kind, EffectKind::MovePath | EffectKind::WritePath)

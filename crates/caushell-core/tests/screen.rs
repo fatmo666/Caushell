@@ -31,9 +31,13 @@ fn check(command: &str, decision: Decision) -> CheckResponse {
     r
 }
 fn assert_operation(command: &str, operation: TerminalSessionOperationKind) {
+    let permits_without_approval = matches!(
+        operation,
+        TerminalSessionOperationKind::Inspect | TerminalSessionOperationKind::SetWindowTitle
+    );
     let r = check(
         command,
-        if operation == TerminalSessionOperationKind::Inspect {
+        if permits_without_approval {
             Decision::Allow
         } else {
             Decision::NeedApproval
@@ -59,7 +63,7 @@ fn assert_operation(command: &str, operation: TerminalSessionOperationKind) {
         .collect();
     assert_eq!(
         proposals.len(),
-        usize::from(operation != TerminalSessionOperationKind::Inspect),
+        usize::from(!permits_without_approval),
         "{command}: {proposals:?}"
     );
     assert!(
@@ -67,6 +71,41 @@ fn assert_operation(command: &str, operation: TerminalSessionOperationKind) {
             .iter()
             .all(|p| p.source_pass == "interactive_escape_guard")
     );
+}
+#[test]
+fn only_proved_window_titles_use_the_cosmetic_operation() {
+    for command in [
+        "screen -X title 'Build preview'",
+        "screen -S fixture -p 0 -X title Build",
+    ] {
+        assert_operation(command, TerminalSessionOperationKind::SetWindowTitle);
+    }
+    for command in [
+        "screen -X title",
+        "screen -X title demo extra",
+        "screen -X title \"$TITLE\"",
+        "screen -X title $TITLE",
+        "screen -X title 'demo %1`'",
+        "screen -S other/fixture -X title demo",
+        "screen -S first -S second -X title demo",
+        "screen -p 0 -p 1 -X title demo",
+        "screen -X -X title demo",
+        "screen -L -X title demo",
+        "screen -wipe -X title demo",
+        "screen -X stuff 'fixture'",
+        "screen -X paste .",
+    ] {
+        check(command, Decision::NeedApproval);
+    }
+    let with_file_write = check(
+        "screen -X title 'Build preview' >/outside/title.log",
+        Decision::NeedApproval,
+    );
+    assert!(with_file_write
+        .decision_trace
+        .findings
+        .iter()
+        .any(|f| f.rule_id == RuleId::OutsideWorkspaceMutation));
 }
 #[test]
 fn explicit_version_list_and_argumentless_queries_allow() {
@@ -309,17 +348,17 @@ fn unrelated_tools_and_inspection_do_not_emit_terminal_guard_findings() {
 }
 #[test]
 fn multiattach_consumes_the_session_name_before_later_controls() {
-    use TerminalSessionOperationKind::{Attach, Control, Opaque};
+    use TerminalSessionOperationKind::{Attach, Control, Opaque, SetWindowTitle};
 
     // These are static inputs only. The fixture session does not exist.
     for command in [
         "screen -x fixture -X title demo",
         "screen -x fixture -p 1 -X title demo",
         "screen -p 1 -x fixture -X title demo",
-        "screen -x -X title demo",
     ] {
-        assert_operation(command, Control);
+        assert_operation(command, SetWindowTitle);
     }
+    assert_operation("screen -x -X title demo", Control);
     assert_operation("screen -x fixture", Attach);
     assert_operation("screen -x fixture launch -X title demo", Attach);
     assert_operation("screen -r first -x second -X title demo", Attach);

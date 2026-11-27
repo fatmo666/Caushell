@@ -30,6 +30,8 @@ pub struct ArgumentStructure {
 enum SpellingPart {
     EmptyOrAbsolutePath,
     EmptyOrLocalFilename,
+    EmptyOrNonOption,
+    CalendarBasename,
     Literal(char),
     Any,
     One,
@@ -121,7 +123,7 @@ impl ArgumentStructure {
     /// enumeration of filenames, option combinations, or shell values.
     pub(crate) fn may_be_short_cluster(&self, letters: &str) -> bool {
         if matches!(self.spelling.as_deref(),
-            Some([SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename]))
+            Some([SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename | SpellingPart::EmptyOrNonOption]))
         {
             return false;
         }
@@ -160,7 +162,7 @@ impl ArgumentStructure {
                 SpellingPart::Any | SpellingPart::One => true,
                 SpellingPart::Class(body) => class_may_match(body, c),
                 SpellingPart::CharacterRun(chars) => chars.contains(c),
-                SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename => true,
+                SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename | SpellingPart::EmptyOrNonOption | SpellingPart::CalendarBasename => true,
             };
             let dash = matches('-');
             let flag = letters.chars().any(matches);
@@ -184,6 +186,15 @@ impl ArgumentStructure {
 // not regex compilation or pathname enumeration. Unsupported/large proofs
 // return "possible". ASCII case folding covers Bash's nocaseglob option.
 fn spelling_matches(parts: &[SpellingPart], value: &str, prefix: bool, fold_case: bool) -> bool {
+    if parts == [SpellingPart::CalendarBasename] {
+        let body = value.strip_prefix(['-', '+']).unwrap_or(value);
+        return body.is_empty()
+            || body.as_bytes()[0].is_ascii_digit()
+                && body.bytes().all(|byte| byte.is_ascii_digit() || matches!(byte, b'-' | b'_'));
+    }
+    if parts == [SpellingPart::EmptyOrNonOption] {
+        return !value.starts_with(['-', '+']);
+    }
     if parts == [SpellingPart::EmptyOrLocalFilename] {
         return value.is_empty()
             || (!value.starts_with(['-', '+'])
@@ -232,7 +243,7 @@ fn spelling_matches(parts: &[SpellingPart], value: &str, prefix: bool, fold_case
                             SpellingPart::One => true,
                             SpellingPart::Class(body) => class_may_match(body, chars[index]),
                             SpellingPart::Any | SpellingPart::CharacterRun(_) => unreachable!(),
-                            SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename => true,
+                            SpellingPart::EmptyOrAbsolutePath | SpellingPart::EmptyOrLocalFilename | SpellingPart::EmptyOrNonOption | SpellingPart::CalendarBasename => true,
                         };
                     if reachable[index]
                         && let SpellingPart::Class(body) = part
@@ -630,7 +641,13 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                     .chain(suffix.chars().map(SpellingPart::Literal))
                     .collect());
             }
+            Some(caushell_types::RuntimeArgumentDomain::CalendarFilename { prefix, suffix })
+                if prefix.is_empty() && suffix.is_empty() =>
+            {
+                structure.spelling = Some(vec![SpellingPart::CalendarBasename]);
+            }
             Some(caushell_types::RuntimeArgumentDomain::TextTemplate { prefix, suffix }
+                | caushell_types::RuntimeArgumentDomain::LocalBasename { prefix, suffix }
                 | caushell_types::RuntimeArgumentDomain::CalendarFilename { prefix, suffix }) => {
                 structure.static_prefix = prefix.clone();
                 structure.static_suffix = suffix.clone();
@@ -682,6 +699,14 @@ pub fn argument_structure(arg: &ProjectedArg) -> ArgumentStructure {
                 _ => None,
             };
             if let Some(roots) = roots.filter(|roots| !roots.is_empty()) {
+                if roots.iter().any(String::is_empty)
+                    && roots.iter().all(|root| !root.starts_with(['-', '+']) && !root.contains('\0'))
+                    && matches!(&arg.runtime_argument_domain,
+                        Some(caushell_types::RuntimeArgumentDomain::PathSet { .. }))
+                {
+                    structure.spelling = Some(vec![SpellingPart::EmptyOrNonOption]);
+                    return structure;
+                }
                 // Disjoint native roots need not share a string prefix. Keep
                 // an overapproximation of their FIRST characters instead of
                 // discarding the fact that every item is non-option data.

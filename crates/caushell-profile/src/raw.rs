@@ -73,6 +73,8 @@ pub struct RawEnvironmentInput {
     pub structured_projection: Option<RawStructuredProjection>,
     #[serde(default)]
     pub unless_modifiers: Vec<String>,
+    #[serde(default)]
+    pub unless_native_variant: Option<String>,
 }
 
 /// A tool expands matching argv before parsing its ordinary options.
@@ -445,8 +447,13 @@ pub enum RawStdoutRecordProjection {
         syntax: crate::StdoutPathFormatSyntax,
         #[serde(default)]
         escape_modifiers: Vec<String>,
+        #[serde(default)]
+        max_depth_slot: Option<String>,
     },
     Stdin,
+    StdinTransform {
+        transform: crate::StreamRecordTransform,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

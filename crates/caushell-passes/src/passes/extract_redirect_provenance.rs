@@ -3,9 +3,11 @@ use std::collections::{BTreeMap, BTreeSet};
 use caushell_graph::{EdgeKind, NodeId};
 use caushell_parse::RedirectionKind;
 use caushell_profile::ResolveInvocationArtifactResult;
+use caushell_query::IoTargetQuery;
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
     InlineShellContentCarrier, ProvenanceArtifact, ProvenanceConsumeKind, ProvenanceEdgeSemantics,
+    RuntimeInputCapture, RuntimeInputSource,
 };
 
 use crate::path::{
@@ -214,14 +216,16 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
             }
         }
 
-        // Preserve the ordinary stdin edge and add the independent execution
-        // role only for actual file-backed code. No filename suffix guessing,
-        // command-name whitelist, or host/file inspection is involved.
+        // The verified terminal supplies runtime bytes. Other explicit stdin
+        // keeps its original edge and uses the independent file-source role
+        // when a consumer interprets it as code.
         let mut script_sources = Vec::new();
-        for mutation in &mutations {
+        let mut terminal_device = None;
+        for mutation in &mut mutations {
             if let PendingMutation::AddProvenanceArtifact {
                 source_node_id,
-                artifact: ProvenanceArtifact::PathContent { path, .. },
+                node_id,
+                artifact,
                 semantics:
                     ProvenanceEdgeSemantics::Consume {
                         consume_kind: ProvenanceConsumeKind::StdinExplicit,
@@ -230,10 +234,27 @@ impl SessionTransformPass for ExtractRedirectProvenancePass {
                 ..
             } = mutation
             {
+                let ProvenanceArtifact::PathContent { path, .. } = artifact else {
+                    continue;
+                };
+                if path == IoTargetQuery::CONTROLLING_TERMINAL_PATH
+                    && ctx.assumes_protected_defaults()
+                    && *terminal_device.get_or_insert_with(|| {
+                        ctx.filesystem_view().has_controlling_terminal_device()
+                    })
+                {
+                    *node_id = NodeId::new(format!("artifact:terminal-stdin:{}", source_node_id.0));
+                    *artifact = ProvenanceArtifact::RuntimeInput {
+                        source: RuntimeInputSource::StdinPayload,
+                        capture: RuntimeInputCapture::Descriptor { descriptor: path.clone() },
+                        version: ctx.request().sequence_no.0,
+                    };
+                    continue;
+                }
                 if !stdin_code_consumers.contains(source_node_id) {
                     continue;
                 }
-                let target = caushell_query::IoTargetQuery::content_path(
+                let target = IoTargetQuery::content_path(
                     &caushell_types::PathResolution::Concrete { path: path.clone() },
                     false,
                     &BTreeMap::new(),

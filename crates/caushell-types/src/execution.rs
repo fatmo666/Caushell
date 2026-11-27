@@ -55,6 +55,8 @@ pub enum DatabaseOperationKind {
 #[serde(rename_all = "snake_case")]
 pub enum TerminalSessionOperationKind {
     Inspect,
+    /// Changes the title of an existing window using a proved text argument.
+    SetWindowTitle,
     Create,
     Attach,
     Control,
@@ -431,6 +433,7 @@ mod tests {
         );
         semantics.terminal_session_operations = vec![
             TerminalSessionOperationKind::Inspect,
+            TerminalSessionOperationKind::SetWindowTitle,
             TerminalSessionOperationKind::Create,
             TerminalSessionOperationKind::Attach,
             TerminalSessionOperationKind::Control,
@@ -439,7 +442,7 @@ mod tests {
         let wire = serde_json::to_value(&semantics).unwrap();
         assert_eq!(
             wire["terminal_session_operations"],
-            serde_json::json!(["inspect", "create", "attach", "control", "opaque"])
+            serde_json::json!(["inspect", "set_window_title", "create", "attach", "control", "opaque"])
         );
         assert_eq!(
             serde_json::from_value::<ExecutionSemantics>(wire).unwrap(),

@@ -43,9 +43,74 @@ fn pure_native_effects(bound: &caushell_profile::BoundInvocation) -> bool {
         })
 }
 
+/// A bounded substitution can retain protected lookup only if all native
+/// effects are closed. Use the parsed spans to admit a simple data pipeline
+/// without control operators, hidden commands, or filesystem redirections.
+fn pure_native_substitution(
+    body: &caushell_parse::ParsedCommandArtifact,
+    registry: &ProfileRegistry,
+    bindings: &SessionBindings,
+) -> bool {
+    let pure = |command: &caushell_parse::CommandFact| {
+        if command.tokens.iter().any(|t| !t.command_substitutions.is_empty()) {
+            return false;
+        }
+        let Some(name) = command.command_name.as_deref() else {
+            return false;
+        };
+        if bindings.function_binding(name).is_some() || bindings.profile_has_alias_shadow(name) {
+            return false;
+        }
+        matches!(caushell_profile::resolve_invocation_artifact_with_bindings(registry, command,
+            caushell_profile::InvocationRuntimeContext::default().with_shell_kind(body.shell_kind), bindings),
+            caushell_profile::ResolveInvocationArtifactResult::Resolved(r)
+                if r.bound.residuals.is_empty() && pure_native_effects(&r.bound))
+    };
+    if let Some(command) = super::substitution_shape::plain_single_producer(body) {
+        return pure(command);
+    }
+    let [first, .., last] = body.commands.as_slice() else {
+        return false;
+    };
+    let source = body.raw_command.as_str();
+    body.status == caushell_parse::ParseStatus::Complete
+        && body.diagnostics.is_empty()
+        && body.commands.len() <= 16
+        && body.redirections.is_empty()
+        && body.declaration_commands.is_empty()
+        && body.assignment_commands.is_empty()
+        && body.unset_commands.is_empty()
+        && body.function_definitions.is_empty()
+        && body.for_loops.is_empty()
+        && body.shell_evaluations.is_empty()
+        && caushell_parse::parse_process_substitutions(source, body.shell_kind)
+            .is_ok_and(|substitutions| substitutions.is_empty())
+        && first.pipeline_span.is_some()
+        && source.get(..first.span.start_byte).is_some_and(|head| head.trim().is_empty())
+        && source.get(last.span.end_byte..).is_some_and(|tail| tail.trim().is_empty())
+        && body.commands.windows(2).all(|pair| {
+            source.get(pair[0].span.end_byte..pair[1].span.start_byte)
+                .is_some_and(|separator| separator.trim() == "|")
+        })
+        && body.commands.iter().all(|command| {
+            command.pipeline_span == first.pipeline_span
+                && !command.guarded
+                && !command.conditional_execution
+                && command.terminator.is_none()
+                && command.prefix_assignments.is_empty()
+                && !command.command_name_runtime_data
+                && command.command_name.as_deref().is_some_and(|name| {
+                    !name.contains('/')
+                        && registry.lookup(name).profile.is_some_and(|profile| {
+                            profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+                        })
+                })
+                && pure(command)
+        })
+}
+
 /// Substitution bodies are not top-level CommandFacts. Inspect their declared
-/// effects before retaining an entry executable contract after them. A bounded
-/// single producer is sufficient; other programs remain unknown, never run.
+/// effects before retaining an entry executable contract after them.
 pub(super) fn invalidate_native_substitutions(
     parsed: &caushell_parse::ParsedCommandArtifact,
     target: usize,
@@ -96,13 +161,7 @@ pub(super) fn invalidate_native_substitutions(
         let Some(registry) = registry else { return false; };
         if s.body_text.len() > 8192 { return false; }
         let Ok(body) = caushell_parse::parse_command(&s.body_text, parsed.shell_kind) else { return false; };
-        let Some(command) = super::substitution_shape::plain_single_producer(&body) else { return false; };
-        if command.tokens.iter().any(|t| !t.command_substitutions.is_empty()) { return false; }
-        let Some(name) = command.command_name.as_deref() else { return false; };
-        if bindings.function_binding(name).is_some() || bindings.profile_has_alias_shadow(name) { return false; }
-        matches!(caushell_profile::resolve_invocation_artifact_with_bindings(registry, command,
-            caushell_profile::InvocationRuntimeContext::default().with_shell_kind(parsed.shell_kind), bindings),
-            caushell_profile::ResolveInvocationArtifactResult::Resolved(r) if pure_native_effects(&r.bound))
+        pure_native_substitution(&body, registry, bindings)
     });
     if !preserves {
         bindings.forget_native_variants();
@@ -383,6 +442,63 @@ pub(super) fn invalidate_evaluation(
     }
 }
 
+/// A default-stdin Bash read of ordinary scalar destinations cannot change
+/// protected program lookup. An IFS-only prefix changes field decoding here.
+fn plain_read_preserves_lookup(
+    command: &caushell_parse::CommandFact,
+    registry: Option<&ProfileRegistry>,
+    bindings: &SessionBindings,
+    shell: ShellKind,
+) -> bool {
+    use caushell_profile::{EffectKind, ProfileSourceKind};
+    if shell != ShellKind::Bash
+        || command.command_name.as_deref() != Some("read")
+        || command.command_name_runtime_data
+        || !matches!(bindings.command_lookup_domain(), caushell_profile::CommandLookupDomain::Shell)
+        || bindings.function_binding("read").is_some()
+        || bindings.profile_has_alias_shadow("read")
+        || !command.prefix_assignments.iter().all(|assignment| {
+            assignment.name == "IFS" && assignment.value.text.is_empty()
+        })
+        || command.tokens.iter().any(|token| {
+            token.runtime_data
+                || !token.command_substitutions.is_empty()
+                || caushell_parse::decode_static_shell_argument(
+                    &token.text, token.quoted, &token.node_kind,
+                ).is_none_or(|word| word.starts_with('-') && word != "-r")
+        })
+    {
+        return false;
+    }
+    let Some(registry) = registry else { return false; };
+    if !registry.lookup("read").profile.is_some_and(|profile| profile.trust.source == ProfileSourceKind::BuiltIn) {
+        return false;
+    }
+    let caushell_profile::ResolveInvocationArtifactResult::Resolved(resolved) =
+        caushell_profile::resolve_invocation_artifact_with_bindings(
+            registry, command,
+            caushell_profile::InvocationRuntimeContext::default().with_shell_kind(shell), bindings,
+        )
+    else {
+        return false;
+    };
+    let bound = &resolved.bound;
+    let writes = caushell_profile::runtime_variable_writes(bound);
+    bound.form_id.as_str() == "bind_from_stdin"
+        && !bound.operation_semantics_unresolved
+        && bound.residuals.is_empty()
+        && bound.effects.iter().all(|effect| {
+            matches!(effect.kind, EffectKind::ConsumeStdin | EffectKind::BindVariableFromRuntimeInput)
+        })
+        && !writes.unresolved
+        && !writes.names.is_empty()
+        && writes.names.iter().all(|name| {
+            name.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+                && name.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
+                && !bindings.runtime_variable_target_is_unresolved(name)
+        })
+}
+
 pub(super) fn invalidate_command(
     command: &caushell_parse::CommandFact,
     parsed: &caushell_parse::ParsedCommandArtifact,
@@ -392,10 +508,12 @@ pub(super) fn invalidate_command(
 ) {
     // Earlier commands in child/substitution scopes can also change executable
     // files. This proof is about resolution, not caller-shell variable writes.
+    let reads_to_plain_scalars = bindings.has_native_variants()
+        && plain_read_preserves_lookup(command, registry, bindings, parsed.shell_kind);
     if matches!(
         command.command_name.as_deref(),
         Some("cd" | "pushd" | "popd" | "export" | "eval" | "source" | "." | "alias" | "unalias")
-    ) || !command.prefix_assignments.is_empty()
+    ) || (!command.prefix_assignments.is_empty() && !reads_to_plain_scalars)
         || parsed
             .redirections
             .iter()
@@ -403,7 +521,7 @@ pub(super) fn invalidate_command(
     {
         bindings.forget_native_variants();
     }
-    if bindings.has_native_variants() {
+    if bindings.has_native_variants() && !reads_to_plain_scalars {
         let preserves = registry.is_some_and(|registry| {
             let result = caushell_profile::resolve_invocation_artifact_with_bindings(
                 registry,

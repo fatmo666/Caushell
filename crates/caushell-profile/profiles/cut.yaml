@@ -46,8 +46,57 @@ forms:
       - kind: transform_data
         target:
           kind: none
+  - id: select_nul_tab_tail
+    selector:
+      kind: all
+      items:
+        - {kind: not, item: {kind: has_modifier, modifier: information}}
+        - &nul_tab_tail
+          kind: all
+          items:
+            - {kind: no_positional_args}
+            # The complete argv certifies this stream format while legacy
+            # forms keep their existing option and positional binding.
+            - kind: any
+              items:
+                - kind: all
+                  items:
+                    - {kind: exact_argument_count, count: 1}
+                    - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: '-zf2-'}}
+                - kind: all
+                  items:
+                    - {kind: exact_argument_count, count: 2}
+                    - kind: any
+                      items:
+                        - kind: all
+                          items:
+                            - {kind: has_argument_at_matching, index: 0, matcher: &nul_flag {kind: regex_pattern, pattern: '^(?:-z|--zero-terminated)$'}}
+                            - {kind: has_argument_at_matching, index: 1, matcher: &inline_field {kind: regex_pattern, pattern: '^(?:-f2-|--fields=2-)$'}}
+                        - kind: all
+                          items:
+                            - {kind: has_argument_at_matching, index: 0, matcher: *inline_field}
+                            - {kind: has_argument_at_matching, index: 1, matcher: *nul_flag}
+                - kind: all
+                  items:
+                    - {kind: exact_argument_count, count: 3}
+                    - kind: any
+                      items:
+                        - kind: all
+                          items:
+                            - {kind: has_argument_at_matching, index: 0, matcher: *nul_flag}
+                            - {kind: has_argument_at_matching, index: 1, matcher: &field_flag {kind: regex_pattern, pattern: '^(?:-f|--fields)$'}}
+                            - {kind: has_argument_at_matching, index: 2, matcher: &tail_field {kind: literal, value: '2-'}}
+                        - kind: all
+                          items:
+                            - {kind: has_argument_at_matching, index: 0, matcher: *field_flag}
+                            - {kind: has_argument_at_matching, index: 1, matcher: *tail_field}
+                            - {kind: has_argument_at_matching, index: 2, matcher: *nul_flag}
+    parameters: *inputs
+    stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
+    stdout_records: {projection: {kind: stdin_transform, transform: after_first_tab_nul}}
+    effects: *effects
   - id: select_fields_stdin
-    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin]}
+    selector: {kind: all, items: [{kind: not, item: {kind: has_modifier, modifier: information}}, *stdin, {kind: not, item: *nul_tab_tail}]}
     parameters: *inputs
     stream_contract: {stdin_mode: data_optional, stdout_mode: data, stderr_mode: opaque, stdout_dependency: inputs}
     effects: *effects
@@ -89,14 +138,6 @@ modifiers:
           operand_mode: next_arg
         cardinality: optional_many
 
-  - id: output_mode
-    matcher:
-      kind: any_flag
-      flags:
-        - "-s"
-        - "--only-delimited"
-        - "-z"
-        - "--zero-terminated"
 
 subcommands: null
 extensions:

@@ -13,7 +13,83 @@ platform:
   shell_families: []
   requires_features: []
 opaque_on_unresolved: true
+implicit_config_files:
+- id: default_config
+  protected_account_defaults: {kind: search}
+  sources: [{kind: environment_directory, name: HOME, suffix: .aws/config}]
+environment_inputs:
+- name: cli_pager
+  environment: {name: AWS_PAGER, empty_is_unset: true}
+  unless_modifiers: [information]
+  semantic: &native_configuration {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+- name: cli_config
+  environment: {name: AWS_CONFIG_FILE, empty_is_unset: true}
+  semantic: *native_configuration
+- name: cli_model_search_path
+  environment: {name: AWS_DATA_PATH, empty_is_unset: true}
+  unless_modifiers: [information]
+  semantic: *native_configuration
 forms:
+- id: list_s3_buckets
+  selector:
+    kind: all
+    items:
+      - {kind: exact_argument_count, count: 2}
+      - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: s3}}
+      - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: ls}}
+  parameters: &query_operation
+    - {name: operation, semantic: {kind: plain_value}, binding: {kind: remaining_positionals}, cardinality: required_many}
+  effects: &remote_query
+    - {kind: state_operation, state_operation: {domain: cloud_resource, operation: inspect}, target: {kind: none}}
+    - {kind: network_endpoint, target: {kind: none}}
+  stream_contract: &query_stream {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+
+- id: inspect_iam_password_policy
+  selector:
+    kind: all
+    items:
+      - {kind: exact_argument_count, count: 2}
+      - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: iam}}
+      - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: get-account-password-policy}}
+  parameters: *query_operation
+  effects: *remote_query
+  stream_contract: *query_stream
+
+- id: list_s3_objects
+  selector:
+    kind: all
+    items:
+      - {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: s3api}}
+      - {kind: has_argument_at_matching, index: 1, matcher: {kind: literal, value: list-objects-v2}}
+      - {kind: no_dash_dash}
+      - {kind: has_flag, flag: --bucket}
+      - kind: any
+        items:
+          - kind: all
+            items:
+              - {kind: exact_argument_count, count: 4}
+              - {kind: lacks_flag, flag: --output}
+          - kind: all
+            items:
+              - {kind: exact_argument_count, count: 6}
+              - {kind: has_flag, flag: --output}
+  remaining_selector: {kind: no_positional_args}
+  parameters:
+    - {name: service, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    - name: bucket
+      semantic: {kind: plain_value}
+      binding: {kind: following_flag, flag: --bucket, operand_mode: next_arg}
+      cardinality: required_one
+      value_constraints: [{kind: require_match, pattern: '^[A-Za-z0-9][A-Za-z0-9._-]{1,253}[A-Za-z0-9]$'}]
+    - name: output
+      semantic: {kind: plain_value}
+      binding: {kind: following_flag, flag: --output, operand_mode: next_arg}
+      cardinality: optional_one
+      value_constraints: [{kind: require_match, pattern: '^(json|text|table|yaml|yaml-stream)$'}]
+  effects: *remote_query
+  stream_contract: *query_stream
+
 - id: ec2_cloud_resource_create
   selector:
     kind: all
@@ -169,6 +245,10 @@ extensions:
   caushell.profile/source_research:
   - research/gtfobins-profile-coverage-20261006/upstream/_gtfobins/aws (GTFOBins acd524623f9c406acedd2754ebd9c2431f3675ad)
   - https://docs.aws.amazon.com/cli/latest/userguide/cli-usage-parameters-file.html
+  - https://docs.aws.amazon.com/cli/latest/userguide/cli-configure-files.html
+  - https://docs.aws.amazon.com/cli/latest/reference/s3/ls.html
+  - https://docs.aws.amazon.com/cli/latest/reference/s3api/list-objects-v2.html
+  - https://docs.aws.amazon.com/cli/latest/reference/iam/get-account-password-policy.html
   caushell.profile/known_limitations:
   - Source-specific bounded forms are modeled; unresolved CLI combinations remain
     opaque.

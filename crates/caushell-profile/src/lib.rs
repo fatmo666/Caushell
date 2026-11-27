@@ -39,6 +39,7 @@ pub use pathname::{PathnameComponent, PathnamePattern, StaticBashPathnameDefault
 mod diff_pagination;
 mod native_effect_envelope;
 pub use native_effect_envelope::{
+    GnuGzipReadMode, gnu_gzip_read_mode,
     native_effect_contract_allows_effect, native_effect_contract_allows_parameter,
     native_effect_contract_is_closed, native_effect_contract_is_closed_in_domain,
     retain_symbolic_argv_stream_contract,
@@ -130,7 +131,7 @@ pub use materialize::{
     ShellParameterReference, ShellVariableFacts, ValueMaterialization, VariablePresence,
     ShellExpansionGap, ShellExpansionGapKind,
     exact_scalar_shell_parameter_reference_value, exact_scalar_shell_parameter_value,
-    dot_relative_parent_assignment, exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
+    bounded_path_assignment, exact_shell_parameter_reference, materialize_argument_domain, materialize_command_name,
     materialize_exact_shell_parameter_reference_fields, materialize_prefix_environment,
     materialize_projected_invocation, materialize_recursive_payload_candidate,
     materialize_shell_array_element, materialize_shell_assignment_value,
@@ -236,7 +237,7 @@ pub use types::{
 };
 pub use types::{
     BoundPathList, PathListContract, PathListSeparator, StdoutRecordContract,
-    StdoutRecordProjection, StreamRecordSeparator,
+    StdoutRecordProjection, StreamRecordSeparator, StreamRecordTransform,
 };
 pub use types::{ModuleEntrypoint, PayloadFormat, PayloadInputSource, PayloadProjection};
 pub use types::{

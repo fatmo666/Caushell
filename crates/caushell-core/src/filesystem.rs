@@ -35,6 +35,18 @@ impl FilesystemView for LocalFilesystem {
     fn source(&self) -> caushell_types::FilesystemObservationSource {
         caushell_types::FilesystemObservationSource::CurrentProcess
     }
+    #[cfg(target_os = "linux")]
+    fn has_controlling_terminal_device(&self) -> bool {
+        use std::os::unix::fs::{FileTypeExt, MetadataExt};
+
+        std::fs::symlink_metadata(caushell_query::IoTargetQuery::CONTROLLING_TERMINAL_PATH)
+            .is_ok_and(|metadata| {
+                let device = metadata.rdev() as libc::dev_t;
+                metadata.file_type().is_char_device()
+                    && libc::major(device) == 5
+                    && libc::minor(device) == 0
+            })
+    }
     fn entry(&self, path: &str) -> FilesystemEntry {
         match std::fs::symlink_metadata(path) {
             Ok(metadata) if metadata.file_type().is_symlink() => match std::fs::read_link(path) {

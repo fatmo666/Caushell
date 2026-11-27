@@ -3247,13 +3247,34 @@ fn parameter_argument_domain<'a>(
 
 /// An ordinary scalar assignment can preserve the parent of a proved native
 /// relative path. Only the exact quoted parameter operation is covered.
-pub fn dot_relative_parent_assignment(
+pub fn bounded_path_assignment(
     value: &caushell_parse::AssignmentValueFact,
     bindings: &SessionBindings,
 ) -> Option<caushell_types::RuntimeArgumentDomain> {
     if !value.quoted || value.node_kind != "string" || !value.command_substitutions.is_empty()
-        || bindings.shell_kind() != caushell_types::ShellKind::Bash
+        || !matches!(bindings.shell_kind(), caushell_types::ShellKind::Bash | caushell_types::ShellKind::Sh)
     {
+        return None;
+    }
+    if let Some(domain) = removal_argument_domain(&ProjectedArg {
+        word_context: Default::default(),
+        text: value.text.clone(),
+        quoted: value.quoted,
+        node_kind: value.node_kind.clone(),
+        span: value.span.clone(),
+        kind: ProjectedArgKind::Positional,
+        implicit_input_source: None,
+        runtime_argument_domain: None,
+        runtime_data: false,
+        native_region_field: None,
+        substitution_shape: None,
+        lexical_field_prefix: None,
+    }, bindings, true)
+        && matches!(domain, caushell_types::RuntimeArgumentDomain::PathSet { may_escape: false, .. })
+    {
+        return Some(domain);
+    }
+    if bindings.shell_kind() != caushell_types::ShellKind::Bash {
         return None;
     }
     let ShellParameterReference::PatternRemoval { parameter, kind, pattern } =

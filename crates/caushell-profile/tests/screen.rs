@@ -68,7 +68,7 @@ fn explicit_inspection_forms_and_option_operands_are_not_launches() {
 }
 #[test]
 fn standalone_multiattach_owns_only_its_optional_session_word() {
-    let owned = operation("screen -x fixture -p 1 -X title demo", Op::Control);
+    let owned = operation("screen -x fixture -p 1 -X title demo", Op::SetWindowTitle);
     let attachment = owned
         .bound_parameters
         .iter()

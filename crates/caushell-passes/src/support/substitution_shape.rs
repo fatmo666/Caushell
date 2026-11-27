@@ -235,10 +235,48 @@ pub(crate) fn substitution_shapes(
             let [substitution] = token.command_substitutions.as_slice() else {
                 return None;
             };
+            if shell_kind == ShellKind::Bash
+                && !token.quoted
+                && token.text == substitution.text
+                && command.tokens.first() == Some(token)
+                && attested_pipeline_tool(registry, command, bindings, aliases, "mv", "gnu_coreutils_9_1")
+                && let Ok(body) = parse_command(&substitution.body_text, shell_kind)
+                && let Some(last) = body.commands.len().checked_sub(1)
+                && let Some(stdout) = grep_stdin_label_stdout(registry, &body, last, bindings, aliases)
+            {
+                use caushell_profile::{ShellFieldFragment, materialize_bash_field_fragments};
+                let [empty, record] = stdout;
+                let split = |stream: &str| {
+                    materialize_bash_field_fragments(
+                        &[ShellFieldFragment::UnquotedExpansion(stream.trim_end_matches('\n').into())],
+                        bindings,
+                    )
+                };
+                if split(empty).is_some_and(|fields| fields.is_empty())
+                    && let Some(fields) = split(record)
+                    && !fields.is_empty()
+                {
+                    return Some((token.span.clone(), SubstitutionOutputProof::OptionalMoveSourceFields(fields)));
+                }
+            }
             if shell_kind == ShellKind::Bash && command.command_name.as_deref() == Some("sed")
                 && let Some(proof) = sed_decimal_addresses(registry, token, substitution, bindings, aliases)
             {
                 return Some((token.span.clone(), proof));
+            }
+            if shell_kind == ShellKind::Bash
+                && command.tokens.len() == 1
+                && !token.quoted
+                && token.text == substitution.text
+                && attested_pipeline_tool(registry, command, bindings, aliases, "mkdir", "gnu_coreutils_9_1")
+                && observed_ifs_value(bindings).is_some_and(|ifs| {
+                    ifs.bytes().all(|byte| matches!(byte, b' ' | b'\t' | b'\n'))
+                })
+                && let Ok(body) = parse_command(&substitution.body_text, shell_kind)
+                && let Some(last) = body.commands.len().checked_sub(1)
+                && filtered_filename_stdout(registry, &body, last, bindings, aliases)
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::LocalFilenameFields));
             }
             if let Some(domain) =
                 quoted_dirname_path(registry, token, substitution, shell_kind, bindings, aliases)
@@ -267,9 +305,21 @@ pub(crate) fn substitution_shapes(
                 return Some((token.span.clone(), SubstitutionOutputProof::LocalFilenameFields));
             }
             let quoted = token.quoted && token.node_kind == "string";
+            if quoted
+                && substitution_word_parts(token, substitution).is_some_and(|(parts, marker)| {
+                    matches!(parts.as_slice(),
+                        [ScalarArgumentPart::CommandSubstitution(word)] if word == &marker)
+                })
+                && calendar_date_format(registry, substitution, bindings, aliases, false)
+                    .is_some_and(|format| calendar_filename_format(&format, true))
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::CalendarFilename {
+                    prefix: String::new(),
+                    suffix: String::new(),
+                }));
+            }
             if shell_kind == ShellKind::Bash
                 && quoted
-                && command.command_name.as_deref() == Some("zip")
                 && let Some((prefix, suffix)) = calendar_filename_affixes(token, substitution, true, false)
                 && calendar_date_format(registry, substitution, bindings, aliases, false)
                     .is_some_and(|format| calendar_filename_format(&format, true))
@@ -372,6 +422,189 @@ pub(crate) fn substitution_shapes(
             Some((token.span.clone(), proof))
         })
         .collect()
+}
+
+pub(crate) fn attested_pipeline_tool(
+    registry: &ProfileRegistry,
+    command: &CommandFact,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+    name: &str,
+    variant: &str,
+) -> bool {
+    command.command_name.as_deref() == Some(name)
+        && !command.command_name_runtime_data
+        && command.prefix_assignments.is_empty()
+        && !aliases.contains_key(name)
+        && !bindings.profile_has_alias_shadow(name)
+        && bindings.function_binding(name).is_none()
+        && bindings.native_variant(name) == Some(variant)
+        && registry.lookup(name).profile.is_some_and(|profile| {
+            profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+        })
+}
+
+/// GNU grep's filename for standard input is independent of its input bytes.
+/// The stream may be empty, including on a read or regex error. Preserve that
+/// alternative through the supported first-field projection.
+pub(crate) fn grep_stdin_label_stdout(
+    registry: &ProfileRegistry,
+    parsed: &ParsedCommandArtifact,
+    output: usize,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+) -> Option<[&'static str; 2]> {
+    let [grep, projection @ ..] = parsed.commands.get(..=output)? else {
+        return None;
+    };
+    if !plain_stream_chain(parsed)
+        || !attested_pipeline_tool(registry, grep, bindings, aliases, "grep", "gnu_grep_3_8_c_locales")
+        || !ascii_locale_bound(bindings)
+        || !environment_allows(bindings, "LANGUAGE", &["", "C", "POSIX"])
+        || !environment_allows(bindings, "NLSPATH", &[""])
+    {
+        return None;
+    }
+    let words = literal_arguments(grep)?;
+    if !matches!(words.as_slice(), [option, pattern] if
+        matches!(option.as_str(), "-l" | "--files-with-matches") && !pattern.starts_with('-'))
+    {
+        return None;
+    }
+    let alternatives = ["", "(standard input)\n"];
+    match projection {
+        [] => Some(alternatives),
+        [awk]
+            if attested_pipeline_tool(registry, awk, bindings, aliases, "awk", "mawk_1_3_4")
+                && matches!(literal_arguments(awk)?.as_slice(), [flag, separator, program]
+                    if flag == "-F" && separator == ":" && program == "{print $1}")
+                && alternatives.iter().all(|stdout| !stdout.contains(':')) =>
+        {
+            Some(alternatives)
+        }
+        _ => None,
+    }
+}
+
+fn literal_arguments(command: &CommandFact) -> Option<Vec<String>> {
+    command.tokens.iter().map(|arg| {
+        if arg.runtime_data || arg.implicit_input_source.is_some() {
+            return None;
+        }
+        caushell_parse::decode_static_shell_argument(&arg.text, arg.quoted, &arg.node_kind)
+    }).collect()
+}
+
+fn environment_allows(bindings: &SessionBindings, name: &str, permitted: &[&str]) -> bool {
+    use caushell_profile::{EnvironmentValueRef, SessionValue};
+    match bindings.environment_value(name) {
+        // The tool's attestation covers the owning environment when the
+        // request supplies no override. A supplied opaque value is separate.
+        EnvironmentValueRef::Unknown | EnvironmentValueRef::Absent => true,
+        EnvironmentValueRef::Present(SessionValue::ExactScalar(value)) => {
+            permitted.contains(&value.as_str())
+        }
+        _ => false,
+    }
+}
+
+fn ascii_locale_bound(bindings: &SessionBindings) -> bool {
+    environment_allows(bindings, "LOCPATH", &[""])
+        && ["LC_ALL", "LC_MESSAGES", "LC_COLLATE", "LC_CTYPE", "LANG"].into_iter().all(|name| {
+            environment_allows(bindings, name, &["", "C", "C.UTF-8", "C.utf8", "POSIX"])
+        })
+}
+
+fn plain_stream_chain(parsed: &ParsedCommandArtifact) -> bool {
+    let (Some(first), Some(last)) = (parsed.commands.first(), parsed.commands.last()) else {
+        return false;
+    };
+    parsed.status == ParseStatus::Complete
+        && parsed.diagnostics.is_empty()
+        && parsed.redirections.is_empty()
+        && (parsed.commands.len() == 1 || first.pipeline_span.is_some())
+        && parsed.raw_command.get(..first.span.start_byte).is_some_and(|s| s.trim().is_empty())
+        && parsed.raw_command.get(last.span.end_byte..).is_some_and(|s| s.trim().is_empty())
+        && parsed.commands.iter().all(|stage| {
+            stage.pipeline_span == first.pipeline_span && !stage.guarded && !stage.conditional_execution
+        })
+        && parsed.commands.windows(2).all(|pair| {
+            parsed.raw_command.get(pair[0].span.end_byte..pair[1].span.start_byte)
+                .is_some_and(|separator| separator.trim() == "|")
+        })
+}
+
+/// Proves zero or one nonempty ASCII-alphanumeric filename from an
+/// attested byte filter, fixed-width fold and first-line selection. The
+/// input may be arbitrary bytes. The caller owns the final stdout route.
+pub(crate) fn filtered_filename_stdout(
+    registry: &ProfileRegistry,
+    parsed: &ParsedCommandArtifact,
+    output: usize,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+) -> bool {
+    let Some(start) = output.checked_sub(2) else {
+        return false;
+    };
+    let Some([filter, fold, head]) = parsed.commands.get(start..=output) else {
+        return false;
+    };
+    if !plain_stream_chain(parsed) {
+        return false;
+    }
+    // The filter attestation includes the fixed environment's locale set.
+    // A supplied locale outside that set, or an alternate locale directory,
+    // cannot inherit that proof.
+    if !environment_allows(bindings, "LOCPATH", &[""])
+        || ["LC_ALL", "LC_COLLATE", "LC_CTYPE", "LANG"]
+            .iter()
+            .any(|name| !environment_allows(bindings, name, &["", "C", "C.UTF-8", "C.utf8", "POSIX"]))
+        || ![
+            (filter, "tr", "gnu_tr_9_1_ascii_locales"),
+            (fold, "fold", "gnu_coreutils_9_1"),
+            (head, "head", "gnu_coreutils_9_1"),
+        ]
+        .into_iter()
+        .all(|(command, name, variant)| {
+            attested_pipeline_tool(registry, command, bindings, aliases, name, variant)
+        })
+    {
+        return false;
+    }
+
+    let (Some(filter), Some(fold), Some(head)) =
+        (literal_arguments(filter), literal_arguments(fold), literal_arguments(head))
+    else {
+        return false;
+    };
+    let set = match filter.as_slice() {
+        [mode, set] if matches!(mode.as_str(), "-dc" | "-cd") => set,
+        _ => return false,
+    };
+    alphanumeric_filter_set(set.as_bytes())
+        && matches!(fold.as_slice(), [mode, width] if mode == "-w" &&
+            width.bytes().all(|b| b.is_ascii_digit()) && width.parse::<u8>().is_ok_and(|n| n > 0))
+        && matches!(head.as_slice(), [mode, count] if mode == "-n" && count == "1")
+}
+
+fn alphanumeric_filter_set(mut set: &[u8]) -> bool {
+    if set.is_empty() {
+        return false;
+    }
+    while let [first, rest @ ..] = set {
+        if let [b'-', last, tail @ ..] = rest {
+            if first > last || !(*first..=*last).all(|byte| byte.is_ascii_alphanumeric()) {
+                return false;
+            }
+            set = tail;
+        } else if first.is_ascii_alphanumeric() {
+            set = rest;
+        } else {
+            return false;
+        }
+    }
+    true
 }
 
 fn sed_decimal_addresses(
@@ -478,15 +711,15 @@ fn quoted_dirname_path(
         return None;
     }
     let (parts, marker) = substitution_word_parts(token, capture)?;
-    let [ScalarArgumentPart::Literal(prefix), ScalarArgumentPart::CommandSubstitution(word)] =
-        parts.as_slice()
-    else {
-        return None;
+    let prefix = match parts.as_slice() {
+        [ScalarArgumentPart::CommandSubstitution(word)] if word == &marker => None,
+        [ScalarArgumentPart::Literal(prefix), ScalarArgumentPart::CommandSubstitution(word)]
+            if word == &marker && prefix.strip_suffix('/').is_some_and(ordinary_relative_anchor) =>
+        {
+            Some(prefix.clone())
+        }
+        _ => return None,
     };
-    let anchor = prefix.strip_suffix('/')?;
-    if word != marker || !ordinary_relative_anchor(anchor) {
-        return None;
-    }
     let parsed = parse_command(&capture.body_text, shell_kind).ok()?;
     let producer = plain_single_producer(&parsed)?;
     let name = producer.command_name.as_deref()?;
@@ -528,12 +761,22 @@ fn quoted_dirname_path(
     {
         return None;
     }
-    // dirname may return "." for a root operand. A failed capture may be
-    // empty, and command substitution strips all trailing newlines. The last
-    // directory component can therefore change. The fixed ordinary component
-    // of each input keeps any such parent step under the literal prefix.
+    // dirname can return ".", or the capture can be empty. Trimming trailing
+    // newlines can make the last component ".."; keep its parent in the
+    // envelope. The fixed ordinary first input component cannot disappear.
+    let roots = if let Some(prefix) = prefix {
+        vec![prefix]
+    } else {
+        let mut candidates = vec![String::new(), ".".into()];
+        candidates.extend(roots.iter().filter_map(|root| {
+            root.split('/').next().filter(|component| !component.is_empty()).map(str::to_owned)
+        }));
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    };
     Some(RuntimeArgumentDomain::PathSet {
-        roots: vec![prefix.clone()],
+        roots,
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
@@ -593,7 +836,7 @@ fn calendar_filename_affixes(
     };
     let name_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     (prefix_name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-        && prefix_name.bytes().all(|b| name_byte(b) || quoted && b == b'-')
+        && prefix_name.bytes().all(|b| name_byte(b) || quoted && matches!(b, b'-' | b'.'))
         && suffix.strip_prefix('.').is_some_and(|s| !s.is_empty() && s.bytes().all(name_byte)))
         .then(|| (prefix.clone(), suffix.clone()))
 }
@@ -603,8 +846,8 @@ fn calendar_filename_format(format: &str, allow_separator: bool) -> bool {
         return false;
     };
     !rest.is_empty()
-        && (allow_separator || !rest.contains('_'))
-        && rest.split('_').all(|run| {
+        && (allow_separator || !rest.contains(['_', '-']))
+        && rest.strip_prefix(['_', '-']).unwrap_or(rest).split(['_', '-']).all(|run| {
             let chunks = run.as_bytes().chunks_exact(2);
             !run.is_empty()
                 && chunks.remainder().is_empty()

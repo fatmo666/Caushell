@@ -2,8 +2,8 @@
 use caushell_core::ShellQueryCore;
 use caushell_types::*;
 
-fn check(command: &str) -> CheckResponse {
-    ShellQueryCore::new().check(CheckRequest {
+fn request(command: &str) -> CheckRequest {
+    CheckRequest {
         session_id: SessionId::new("getconf-integer-limits"),
         sequence_no: CommandSequenceNo::new(1),
         command: command.into(),
@@ -16,7 +16,11 @@ fn check(command: &str) -> CheckResponse {
             tool_name: Some("Bash".into()),
             shell_runtime_capabilities: ShellRuntimeCapabilities::request_only(),
         },
-    })
+    }
+}
+
+fn check(command: &str) -> CheckResponse {
+    ShellQueryCore::new().check(request(command))
 }
 
 #[test]
@@ -152,5 +156,82 @@ fn malformed_or_dynamic_enumeration_stays_unresolved() {
             "{command}: {:?}",
             result.decision_trace.execution_semantics
         );
+    }
+}
+
+#[test]
+fn attested_binary_only_closes_complete_read_only_queries() {
+    use Decision::{Allow, NeedApproval};
+
+    let verified = Some("debian_getconf_2_36_deb12u14");
+    let width = Some("attested_integer_width");
+    let enumeration = Some("attested_list_configuration");
+    for (command, identity, expected, form) in [
+        ("getconf LONG_BIT", verified, Allow, width),
+        ("getconf WORD_BIT", verified, Allow, width),
+        ("getconf -a", verified, Allow, enumeration),
+        ("getconf -a | wc -l", verified, Allow, enumeration),
+        ("getconf WORD_BIT", None, NeedApproval, None),
+        ("getconf -a", Some("unknown_getconf"), NeedApproval, None),
+        (
+            "PATH=./bin:$PATH getconf WORD_BIT",
+            verified,
+            NeedApproval,
+            None,
+        ),
+        (
+            "export PATH=./bin:$PATH; getconf WORD_BIT",
+            verified,
+            NeedApproval,
+            None,
+        ),
+        ("/usr/bin/getconf LONG_BIT", verified, NeedApproval, None),
+        (
+            "getconf -v POSIX_V7_LP64_OFF64 WORD_BIT",
+            verified,
+            NeedApproval,
+            None,
+        ),
+        (
+            "getconf WORD_BIT -v POSIX_V7_LP64_OFF64",
+            verified,
+            NeedApproval,
+            None,
+        ),
+        ("getconf -a ./fixture", verified, NeedApproval, None),
+        ("getconf -a -a", verified, NeedApproval, None),
+        ("getconf \"$QUERY\"", verified, NeedApproval, None),
+        (
+            "getconf WORD_BIT > /outside/fixture.txt",
+            verified,
+            NeedApproval,
+            width,
+        ),
+        ("getconf WORD_BIT | sh", verified, NeedApproval, width),
+    ] {
+        let inventory = identity
+            .map(|identity| ("getconf".into(), identity.into()))
+            .into_iter()
+            .collect();
+        let result = ShellQueryCore::new()
+            .try_judge_static_shell_with_native_variants(request(command), &inventory)
+            .unwrap();
+        assert_eq!(result.decision, expected, "{command}: {:?}", result.reasons);
+        let selected = result
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .find(|entry| {
+                entry.normalized_command_name == "getconf" && entry.form_id.starts_with("attested_")
+            });
+        assert_eq!(
+            selected.map(|entry| entry.form_id.as_str()),
+            form,
+            "{command}"
+        );
+        if let Some(entry) = selected {
+            assert!(!entry.executes_payload && !entry.loads_tool_config);
+            assert!(!entry.operation_semantics_unresolved);
+        }
     }
 }

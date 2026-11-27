@@ -6,6 +6,13 @@ identity: {"canonical_name":"mkdir","aliases":[]}
 trust: {"tier":"tier_a","source":"built_in"}
 platform: {"os_families":["posix","linux","macos"],"shell_families":[],"requires_features":[]}
 forms:
+  - id: "missing_operands"
+    selector:
+      kind: "all"
+      items:
+        - {kind: has_native_variant, variant: gnu_coreutils_9_1}
+        - {kind: no_arguments}
+    stream_contract: {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
   - id: "show_help"
     selector: {"kind":"has_modifier","modifier":"information"}
     parameters: [{"name":"ignored_arguments","semantic":{"kind":"plain_value"},"binding":{"kind":"remaining_args"},"cardinality":"optional_many"}]
@@ -58,4 +65,6 @@ modifiers:
         binding: {"kind":"following_matched_flag","operand_mode":"optional_inline_only"}
         cardinality: "optional_many"
 subcommands: null
-extensions: {"caushell.profile/sources":["https://github.com/coreutils/coreutils/blob/master/src/mkdir.c"]}
+extensions:
+  caushell.profile/sources: ["https://github.com/coreutils/coreutils/blob/master/src/mkdir.c"]
+  caushell.profile/rejects_unknown_options_before_effects: true

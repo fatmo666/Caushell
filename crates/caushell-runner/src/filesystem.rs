@@ -74,6 +74,11 @@ pub trait FilesystemView: Send + Sync {
         caushell_types::FilesystemObservationSource::SuppliedView
     }
     fn entry(&self, path: &str) -> FilesystemEntry;
+    /// A trusted namespace observation that /dev/tty is Linux character
+    /// device 5:0. This does not observe whether the caller has a terminal.
+    fn has_controlling_terminal_device(&self) -> bool {
+        false
+    }
     fn read_directory(
         &self,
         path: &str,

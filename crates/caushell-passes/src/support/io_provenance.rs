@@ -129,7 +129,11 @@ pub(crate) fn stream_provenance_mutations(
                 },
             )
         }
-        IoTarget::Network { .. } | IoTarget::Path { .. } | IoTarget::Closed | IoTarget::Discard => {
+        IoTarget::Network { .. }
+        | IoTarget::Path { .. }
+        | IoTarget::Closed
+        | IoTarget::Discard
+        | IoTarget::ControllingTerminal => {
             return Vec::new();
         }
     };

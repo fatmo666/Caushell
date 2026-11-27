@@ -92,7 +92,7 @@ fn contains(outer: &SourceSpan, inner: &SourceSpan) -> bool {
     outer.start_byte <= inner.start_byte && inner.end_byte <= outer.end_byte
 }
 
-fn foreground_command<'a>(
+pub(super) fn foreground_command<'a>(
     parsed: &'a ParsedCommandArtifact,
     record: &ExecutionUnitResolveRecord,
 ) -> Option<&'a CommandFact> {

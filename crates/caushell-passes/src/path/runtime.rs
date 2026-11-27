@@ -28,6 +28,36 @@ pub(crate) fn runtime_path_bounds(domain: &RuntimeArgumentDomain) -> Option<Runt
             may_escape: false,
             root_membership: RootMembership::StrictDescendants,
         }),
+        RuntimeArgumentDomain::LocalBasename { prefix, suffix }
+            if prefix.len() + suffix.len() <= 4096
+                && !prefix.chars().chain(suffix.chars()).any(|ch| matches!(ch, '/' | '\0'))
+                && suffix.bytes().any(|byte| byte != b'.') =>
+        {
+            Some(RuntimePathBounds {
+                roots: Cow::Owned(vec!["./".into()]),
+                may_escape: false,
+                root_membership: RootMembership::StrictDescendants,
+            })
+        }
+        RuntimeArgumentDomain::LocalBasename { .. } => None,
+        RuntimeArgumentDomain::ShallowPathColumn { root }
+            if RuntimeArgumentDomain::is_shallow_path_column_root(root) =>
+        {
+            Some(RuntimePathBounds {
+                roots: Cow::Owned(vec!["./".into()]),
+                may_escape: false,
+                root_membership: RootMembership::Inclusive,
+            })
+        }
+        RuntimeArgumentDomain::ShallowPathColumn { .. } => None,
+        RuntimeArgumentDomain::CalendarFilename { prefix, suffix }
+            if prefix.is_empty() && suffix.is_empty() => Some(RuntimePathBounds {
+                roots: Cow::Owned(vec!["./".into()]),
+                may_escape: false,
+                // An empty capture is possible. Consumers still apply their
+                // own empty-operand semantics.
+                root_membership: RootMembership::Inclusive,
+            }),
         RuntimeArgumentDomain::ArithmeticTemplate { prefix, suffix }
         | RuntimeArgumentDomain::CalendarFilename { prefix, suffix } => {
             let (parent, basename_prefix) = match prefix.rsplit_once('/') {

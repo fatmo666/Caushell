@@ -5,11 +5,57 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 option_scope: permuted_options
 opaque_on_unresolved: true
+implicit_config_files:
+  - id: default_config
+    protected_account_defaults: {kind: search}
+    sources: [{kind: environment_directory, name: HOME, suffix: .kube/config}]
+  - id: default_preferences
+    protected_account_defaults: {kind: search}
+    sources: [{kind: environment_directory, name: HOME, suffix: .kube/kuberc}]
+environment_inputs:
+  - name: kubeconfig_environment
+    environment: {name: KUBECONFIG, empty_is_unset: true}
+    unless_modifiers: [information, config_kubeconfig]
+    semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
+  - name: kuberc_environment
+    environment: {name: KUBERC, empty_is_unset: true}
+    semantic: {kind: plain_value}
+    structured_projection:
+      branches: [{matcher: {kind: literal, value: 'off'}}]
+      fallback: {name: kuberc_control, semantic: {kind: payload, language: opaque, source: dynamic_reference, recursive: true}}
 forms:
   - id: information
     selector: &information {kind: has_modifier, modifier: information}
     parameters: [{name: ignored, semantic: {kind: plain_value}, binding: {kind: remaining_args}, cardinality: optional_many}]
     extensions: {caushell.form/suppress_modifier_effects: true}
+    stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
+  - id: get_resource_table
+    selector:
+      kind: all
+      items:
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: get}}
+        - {kind: not, item: *information}
+        - {kind: not, item: {kind: has_modifier, modifier: config_kubeconfig}}
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 2}
+        - kind: any
+          items:
+            - {kind: exact_argument_count, count: 2}
+            - kind: all
+              items:
+                - {kind: exact_argument_count, count: 3}
+                - {kind: has_modifier, modifier: all_namespaces}
+    remaining_selector: {kind: no_positional_args}
+    parameters:
+      - {name: operation, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+      - name: resource
+        semantic: {kind: plain_value}
+        binding: {kind: next_positional}
+        cardinality: required_one
+        value_constraints: [{kind: require_match, pattern: '^[A-Za-z][A-Za-z0-9.-]*(/[A-Za-z0-9][A-Za-z0-9_.-]*)?$'}]
+    effects:
+      - {kind: state_operation, state_operation: {domain: cloud_resource, operation: inspect}, target: {kind: none}}
+      - {kind: network_endpoint, target: {kind: none}}
     stream_contract: {stdin_mode: ignored, stdout_mode: data, stderr_mode: opaque, stdout_dependency: independent}
   - id: remote_pod_command
     selector: {kind: all, items: [{kind: not, item: *information}, {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: exec}}, {kind: has_positional_at, index: 1}, {kind: has_dash_dash}]}
@@ -43,6 +89,7 @@ forms:
       - {kind: read_path, target: {kind: slot, name: web_root}}
 modifiers:
   - {id: information, matcher: {kind: any_flag, flags: [--help, -h]}, ends_option_scope: true}
+  - {id: all_namespaces, matcher: {kind: any_flag, flags: [-A, --all-namespaces]}}
   - id: global_selection
     matcher: {kind: any_flag, flags: [--context, --namespace, -n, --cluster, --user, --server, -s, --request-timeout]}
     parameters: [{name: global_values, semantic: {kind: plain_value}, binding: {kind: following_matched_flag, operand_mode: next_arg}, cardinality: required_many}]
@@ -83,6 +130,9 @@ extensions:
   caushell.profile/known_limitations:
     - Kubeconfig credential plugins are retained as opaque executable configuration.
   caushell.profile/sources:
+    - https://kubernetes.io/docs/concepts/configuration/organize-cluster-access-kubeconfig/
+    - https://kubernetes.io/docs/reference/kubectl/kuberc/
+    - https://kubernetes.io/docs/reference/kubectl/generated/kubectl_get/
     - https://kubernetes.io/docs/reference/kubectl/generated/kubectl_exec/
     - https://kubernetes.io/docs/reference/kubectl/generated/kubectl_proxy/
     - https://kubernetes.io/docs/reference/config-api/kubeconfig.v1/

@@ -202,6 +202,21 @@ pub(super) fn iteration_domain(
             roots.push(value.to_string());
         } else {
             complete_literal_members = false;
+            if matches!(shell_kind, caushell_types::ShellKind::Bash)
+                && materialized.invocation.args.len() == 1
+                && !arg.quoted && !arg.runtime_data && arg.node_kind == "word"
+                && let Some(suffix) = arg.text.strip_prefix('*')
+                && !suffix.is_empty() && suffix.len() <= 256
+                && suffix.bytes().any(|byte| byte.is_ascii_alphanumeric())
+                && suffix.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+            {
+                // Bash expands this word to one field per matching basename.
+                // The default no-match literal has the same suffix and bound.
+                return Some((RuntimeArgumentDomain::LocalBasename {
+                    prefix: String::new(),
+                    suffix: suffix.into(),
+                }, false));
+            }
             // Reuse the pathname-generation proof, then retain its RAW producer
             // spelling. Normalizing ./ away would break argv prefix/affix proofs.
             let Some(PathResolution::BoundedPathSet {
