@@ -175,14 +175,21 @@ pub(super) fn resolve(
     match result {
         Ok(()) => {
             evidence.complete = true;
+            let value = match (&input.fact.lexical, evidence.roots.as_slice()) {
+                (PathResolution::FileNamePrefix { prefix, .. }, [directory]) => {
+                    PathResolution::FileNamePrefix {
+                        directory: directory.clone(),
+                        prefix: prefix.clone(),
+                    }
+                }
+                _ => PathResolution::BoundedPathSet {
+                    roots: evidence.roots.clone(),
+                    may_escape: false,
+                },
+            };
             (
                 (
-                    SemanticResolution::Resolved {
-                        value: PathResolution::BoundedPathSet {
-                            roots: evidence.roots.clone(),
-                            may_escape: false,
-                        },
-                    },
+                    SemanticResolution::Resolved { value },
                     observations,
                 ),
                 evidence,

@@ -168,6 +168,14 @@ pub enum RuntimeArgumentDomain {
     /// An empty field or one ASCII filename in the working directory. The
     /// filename cannot begin with an option marker or be "." or "..".
     LocalFilenameOrEmpty,
+    /// One nonempty shell-generated basename with already-decoded affixes.
+    /// The variable portion may begin with a native option marker.
+    LocalBasename { prefix: String, suffix: String },
+    /// One NUL-decoded size/path column projection, including a possibly
+    /// truncated final record: empty, decimal size, a prefix of the ordinary
+    /// relative root, or that root plus at most one filename component.
+    /// A truncated component can be "." or "..", so the cwd is inclusive.
+    ShallowPathColumn { root: String },
     /// Prefix + a nonempty ASCII-alphanumeric run + suffix. No particular
     /// generated filename or filesystem object is asserted.
     GeneratedFileName {
@@ -225,6 +233,12 @@ pub enum RuntimeArgumentDomain {
 pub const ARITHMETIC_STDOUT_CHARS: &str = "0123456789+- \t\n\r\x0b\x0c";
 
 impl RuntimeArgumentDomain {
+    pub fn is_shallow_path_column_root(root: &str) -> bool {
+        root.len() <= 255
+            && root.as_bytes().first().is_some_and(u8::is_ascii_alphabetic)
+            && root.bytes().all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    }
+
     pub fn has_dot_relative_components(&self) -> bool {
         matches!(self, Self::PathSet {
             roots, may_escape: false, dot_relative_components: true, ..
@@ -279,6 +293,17 @@ impl RuntimeArgumentDomain {
                     suffix: format!("{inner_suffix}{suffix}"),
                 };
             }
+            Self::LocalBasename {
+                prefix: inner_prefix,
+                suffix: inner_suffix,
+            } if prefix.len() + suffix.len() + inner_prefix.len() + inner_suffix.len() <= 4096
+                && !prefix.chars().chain(suffix.chars()).any(|ch| matches!(ch, '/' | '\0')) =>
+            {
+                return Self::LocalBasename {
+                    prefix: format!("{prefix}{inner_prefix}"),
+                    suffix: format!("{inner_suffix}{suffix}"),
+                };
+            }
             Self::ArithmeticTemplate {
                 prefix: inner_prefix,
                 suffix: inner_suffix,
@@ -322,7 +347,8 @@ impl RuntimeArgumentDomain {
                     suffix: format!("{inner_suffix}{suffix}"),
                 };
             }
-            Self::Unbounded | Self::HexadecimalRelativePath | Self::LocalFilenameOrEmpty => {
+            Self::Unbounded | Self::HexadecimalRelativePath | Self::LocalFilenameOrEmpty
+            | Self::LocalBasename { .. } | Self::ShallowPathColumn { .. } => {
                 return Self::TextTemplate {
                     prefix: prefix.to_string(),
                     suffix: suffix.to_string(),

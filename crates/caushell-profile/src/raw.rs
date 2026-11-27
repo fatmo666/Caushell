@@ -447,8 +447,13 @@ pub enum RawStdoutRecordProjection {
         syntax: crate::StdoutPathFormatSyntax,
         #[serde(default)]
         escape_modifiers: Vec<String>,
+        #[serde(default)]
+        max_depth_slot: Option<String>,
     },
     Stdin,
+    StdinTransform {
+        transform: crate::StreamRecordTransform,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]

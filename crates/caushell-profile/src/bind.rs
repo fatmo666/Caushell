@@ -343,7 +343,59 @@ pub fn root_option_ownership(
         &profile.exact_option_words,
         &profile.trailing_option_words,
         profile.dash_dash_before_operand,
+        native_early_option_rejection(profile, projection),
     )
+}
+
+fn native_early_option_rejection(
+    profile: &CommandProfile,
+    projection: &ProjectedInvocation,
+) -> crate::option_scope::EarlyOptionRejection {
+    use crate::option_scope::EarlyOptionRejection;
+    if profile.trust.source != crate::ProfileSourceKind::BuiltIn || profile.subcommands.is_some() {
+        return EarlyOptionRejection::None;
+    }
+    let declared = |key| profile.extensions.get(key).and_then(serde_json::Value::as_bool) == Some(true);
+    if declared("caushell.profile/rejects_unknown_options_before_effects") {
+        return EarlyOptionRejection::UnknownOption;
+    }
+    if declared("caushell.profile/no_path_effects_without_file_operands")
+        && let [first, second] = projection.args.as_slice()
+        && let Some(first_name) = initial_shell_basename_binding(first)
+        && Some(first_name) == initial_shell_basename_binding(second)
+    {
+        // The argv consists only of two fields derived from the same basename
+        // without a prefix. Both are option words or both are file operands.
+        // In the former case neither can be a lone '-' or the terminator.
+        return EarlyOptionRejection::NoFileOperands;
+    }
+    EarlyOptionRejection::None
+}
+
+fn initial_shell_basename_binding(arg: &crate::ProjectedArg) -> Option<String> {
+    use caushell_parse::ScalarArgumentPart;
+    use caushell_types::{ImplicitInputSource, RuntimeArgumentDomain};
+    let structure = crate::argument_structure(arg);
+    if !arg.quoted
+        || arg.implicit_input_source != Some(ImplicitInputSource::ShellIteration)
+        || !matches!(&arg.runtime_argument_domain,
+            Some(RuntimeArgumentDomain::LocalBasename { prefix, .. }) if prefix.is_empty())
+        || structure.may_equal("-") || structure.may_equal("--")
+    {
+        return None;
+    }
+    let parts = caushell_parse::scalar_word_parts(&arg.text, true, "string", false)?;
+    let parameter = match parts.as_slice() {
+        [ScalarArgumentPart::Parameter(parameter)]
+        | [ScalarArgumentPart::Parameter(parameter), ScalarArgumentPart::Literal(_)] => parameter,
+        _ => return None,
+    };
+    let crate::ShellParameterReference::Variable(name) =
+        crate::exact_shell_parameter_reference(parameter)?
+    else {
+        return None;
+    };
+    Some(name)
 }
 
 fn scoped_options(
@@ -360,6 +412,7 @@ fn scoped_options(
     exact_option_words: &[FlagName],
     trailing_option_words: &[FlagName],
     dash_dash_before_operand: bool,
+    early_option_rejection: crate::option_scope::EarlyOptionRejection,
 ) -> Option<crate::ScopedOptions> {
     if !regions.is_empty() {
         return Some(crate::argument_regions::scan(
@@ -384,6 +437,7 @@ fn scoped_options(
                 exact_option_words,
                 trailing_option_words,
                 dash_dash_before_operand,
+                early_option_rejection,
             ))
         }
     }
@@ -486,6 +540,7 @@ pub(crate) fn select_invocation_for_native_variant<'a>(
         &profile.exact_option_words,
         &profile.trailing_option_words,
         profile.dash_dash_before_operand,
+        native_early_option_rejection(profile, projection),
     );
     // A permuted grammar has no opaque child boundary. After a failed scan,
     // known controls can still select one possible form so its declared
@@ -1165,6 +1220,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 &profile.exact_option_words,
                 &profile.trailing_option_words,
                 profile.dash_dash_before_operand,
+                native_early_option_rejection(profile, projection),
             );
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
@@ -1479,6 +1535,7 @@ fn scan_subcommand_path<'p, 'a>(
         &profile.exact_option_words,
         &profile.trailing_option_words,
         profile.dash_dash_before_operand,
+        crate::option_scope::EarlyOptionRejection::None,
     );
     let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
     let mut option_terminators: Vec<_> = root_options
@@ -1533,6 +1590,7 @@ fn scan_subcommand_path<'p, 'a>(
                     &profile.exact_option_words,
                     &profile.trailing_option_words,
                     profile.dash_dash_before_operand,
+                    crate::option_scope::EarlyOptionRejection::None,
                 );
                 if let Err(problem) = ensure_option_scope(profile.primary_name(), prefix.as_ref()) {
                     error = Some(problem);
@@ -1623,6 +1681,7 @@ fn scan_subcommand_path<'p, 'a>(
             &[],
             &[],
             false,
+            crate::option_scope::EarlyOptionRejection::None,
         );
         error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
         let node_modifiers = if let Some(options) = &node_options {
@@ -1668,6 +1727,7 @@ fn scan_subcommand_path<'p, 'a>(
             &[],
             &[],
             false,
+            crate::option_scope::EarlyOptionRejection::None,
         );
         if let Err(problem) = ensure_option_scope(profile.primary_name(), node_options.as_ref()) {
             error = Some(BindError::IndeterminateDispatch {

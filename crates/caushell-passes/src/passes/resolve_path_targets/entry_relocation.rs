@@ -12,6 +12,7 @@ use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
 pub(super) struct RelocationScope {
     pub(super) root: String,
     pub(super) ordinary_source: Option<String>,
+    pub(super) ordinary_destination: Option<String>,
     pub(super) disjoint_destination: Option<String>,
 }
 
@@ -22,6 +23,7 @@ pub(super) fn close_families(
     view: Arc<dyn FilesystemView>,
     budget: &mut DirectoryReadBudget,
     entry_directory: &str,
+    foreground: impl Fn(&str) -> bool,
 ) -> Vec<DirectoryTreeEvidence> {
     let mut groups = BTreeMap::<String, Vec<usize>>::new();
     for (index, input) in inputs.iter().enumerate() {
@@ -81,7 +83,51 @@ pub(super) fn close_families(
             }
         });
         if !complete || anchors.len() > 256 { continue; }
+        if anchors.is_empty()
+            && let (Some((source, _)), [(_, destination)]) =
+                (&ordinary_source, fixed_writes.as_slice())
+            && source != destination
+            && foreground(&node)
+        {
+            let destination_index = fixed_writes[0].0;
+            if ordinary_leaf(destination, &baselines[destination_index].1) {
+                // Whether an ordinary leaf move succeeds, fails, or is
+                // skipped, neither operand becomes a link or a directory.
+                // The producer fixed point checks writes affecting either leaf.
+                let scope = RelocationScope {
+                    root: source.clone(),
+                    ordinary_source: Some(source.clone()),
+                    ordinary_destination: Some(destination.clone()),
+                    disjoint_destination: None,
+                };
+                for &index in &indices {
+                    inputs[index].relocation_scope = Some(scope.clone());
+                }
+            }
+            continue;
+        }
         let Some(root) = common_root(&anchors) else { continue };
+        if let Some((source, source_index)) = &ordinary_source
+            && anchors.as_slice() == [root.clone()]
+            && fixed_writes.is_empty()
+            && !caushell_query::path_is_within_root(source, &root)
+            && !caushell_query::path_is_within_root(&root, source)
+            && foreground(&node)
+            && baselines[*source_index].1.iter().all(|o| view.entry(&o.path) == o.entry)
+        {
+            // An ordinary disjoint source and an already closed destination
+            // family can be related without expanding either to their parent.
+            let scope = RelocationScope {
+                root,
+                ordinary_source: Some(source.clone()),
+                ordinary_destination: None,
+                disjoint_destination: None,
+            };
+            for &index in &indices {
+                inputs[index].relocation_scope = Some(scope.clone());
+            }
+            continue;
+        }
         if let [source, destination] = indices.as_slice()
             && let [(fixed, path)] = fixed_writes.as_slice()
             && destination == fixed
@@ -123,6 +169,7 @@ pub(super) fn close_families(
                 let scope = RelocationScope {
                     root,
                     ordinary_source: None,
+                    ordinary_destination: None,
                     disjoint_destination: Some(path.clone()),
                 };
                 for &index in &indices {
@@ -171,6 +218,7 @@ pub(super) fn close_families(
         let scope = RelocationScope {
             root,
             ordinary_source: ordinary_source.map(|(path, _)| path),
+            ordinary_destination: None,
             disjoint_destination: None,
         };
         for &i in &indices {

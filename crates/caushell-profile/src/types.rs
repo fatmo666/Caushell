@@ -481,9 +481,22 @@ pub enum StdoutRecordProjection {
         formats_slot: SlotName,
         syntax: StdoutPathFormatSyntax,
         escape_modifiers: Vec<ModifierId>,
+        max_depth_slot: Option<SlotName>,
     },
     /// Byte-preserving forwarding of effective stdin, not a generic transform.
     Stdin,
+    StdinTransform { transform: StreamRecordTransform },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum StreamRecordTransform {
+    /// Reorder NUL records. A missing final delimiter can be supplied,
+    /// so output framing does not certify the last record's contents.
+    ReorderNul,
+    /// Keep everything after the first tab. A record with no tab passes
+    /// through unchanged. The input and output record separator is NUL.
+    AfterFirstTabNul,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Deserialize)]

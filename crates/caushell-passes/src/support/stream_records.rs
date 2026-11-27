@@ -2,7 +2,7 @@
 use caushell_parse::{CommandFact, ParseStatus, ParsedCommandArtifact, PipelinePosition, RedirectionKind};
 use caushell_profile::{
     BoundArgumentMaterialization, BoundValue, ResolvedInvocationArtifact, SemanticValueRef,
-    SemanticValueResolution, StdoutRecordProjection, StreamRecordSeparator,
+    SemanticValueResolution, StdoutRecordProjection, StreamRecordSeparator, StreamRecordTransform,
 };
 use caushell_types::RuntimeArgumentDomain;
 
@@ -39,6 +39,7 @@ pub(crate) fn stdin_path_records(
         .commands
         .iter()
         .position(|c| c.command_index == consumer)?;
+    let mut transforms = Vec::new();
     for _ in 0..max_hops {
         let upstream_position = position.checked_sub(1)?;
         let upstream = &group.commands[upstream_position];
@@ -188,13 +189,37 @@ pub(crate) fn stdin_path_records(
                     let root = default_root.as_ref()?;
                     roots.push(root.clone());
                 }
+                if !transforms.is_empty() {
+                    let [root] = roots.as_slice() else { return None };
+                    if !RuntimeArgumentDomain::is_shallow_path_column_root(root)
+                        || !resolved.shallow_size_path_records(&roots)
+                    {
+                        return None;
+                    }
+                    // Sorting does not change the field layout. NUL can be
+                    // restored without recovering the byte content of a tail
+                    // fragment. Only one field projection is valid for this
+                    // producer; a second projection would split path bytes.
+                    let mut projected = false;
+                    for transform in transforms.into_iter().rev() {
+                        match transform {
+                            StreamRecordTransform::ReorderNul => {}
+                            StreamRecordTransform::AfterFirstTabNul if !projected => projected = true,
+                            StreamRecordTransform::AfterFirstTabNul => return None,
+                        }
+                    }
+                    return projected.then(|| PathRecords {
+                        domain: RuntimeArgumentDomain::ShallowPathColumn { root: root.clone() },
+                        separator: StreamRecordSeparator::Nul,
+                    });
+                }
                 let separator = match &records.projection {
                     StdoutRecordProjection::Paths { separator, .. } => *separator,
                     StdoutRecordProjection::FormattedPaths { .. } => {
                         roots = resolved.formatted_stdout_path_roots(&roots)?;
                         StreamRecordSeparator::Nul
                     }
-                    StdoutRecordProjection::Stdin => unreachable!(),
+                    StdoutRecordProjection::Stdin | StdoutRecordProjection::StdinTransform { .. } => unreachable!(),
                 };
                 return Some(PathRecords {
                     domain: RuntimeArgumentDomain::PathSet {
@@ -210,11 +235,14 @@ pub(crate) fn stdin_path_records(
                     separator,
                 });
             }
-            StdoutRecordProjection::Stdin => {
+            StdoutRecordProjection::Stdin | StdoutRecordProjection::StdinTransform { .. } => {
                 if effective_stdin_source(parsed, upstream.command_index)
                     != EffectiveStdinSource::Inherited
                 {
                     return None;
+                }
+                if let StdoutRecordProjection::StdinTransform { transform } = records.projection {
+                    transforms.push(transform);
                 }
                 position = upstream_position;
             }

@@ -396,6 +396,13 @@ pub(crate) fn zip_pattern_list(
     (next, false, unresolved)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum EarlyOptionRejection {
+    None,
+    UnknownOption,
+    NoFileOperands,
+}
+
 pub(crate) fn scan_leading_options(
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
@@ -409,6 +416,7 @@ pub(crate) fn scan_leading_options(
     exact_option_words: &[FlagName],
     trailing_option_words: &[FlagName],
     dash_dash_before_operand: bool,
+    early_option_rejection: EarlyOptionRejection,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         exact_argv: false,
@@ -460,7 +468,24 @@ pub(crate) fn scan_leading_options(
             // from an unbounded runtime list.
             let may_be_an_option = structure.may_start_with("-")
                 || prefixes == OptionPrefixPolicy::DashAndPlus && structure.may_start_with("+");
+            // For an opted-in native parser, the supported positional layout
+            // overapproximates all effectful parses when every option-shaped
+            // spelling is rejected before any effects. Never treat a possible
+            // terminator, long-option abbreviation, or short option as such.
+            let positional_or_rejected = permuted
+                && prefixes != OptionPrefixPolicy::DashAndPlus
+                && structure.fields == crate::ArgumentFieldCount::ExactlyOne
+                && match early_option_rejection {
+                    EarlyOptionRejection::None => false,
+                    EarlyOptionRejection::NoFileOperands => true,
+                    EarlyOptionRejection::UnknownOption => !structure.may_start_with("--")
+                        && declarations.keys().all(|flag| {
+                            flag.starts_with("--")
+                                || flag.get(..2).is_some_and(|prefix| !structure.may_start_with(prefix))
+                        }),
+                };
             if may_be_an_option
+                && !positional_or_rejected
                 && !(permuted
                     && !trailing
                     && positional_prefix.is_none()

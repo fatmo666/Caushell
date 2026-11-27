@@ -207,6 +207,18 @@ fn runtime_input_path_resolution<S: std::fmt::Debug>(
     domain: Option<&caushell_types::RuntimeArgumentDomain>,
     cwd: &str,
 ) -> PathResolution {
+    if let Some(domain @ caushell_types::RuntimeArgumentDomain::CalendarFilename { prefix, .. }) = domain
+        && runtime_path_bounds(domain).is_some()
+    {
+        let (directory, prefix) = prefix.rsplit_once('/').unwrap_or((".", prefix));
+        if !prefix.is_empty() {
+            let directory = if directory.is_empty() { "/" } else { directory };
+            return PathResolution::FileNamePrefix {
+                directory: lexical_path_from_argv(directory, cwd),
+                prefix: prefix.into(),
+            };
+        }
+    }
     match domain.and_then(runtime_path_bounds) {
         Some(bounds) => PathResolution::BoundedPathSet {
             roots: bounds

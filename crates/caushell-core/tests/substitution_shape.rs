@@ -490,6 +490,43 @@ fn quoted_calendar_archive_is_bounded_by_the_execution_directory() {
 }
 
 #[test]
+fn calendar_paths_keep_the_leaf_and_option_boundaries() {
+    let workspace = SubstitutionWorkspace::new();
+    let result = workspace.check(
+        r#"cp server.log "server.log.$(date +%Y%m%d_%H%M%S).bak" && mv server.log logs/"#,
+        None,
+    );
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    assert!(result.decision_trace.path_targets.iter().any(|target| {
+        matches!(&target.lexical, PathResolution::FileNamePrefix { prefix, .. }
+            if prefix == "server.log.")
+    }));
+    assert_eq!(
+        workspace.check(r#"mkdir -p "$(date +%Y-%m-%d)""#, None).decision,
+        Decision::Allow,
+    );
+    assert_ne!(
+        workspace.check(r#"mkdir -p "$(date +%Y/%m/%d)""#, None).decision,
+        Decision::Allow,
+    );
+}
+
+#[test]
+fn paired_basenames_do_not_erase_unrelated_option_or_link_paths() {
+    let workspace = SubstitutionWorkspace::new();
+    let paired = r#"for f in *.txt; do expand -t 4 "$f" > "$f.tmp" && mv "$f.tmp" "$f"; done"#;
+    let result = workspace.check(paired, None);
+    assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    let independent = r#"for f in *.txt; do for g in *.txt; do mv "$f.tmp" "$g"; done; done"#;
+    assert_ne!(workspace.check(independent, None).decision, Decision::Allow);
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink("/", workspace.0.join("linked.txt.tmp")).unwrap();
+        assert_ne!(workspace.check(paired, None).decision, Decision::Allow);
+    }
+}
+
+#[test]
 fn calendar_archive_still_requires_a_proven_capture_and_namespace() {
     let workspace = SubstitutionWorkspace::new();
     for command in [

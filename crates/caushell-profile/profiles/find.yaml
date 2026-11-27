@@ -231,6 +231,7 @@ forms:
         default_root: "."
         formats_slot: output_formats
         syntax: find_printf
+        max_depth_slot: depth_values
         escape_modifiers: [follow_symlinks]
       required_modifiers: [formatted_output]
       excluded_modifiers: [line_output, nul_output, list_output, information_options, file_output, formatted_file_output, legacy_archive_output]

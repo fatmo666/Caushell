@@ -13,8 +13,43 @@ pub(super) type Baseline = (
     Vec<FilesystemObservation>,
 );
 
-pub(super) fn overlaps(input: &Input, baseline: &Baseline, root: Option<&str>) -> bool {
+pub(super) fn overlaps(
+    input: &Input,
+    baseline: &Baseline,
+    writer: &Baseline,
+    root: Option<&str>,
+) -> bool {
     let Some(root) = root else { return true };
+    if let SemanticResolution::Resolved {
+        value: PathResolution::FileNamePrefix { directory, prefix },
+    } = &baseline.0
+    {
+        // The scan observes unrelated siblings to validate the snapshot.
+        // Only the parent, its ancestors, and matching subtrees affect the target.
+        return prefix_depends_on(directory, prefix, root)
+            || matches!(&input.fact.lexical,
+                PathResolution::FileNamePrefix { directory, .. }
+                if prefix_depends_on(directory, prefix, root))
+            || baseline.1.iter().any(|observation| {
+                matches!(observation.entry, FilesystemEntry::Symlink { .. })
+                    && caushell_query::path_is_within_root(&observation.path, root)
+            });
+    }
+    if let SemanticResolution::Resolved {
+        value: PathResolution::FileNamePrefix { directory, prefix },
+    } = &writer.0
+        && let SemanticResolution::Resolved { value } = &baseline.0
+        && let Some(path) = value.concrete_path()
+        && let Some(lexical) = input.fact.lexical.concrete_path()
+        && input.fact.spelling.as_ref().is_some_and(|spelling| {
+            spelling.starts_with('/') && !spelling.split('/').any(|part| part == "..")
+        })
+    {
+        return [path, lexical]
+            .into_iter()
+            .chain(baseline.1.iter().map(|observation| observation.path.as_str()))
+            .any(|candidate| prefix_covers(directory, prefix, candidate));
+    }
     // Families include descendants absent from the entry snapshot. Both
     // mutation of an ancestor and creation of a future child can affect them.
     let family_overlap = matches!(&baseline.0,
@@ -37,6 +72,21 @@ pub(super) fn overlaps(input: &Input, baseline: &Baseline, root: Option<&str>) -
             .lexical
             .concrete_path()
             .is_some_and(|path| caushell_query::path_is_within_root(path, root))
+}
+
+fn prefix_depends_on(directory: &str, prefix: &str, writer: &str) -> bool {
+    caushell_query::path_is_within_root(directory, writer)
+        || prefix_covers(directory, prefix, writer)
+}
+
+fn prefix_covers(directory: &str, prefix: &str, path: &str) -> bool {
+    path.strip_prefix(directory.trim_end_matches('/'))
+        .and_then(|rest| rest.strip_prefix('/'))
+        .and_then(|rest| rest.split('/').next())
+        .is_some_and(|first| {
+            !first.is_empty() && (!first.is_ascii() || !prefix.is_ascii()
+                || first.get(..prefix.len()).is_some_and(|head| head.eq_ignore_ascii_case(prefix)))
+        })
 }
 
 /// Close producer preconditions under other namespace mutations. If a third
@@ -73,12 +123,12 @@ pub(super) fn stable_producers(
             }
             if *other == producer
                 || completes_before_writer(&inputs[producer], &inputs[*other])
-                || !overlaps(&inputs[producer], &baselines[producer], root.as_deref())
+                || !overlaps(&inputs[producer], &baselines[producer], &baselines[*other], root.as_deref())
             {
                 continue;
             }
             if candidates.contains(other)
-                && preserves_relocation_source(&inputs[producer], &inputs[*other], root.as_deref())
+                && preserves_relocation_leaves(&inputs[producer], &inputs[*other], root.as_deref())
                 && scope_preservation(&inputs[*other], &baselines[*other], &inputs[producer], &baselines[producer])
                     .is_some()
             {
@@ -96,15 +146,14 @@ pub(super) fn stable_producers(
     candidates
 }
 
-fn preserves_relocation_source(producer: &Input, sibling: &Input, root: Option<&str>) -> bool {
-    let Some(source) = producer.relocation_scope.as_ref()
-        .and_then(|scope| scope.ordinary_source.as_deref())
-    else {
+fn preserves_relocation_leaves(producer: &Input, sibling: &Input, root: Option<&str>) -> bool {
+    let Some(scope) = producer.relocation_scope.as_ref() else {
         return true;
     };
-    if root.is_some_and(|root| {
-        !caushell_query::path_is_within_root(source, root)
-            && !caushell_query::path_is_within_root(root, source)
+    let leaves = [&scope.ordinary_source, &scope.ordinary_destination];
+    if !leaves.into_iter().flatten().any(|leaf| {
+        root.is_none_or(|root| caushell_query::path_is_within_root(leaf, root)
+            || caushell_query::path_is_within_root(root, leaf))
     }) {
         return true;
     }
@@ -148,7 +197,8 @@ pub(super) fn scope_preservation(
             }
             SemanticResolution::Resolved {
                 value: PathResolution::Concrete { path },
-            } if scope.ordinary_source.as_ref() == Some(path) => path,
+            } if scope.ordinary_source.as_ref() == Some(path)
+                || scope.ordinary_destination.as_ref() == Some(path) => path,
             _ => return None,
         };
         // An ordinary source stays a regular leaf or becomes absent. Neither
@@ -380,4 +430,16 @@ pub(super) fn ordinary_leaf(path: &str, observations: &[FilesystemObservation]) 
             matches!(o.entry, FilesystemEntry::Directory)
         }
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prefix_covers;
+
+    #[test]
+    fn filename_family_accounts_for_case_and_compares_only_the_first_component() {
+        assert!(prefix_covers("/work", "file.txt.", "/work/FILE.TXT.backup/content"));
+        assert!(!prefix_covers("/work", "file.txt.", "/work/file.txt"));
+        assert!(!prefix_covers("/work", "file.txt.", "/work/other/file.txt.backup"));
+    }
 }

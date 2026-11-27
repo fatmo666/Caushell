@@ -161,6 +161,13 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 &mut inputs, &mut baselines, &mut resolver,
                 ctx.filesystem_view(), &mut tree_budget,
                 ctx.request().shell_state_before.cwd(),
+                |node| ctx.parsed_command().is_some_and(|parsed| {
+                    records.get(node).is_some_and(|record| {
+                        directory_setup::foreground_command(parsed, record).is_some()
+                    }) && parsed.commands.iter().all(|command| {
+                        command.terminator != Some(caushell_parse::StatementTerminator::Background)
+                    })
+                }),
             ));
             directory_setup::prove_transfers(
                 ctx, &inputs, &mut baselines, &records, &mut resolver, &mut tree_budget,
@@ -185,6 +192,9 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                                 may_escape: false,
                             },
                     } if !roots.is_empty() => roots.iter().cloned().map(Some).collect(),
+                    SemanticResolution::Resolved {
+                        value: PathResolution::FileNamePrefix { directory, .. },
+                    } => vec![Some(directory.clone())],
                     _ => vec![None],
                 };
                 roots.into_iter().map(move |root| (index, root))
@@ -238,6 +248,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     let overlaps = namespace_state::overlaps(
                         &inputs[index],
                         &baselines[index],
+                        &baselines[*other],
                         root.as_deref(),
                     );
                     if overlaps && stable_producers.contains(other) {
@@ -277,7 +288,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 && matches!(
                     &resolution,
                     SemanticResolution::Resolved {
-                        value: PathResolution::BoundedPathSet { .. }
+                        value: PathResolution::BoundedPathSet { .. } | PathResolution::FileNamePrefix { .. }
                     }
                 )
             {
@@ -309,7 +320,20 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                         .into(),
                 };
             }
-            inputs[index].fact.resolution = resolution;
+            // Keep the existing directory-scope resolution for callers.
+            // The lexical fact retains the basename family used above to
+            // prove that unrelated entries cannot invalidate that resolution.
+            inputs[index].fact.resolution = match resolution {
+                SemanticResolution::Resolved {
+                    value: PathResolution::FileNamePrefix { directory, .. },
+                } => SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet {
+                        roots: vec![directory],
+                        may_escape: false,
+                    },
+                },
+                other => other,
+            };
             // A failed or budget-truncated proof must not leave a partial
             // certificate that could be mistaken for a complete namespace.
             if matches!(

@@ -694,10 +694,17 @@ pub(super) fn apply_variable_overlay(
                             parsed.shell_kind,
                         )
                     };
-                    let path_domain = if !assignment_command.conditional_execution
+                    let dominates_use = !assignment_command.conditional_execution
+                        || caushell_parse::assignment_dominates_use(
+                            &parsed.raw_command,
+                            assignment_command.span.start_byte,
+                            span_start_byte,
+                        );
+                    let path_domain = if dominates_use
+                        && !bindings.runtime_variable_target_is_unresolved(&assignment.name)
                         && bindings.variable_facts(&assignment.name) == Default::default()
                     {
-                        caushell_profile::dot_relative_parent_assignment(&assignment.value, &bindings)
+                        caushell_profile::bounded_path_assignment(&assignment.value, &bindings)
                     } else {
                         None
                     };
@@ -711,9 +718,6 @@ pub(super) fn apply_variable_overlay(
                             observed_at,
                         ),
                     );
-                    if let Some(domain) = path_domain {
-                        bindings.set_argument_domain(&assignment.name, domain);
-                    }
                     // A pure assignment command can write the same name more
                     // than once. Retain each possible partial effect, not just
                     // the last value at the end of this event.
@@ -728,13 +732,10 @@ pub(super) fn apply_variable_overlay(
                             "conditional assignment after runtime write",
                         );
                     }
-                    if !assignment_command.conditional_execution
-                        || caushell_parse::assignment_dominates_use(
-                            &parsed.raw_command,
-                            assignment_command.span.start_byte,
-                            span_start_byte,
-                        )
-                    {
+                    if let Some(domain) = path_domain {
+                        bindings.set_argument_domain(&assignment.name, domain);
+                    }
+                    if dominates_use {
                         bindings.set_variable_facts(&assignment.name, facts);
                     }
                     if assignment_command.conditional_execution

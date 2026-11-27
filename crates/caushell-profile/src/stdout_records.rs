@@ -9,6 +9,45 @@ const MAX_PROOF_BYTES: usize = 16384;
 const MAX_RECORD_ROOTS: usize = 64;
 
 impl ResolvedInvocationArtifact {
+    /// Find's size and full path occupy distinct columns. The single relative
+    /// search root and bounded depth keep every prefix of the path local.
+    pub fn shallow_size_path_records(&self, roots: &[String]) -> bool {
+        let Some(contract) = self.proven_stdout_records() else { return false };
+        let StdoutRecordProjection::FormattedPaths {
+            formats_slot,
+            syntax: StdoutPathFormatSyntax::FindPrintf,
+            max_depth_slot: Some(depth_slot),
+            escape_modifiers,
+            ..
+        } = &contract.projection else { return false };
+        if contract.native != Some(crate::StdoutRecordSyntax::Find)
+            || roots.len() != 1
+            || escape_modifiers.iter().any(|m| self.bound.applied_modifiers.contains(m))
+        {
+            return false;
+        }
+        let single_value = |slot: &crate::SlotName| {
+            let mut values = self.bound.bound_parameters.iter()
+                .filter(|p| p.name == *slot)
+                .flat_map(|p| p.semantic_values());
+            let SemanticValueResolution::Known(text) =
+                project_semantic_value(&ValueProjection::Identity, values.next()?)?
+            else {
+                return None;
+            };
+            values.next().is_none().then_some(text)
+        };
+        matches!(single_value(depth_slot).as_deref(), Some("0" | "1"))
+            && single_value(formats_slot).is_some_and(|format| {
+                ["%s\t", r"%s\t", r"%s\011"].into_iter().any(|prefix| {
+                    format.strip_prefix(prefix).is_some_and(|tail| {
+                        matches!(find_printf_records(tail).as_deref(),
+                            Some([PathRecord { prefix, source: PathSource::Full }]) if prefix.is_empty())
+                    })
+                })
+            })
+    }
+
     /// Project complete native records onto their producer-spelling anchors.
     /// No output bytes or filesystem contents are materialized.
     pub fn formatted_stdout_path_roots(&self, roots: &[String]) -> Option<Vec<String>> {

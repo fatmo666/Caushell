@@ -177,7 +177,8 @@ impl ResolvedInvocationArtifact {
         }) {
             return None;
         }
-        if matches!(contract.projection, crate::StdoutRecordProjection::Stdin)
+        if matches!(contract.projection, crate::StdoutRecordProjection::Stdin
+            | crate::StdoutRecordProjection::StdinTransform { .. })
             && streams.stdin_mode == crate::StreamInputMode::Ignored
         {
             return None;

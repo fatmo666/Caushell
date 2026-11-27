@@ -74,11 +74,33 @@ forms:
           purpose: generic_operand
     stream_contract: *streams
 
-  # With backups enabled, an existing landing entry can be moved to an
-  # additional destination. Its runtime name and content source are unproven.
+  # A trailing slash requires directory placement. Both the source's
+  # destination entry and the previous destination's numbered backup are
+  # within that directory, including when the generated basename is shortened.
+  - id: numbered_backup_into_directory
+    selector: &numbered_directory
+      kind: all
+      items:
+        - *running
+        - *implicit_target
+        - {kind: exact_positional_count, count: 2}
+        - {kind: not, item: {kind: has_modifier, modifier: no_target_directory}}
+        - {kind: not, item: {kind: has_modifier, modifier: suffix}}
+        - {kind: not, item: {kind: has_flag, flag: -b}}
+        - {kind: not, item: {kind: has_flag_at_least, flag: --backup, count: 2}}
+        - {kind: has_modifier_parameter_matching, modifier: backup, parameter: backup_control, matcher: {kind: literal, value: numbered}}
+        - {kind: last_positional_matches, matcher: {kind: regex_pattern, pattern: '^[^\x00]+/$'}}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *move_parameters
+    effects:
+      - *source_move
+      - {kind: write_path, namespace_effect: entry_relocation, path_scope: {kind: subtree}, target: {kind: slot, name: destination_path}}
+    stream_contract: *streams
+
+  # Other backup modes still have an unproved operation envelope.
   - id: backup_move
     operation_semantics_unresolved: true
-    selector: {kind: all, items: [*running, *backups, {kind: not, item: {kind: has_modifier, modifier: target_directory}}, {kind: has_positional_at, index: 1}]}
+    selector: {kind: all, items: [*running, *backups, {kind: not, item: *numbered_directory}, {kind: not, item: {kind: has_modifier, modifier: target_directory}}, {kind: has_positional_at, index: 1}]}
     remaining_selector: {kind: no_positional_args}
     parameters: *move_parameters
     effects:
@@ -126,5 +148,6 @@ modifiers:
 
 extensions:
   caushell.profile/sources: [https://github.com/coreutils/coreutils/blob/master/src/mv.c]
+  caushell.profile/no_path_effects_without_file_operands: true
   caushell.profile/known_limitations:
     - Automatic backup names and their old-destination content origin need a separate output-specific transfer declaration. --exchange and unmodeled modes remain unresolved.

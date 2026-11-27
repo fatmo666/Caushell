@@ -117,3 +117,66 @@ fn positive_record_contract_is_selected_and_bound_without_tool_name_logic() {
         );
     }
 }
+
+#[test]
+fn registered_nul_size_path_pipeline_has_complete_contracts() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    let stages = [
+        r#"find catalog -maxdepth 1 -type f -printf "%s\t%p\0""#,
+        "sort -rnz",
+        "cut -zf2-",
+        "cut -z -f2-",
+        "cut --fields=2- --zero-terminated",
+        "cut -z -f 2-",
+        "cut --fields 2- -z",
+    ];
+    let mut missing = Vec::new();
+    for command in stages {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let result = resolve_invocation_artifact_with_bindings(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::new(),
+            &SessionBindings::new(),
+        );
+        let ResolveInvocationArtifactResult::Resolved(resolved) = result else {
+            missing.push(format!("{command}: {result:#?}"));
+            continue;
+        };
+        let records = resolved.proven_stdout_records().is_some();
+        let shallow = resolved.shallow_size_path_records(&["catalog".into()]);
+        if !records || (command == stages[0] && !shallow) {
+            missing.push(format!(
+                "{command}: form={:?}, modifiers={:?}, stream={}, records={records}, shallow={shallow}",
+                resolved.bound.form_id,
+                resolved.bound.applied_modifiers,
+                resolved.proven_stream_contract().is_some(),
+            ));
+        }
+    }
+    assert!(missing.is_empty(), "{}", missing.join("\n"));
+}
+
+#[test]
+fn altered_nul_streams_cannot_establish_path_column_contracts() {
+    let registry = ProfileRegistry::built_in().unwrap();
+    for command in [
+        "cut -zf2- --complement",
+        "cut -zf2- --output-delimiter=:",
+        "cut -zf2- -s",
+        "cut -zf2- filename",
+        "sort -rnz --debug",
+        "sort -rnz filename",
+    ] {
+        let parsed = parse_command(command, ShellKind::Bash).unwrap();
+        let result = resolve_invocation_artifact_with_bindings(
+            &registry,
+            &parsed.commands[0],
+            InvocationRuntimeContext::new(),
+            &SessionBindings::new(),
+        );
+        if let ResolveInvocationArtifactResult::Resolved(resolved) = result {
+            assert!(resolved.proven_stdout_records().is_none(), "{command}");
+        }
+    }
+}

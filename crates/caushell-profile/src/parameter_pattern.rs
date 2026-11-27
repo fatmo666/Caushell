@@ -228,6 +228,25 @@ impl ParameterPattern {
                 ..
             } if !roots.is_empty() && roots.len() <= 128 => {
                 if kind.prefix() {
+                    if after.is_empty()
+                        && let Some(destination) = before.strip_suffix('/')
+                        && ordinary_relative_tree_anchor(destination)
+                        && let Some(source) = literal.strip_suffix('/')
+                        && ordinary_relative_tree_anchor(source)
+                        && roots.iter().all(|root| root == source)
+                    {
+                        // The exact source root does not match the slash.
+                        // Its unchanged basename and all trimmed descendant
+                        // spellings still fall under the destination anchor.
+                        return Some(D::PathSet {
+                            roots: vec![destination.into()],
+                            may_escape: false,
+                            basename_suffix: None,
+                            no_adjacent_slashes: false,
+                            dot_relative_components: false,
+                            execdir_leaf: false,
+                        });
+                    }
                     let roots = roots
                         .iter()
                         .map(|r| {
@@ -277,6 +296,14 @@ impl ParameterPattern {
             _ => None,
         }
     }
+}
+
+fn ordinary_relative_tree_anchor(path: &str) -> bool {
+    path.split('/').all(|part| {
+        !matches!(part, "" | "." | "..")
+            && part.as_bytes().first().is_some_and(u8::is_ascii_alphanumeric)
+            && part.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"_.-".contains(&byte))
+    })
 }
 
 fn protected_basename(suffix: &str) -> bool {

@@ -305,9 +305,21 @@ pub(crate) fn substitution_shapes(
                 return Some((token.span.clone(), SubstitutionOutputProof::LocalFilenameFields));
             }
             let quoted = token.quoted && token.node_kind == "string";
+            if quoted
+                && substitution_word_parts(token, substitution).is_some_and(|(parts, marker)| {
+                    matches!(parts.as_slice(),
+                        [ScalarArgumentPart::CommandSubstitution(word)] if word == &marker)
+                })
+                && calendar_date_format(registry, substitution, bindings, aliases, false)
+                    .is_some_and(|format| calendar_filename_format(&format, true))
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::CalendarFilename {
+                    prefix: String::new(),
+                    suffix: String::new(),
+                }));
+            }
             if shell_kind == ShellKind::Bash
                 && quoted
-                && command.command_name.as_deref() == Some("zip")
                 && let Some((prefix, suffix)) = calendar_filename_affixes(token, substitution, true, false)
                 && calendar_date_format(registry, substitution, bindings, aliases, false)
                     .is_some_and(|format| calendar_filename_format(&format, true))
@@ -699,15 +711,15 @@ fn quoted_dirname_path(
         return None;
     }
     let (parts, marker) = substitution_word_parts(token, capture)?;
-    let [ScalarArgumentPart::Literal(prefix), ScalarArgumentPart::CommandSubstitution(word)] =
-        parts.as_slice()
-    else {
-        return None;
+    let prefix = match parts.as_slice() {
+        [ScalarArgumentPart::CommandSubstitution(word)] if word == &marker => None,
+        [ScalarArgumentPart::Literal(prefix), ScalarArgumentPart::CommandSubstitution(word)]
+            if word == &marker && prefix.strip_suffix('/').is_some_and(ordinary_relative_anchor) =>
+        {
+            Some(prefix.clone())
+        }
+        _ => return None,
     };
-    let anchor = prefix.strip_suffix('/')?;
-    if word != marker || !ordinary_relative_anchor(anchor) {
-        return None;
-    }
     let parsed = parse_command(&capture.body_text, shell_kind).ok()?;
     let producer = plain_single_producer(&parsed)?;
     let name = producer.command_name.as_deref()?;
@@ -749,12 +761,22 @@ fn quoted_dirname_path(
     {
         return None;
     }
-    // dirname may return "." for a root operand. A failed capture may be
-    // empty, and command substitution strips all trailing newlines. The last
-    // directory component can therefore change. The fixed ordinary component
-    // of each input keeps any such parent step under the literal prefix.
+    // dirname can return ".", or the capture can be empty. Trimming trailing
+    // newlines can make the last component ".."; keep its parent in the
+    // envelope. The fixed ordinary first input component cannot disappear.
+    let roots = if let Some(prefix) = prefix {
+        vec![prefix]
+    } else {
+        let mut candidates = vec![String::new(), ".".into()];
+        candidates.extend(roots.iter().filter_map(|root| {
+            root.split('/').next().filter(|component| !component.is_empty()).map(str::to_owned)
+        }));
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    };
     Some(RuntimeArgumentDomain::PathSet {
-        roots: vec![prefix.clone()],
+        roots,
         may_escape: false,
         basename_suffix: None,
         no_adjacent_slashes: false,
@@ -814,7 +836,7 @@ fn calendar_filename_affixes(
     };
     let name_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
     (prefix_name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-        && prefix_name.bytes().all(|b| name_byte(b) || quoted && b == b'-')
+        && prefix_name.bytes().all(|b| name_byte(b) || quoted && matches!(b, b'-' | b'.'))
         && suffix.strip_prefix('.').is_some_and(|s| !s.is_empty() && s.bytes().all(name_byte)))
         .then(|| (prefix.clone(), suffix.clone()))
 }
@@ -824,8 +846,8 @@ fn calendar_filename_format(format: &str, allow_separator: bool) -> bool {
         return false;
     };
     !rest.is_empty()
-        && (allow_separator || !rest.contains('_'))
-        && rest.split('_').all(|run| {
+        && (allow_separator || !rest.contains(['_', '-']))
+        && rest.strip_prefix(['_', '-']).unwrap_or(rest).split(['_', '-']).all(|run| {
             let chunks = run.as_bytes().chunks_exact(2);
             !run.is_empty()
                 && chunks.remainder().is_empty()
