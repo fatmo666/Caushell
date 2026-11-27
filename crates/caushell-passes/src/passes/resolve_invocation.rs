@@ -640,9 +640,6 @@ fn static_pathname_defaults<'a>(
     let [command] = parsed.commands.as_slice() else {
         return None;
     };
-    let [leading, glob] = command.tokens.as_slice() else {
-        return None;
-    };
     let name = command.command_name.as_deref()?;
     let profile = registry.lookup(name).profile?;
     if profile.trust.source != caushell_profile::ProfileSourceKind::BuiltIn
@@ -672,7 +669,7 @@ fn static_pathname_defaults<'a>(
     }) {
         return None;
     }
-    if !profile.static_bash_pathname_defaults.as_ref()?.matches(leading, glob) {
+    if !profile.static_bash_pathname_defaults.as_ref()?.matches_invocation(&command.tokens) {
         return None;
     }
     // These patterns need neither locale-dependent character classes nor

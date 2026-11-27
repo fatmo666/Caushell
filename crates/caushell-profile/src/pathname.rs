@@ -1,4 +1,5 @@
 use crate::{ProjectedArg, WordContext};
+use caushell_parse::{CommandToken, CommandTokenKind};
 use caushell_types::ShellKind;
 
 /// The complete argument shape for which a trusted Profile can use the
@@ -10,14 +11,30 @@ pub enum StaticBashPathnameDefaults {
     FlagsAndLiteralSuffixGlob { flags: Vec<String> },
     SubstitutionAndSuffixGlob,
     SubstitutionAndPrefixOrSuffixGlob,
+    SubstitutionOrTransliterationGlob { transliteration_flags: Vec<String> },
 }
 
 impl StaticBashPathnameDefaults {
-    pub fn matches(
-        &self,
-        leading: &caushell_parse::CommandToken,
-        glob: &caushell_parse::CommandToken,
-    ) -> bool {
+    pub fn matches_invocation(&self, tokens: &[CommandToken]) -> bool {
+        match (self, tokens) {
+            (_, [leading, glob]) => self.matches(leading, glob),
+            (
+                Self::SubstitutionOrTransliterationGlob {
+                    transliteration_flags,
+                },
+                [flag, program, glob],
+            ) => {
+                flag.kind == CommandTokenKind::Flag
+                    && !flag.runtime_data
+                    && !flag.quoted
+                    && transliteration_flags.contains(&flag.text)
+                    && Self::matches_star_transliteration(program, glob)
+            }
+            _ => false,
+        }
+    }
+
+    pub fn matches(&self, leading: &CommandToken, glob: &CommandToken) -> bool {
         if leading.runtime_data || glob.runtime_data || glob.quoted {
             return false;
         }
@@ -64,7 +81,21 @@ impl StaticBashPathnameDefaults {
                     })
                     && crate::rename_payload::is_static_substitution(&leading.text)
             }
+            Self::SubstitutionOrTransliterationGlob { .. } => {
+                Self::SubstitutionAndPrefixOrSuffixGlob.matches(leading, glob)
+                    || Self::matches_star_transliteration(leading, glob)
+            }
         }
+    }
+
+    fn matches_star_transliteration(program: &CommandToken, glob: &CommandToken) -> bool {
+        !program.runtime_data
+            && !glob.runtime_data
+            && !glob.quoted
+            && glob.text == "*"
+            && crate::shell_word_structure(&program.text, program.quoted, &program.node_kind)
+                .exact_value()
+                .is_some_and(crate::rename_payload::is_static_transliteration)
     }
 }
 
@@ -383,6 +414,38 @@ impl PathnamePattern {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn registered_transliteration_requires_a_bare_star_and_only_declared_flags() {
+        let shape = StaticBashPathnameDefaults::SubstitutionOrTransliterationGlob {
+            transliteration_flags: vec!["-f".into()],
+        };
+        let matches = |args: &str| {
+            let parsed =
+                caushell_parse::parse_command(&format!("rename {args}"), ShellKind::Bash).unwrap();
+            shape.matches_invocation(&parsed.commands[0].tokens)
+        };
+        for args in [
+            "'y/A-Z/a-z/' *",
+            "-f 'y/A-Z/a-z/' *",
+            "'s/x/y/' x*",
+            "'s/x/y/' *.txt",
+        ] {
+            assert!(matches(args), "{args}");
+        }
+        for args in [
+            "-v 'y/A-Z/a-z/' *",
+            "-f -f 'y/A-Z/a-z/' *",
+            "-f 's/x/y/' *",
+            "'y/A-Z/a-z/' '*'",
+            "'y/A-Z/a-z/' **",
+            "'y/A-Z/a-z/' dir/*",
+            "y/$letters/a-z/ *",
+            "'y/A/./' *",
+        ] {
+            assert!(!matches(args), "{args}");
+        }
+    }
 
     #[test]
     fn registered_prefix_glob_requires_literal_substitution_and_single_component() {

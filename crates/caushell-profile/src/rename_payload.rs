@@ -543,6 +543,12 @@ pub(crate) fn is_static_substitution(text: &str) -> bool {
             if matches!(ops.as_slice(), [Operation::Substitute { .. }]))
 }
 
+pub(crate) fn is_static_transliteration(text: &str) -> bool {
+    text.len() <= 65_536
+        && matches!(Program::parse(text, 1), Ok(Program(ops))
+            if matches!(ops.as_slice(), [Operation::Transliterate { bounded: true, .. }]))
+}
+
 impl Program {
     fn parse(text: &str, budget: usize) -> Result<Self> {
         if text.contains('\0') {
