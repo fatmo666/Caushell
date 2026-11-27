@@ -24,18 +24,19 @@ environment_inputs:
   - name: input_preprocessor
     environment: {name: LESSOPEN, empty_is_unset: true}
     require_observation: true
+    unless_native_variant: &util_linux_variant util_linux_more_2_38_1
     semantic: &input_hook {kind: payload, language: opaque, source: dynamic_reference, recursive: true}
   - name: input_postprocessor
     environment: {name: LESSCLOSE, empty_is_unset: true}
     require_observation: true
+    unless_native_variant: *util_linux_variant
     semantic: *input_hook
 
 forms:
-  - id: interactive_read
-    selector:
-      kind: all
-      items: []
-    parameters:
+  # The attested implementation copies input directly when fd 1 is a pipe.
+  - id: util_linux_read
+    selector: &is_util_linux {kind: has_native_variant, variant: *util_linux_variant}
+    parameters: &read_parameters
       - name: input_paths
         semantic:
           kind: path
@@ -47,15 +48,32 @@ forms:
         value_constraints:
           - kind: exclude_literal
             value: "-"
-    stream_contract:
+    stream_contract: &read_streams
       stdin_mode: data_optional
       stdout_mode: opaque
       stderr_mode: opaque
     effects:
-      - kind: read_path
+      - &read_effect
+        kind: read_path
         target:
           kind: slot
           name: input_paths
+      - kind: open_interactive_escape_surface
+        target:
+          kind: none
+        surface:
+          kind: pager
+          requires_tty: true
+          requires_stdout_tty: true
+          capabilities:
+            - spawn_shell
+
+  - id: interactive_read
+    selector: {kind: not, item: *is_util_linux}
+    parameters: *read_parameters
+    stream_contract: *read_streams
+    effects:
+      - *read_effect
       - kind: open_interactive_escape_surface
         target:
           kind: none
@@ -76,4 +94,4 @@ extensions:
     - https://kernel.googlesource.com/pub/scm/utils/util-linux/util-linux/+/refs/tags/v2.41.3/text-utils/more.c
   caushell.profile/known_limitations:
     - FILE value "-" is treated as a non-path stdin sentinel, but the profile does not yet materialize mixed stdin-plus-file input as an explicit implicit input fact.
-    - The profile does not determine whether more is standalone or less-compatible, resolve lesskey files, or prove that input preprocessing was disabled or used. LESSCLOSE is conservatively retained when present.
+    - Without an attested native variant, the profile retains the interactive and Less input-hook effects. It does not resolve lesskey files or determine whether an observed Less hook ran.

@@ -2,6 +2,92 @@
 use caushell_core::ShellQueryCore;
 use caushell_types::*;
 
+fn check_filtered_name(command: &str, omitted_tool: Option<&str>) -> CheckResponse {
+    let inventory = [
+        ("tr", "gnu_tr_9_1_ascii_locales"),
+        ("fold", "gnu_coreutils_9_1"),
+        ("head", "gnu_coreutils_9_1"),
+        ("mkdir", "gnu_coreutils_9_1"),
+        ("xargs", "gnu_findutils_4_9_0"),
+    ]
+    .into_iter()
+    .filter(|(tool, _)| Some(*tool) != omitted_tool)
+    .map(|(tool, identity)| (tool.into(), identity.into()))
+    .collect();
+    let mut req = request(command);
+    req.runtime.shell_runtime_capabilities = ShellRuntimeCapabilities::request_only();
+    ShellQueryCore::new()
+        .try_judge_static_shell_with_native_variants(req, &inventory)
+        .unwrap()
+}
+
+#[test]
+fn filtered_filename_consumers_keep_empty_and_nonempty_cases() {
+    let output = "printf fixture | tr -dc 'a-zA-Z0-9' | fold -w 20 | head -n 1";
+    let bash = format!("mkdir $({output})");
+    let xargs = format!("{output} | xargs mkdir");
+    for (command, expected_forms) in [
+        (bash.as_str(), &["create_directories"][..]),
+        (xargs.as_str(), &["create_directories", "missing_operands"]),
+        ("mkdir $(printf '')", &["missing_operands"]),
+        ("printf '' | xargs mkdir", &["missing_operands"]),
+    ] {
+        let response = check_filtered_name(command, None);
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{command}: {:?}",
+            response.reasons
+        );
+        let mut forms: Vec<_> = response
+            .decision_trace
+            .execution_semantics
+            .iter()
+            .filter(|entry| entry.normalized_command_name == "mkdir")
+            .map(|entry| entry.form_id.as_str())
+            .collect();
+        forms.sort_unstable();
+        assert_eq!(forms, expected_forms, "{command}");
+    }
+}
+
+#[test]
+fn filtered_filename_proof_requires_ownership_and_preserves_path_guards() {
+    let output = "printf fixture | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1";
+    let bash = format!("mkdir $({output})");
+    let xargs = format!("{output} | xargs mkdir");
+    for tool in ["tr", "fold", "head", "mkdir"] {
+        for command in [&bash, &xargs] {
+            assert_eq!(
+                check_filtered_name(command, Some(tool)).decision,
+                Decision::NeedApproval
+            );
+        }
+    }
+    assert_eq!(
+        check_filtered_name(&xargs, Some("xargs")).decision,
+        Decision::NeedApproval
+    );
+    for command in [
+        format!("mkdir $({})", output.replace("a-zA-Z0-9", "A-z")),
+        format!(
+            "mkdir $({})",
+            output.replace("fold -w 32 |", "fold -w 32 |&")
+        ),
+        format!("mkdir $({output}) > /outside/fixture"),
+        format!("IFS=A; mkdir $({output})"),
+        "printf '%s\\n' /outside/fixture | xargs mkdir".into(),
+    ] {
+        let response = check_filtered_name(&command, None);
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            response.reasons
+        );
+    }
+}
+
 fn request(command: &str) -> CheckRequest {
     CheckRequest {
         session_id: SessionId::new("stdout-shape-test"),

@@ -11,6 +11,7 @@ pub(crate) fn attach(
     mut bound: BoundInvocation,
     command: &caushell_parse::CommandFact,
     bindings: &SessionBindings,
+    native_variant: Option<&str>,
 ) -> BoundInvocation {
     // This fact is supplied by the owning executor, not guessed from a name,
     // host platform, task environment, or a version probe before approval.
@@ -49,10 +50,11 @@ pub(crate) fn attach(
     let prefix_values = crate::materialize_prefix_environment(command, bindings);
     let mut added = false;
     for input in &profile.environment_inputs {
-        if input
-            .unless_modifiers
-            .iter()
-            .any(|id| bound.applied_modifiers.contains(id))
+        if native_variant.is_some_and(|variant| input.unless_native_variant.as_deref() == Some(variant))
+            || input
+                .unless_modifiers
+                .iter()
+                .any(|id| bound.applied_modifiers.contains(id))
         {
             continue;
         }

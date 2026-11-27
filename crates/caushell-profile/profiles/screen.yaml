@@ -77,10 +77,59 @@ forms:
     parameters: *arguments
     effects: [*inspect]
     stream_contract: *streams
+  - id: set_window_title
+    selector: &set_title
+      kind: all
+      items:
+        - {kind: has_flag, flag: -X}
+        - {kind: no_dash_dash}
+        - {kind: exact_positional_count, count: 2}
+        - {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: title}}
+        - {kind: has_positional_at_matching, index: 1, matcher: {kind: regex_pattern, pattern: '\A[A-Za-z0-9][A-Za-z0-9 ._-]*\z'}}
+        - kind: not
+          item:
+            kind: any
+            items:
+              - {kind: has_flag_at_least, flag: -X, count: 2}
+              - {kind: has_flag_at_least, flag: -x, count: 2}
+              - {kind: has_flag_at_least, flag: -S, count: 2}
+              - {kind: has_flag_at_least, flag: -p, count: 2}
+              - {kind: has_flag, flag: -wipe}
+              - {kind: has_modifier, modifier: version}
+              - {kind: has_modifier, modifier: list}
+              - {kind: has_modifier, modifier: query}
+              - {kind: has_modifier, modifier: query_switches}
+              - {kind: has_modifier, modifier: create_mode}
+              - {kind: has_modifier, modifier: create_named}
+              - {kind: has_modifier, modifier: attach_mode}
+              - {kind: has_modifier, modifier: detach_mode}
+              - {kind: has_modifier, modifier: configuration}
+              - {kind: has_modifier, modifier: logging}
+              - {kind: has_modifier, modifier: logfile}
+              - {kind: has_modifier, modifier: launch_values}
+              - {kind: has_modifier, modifier: launch_switches}
+              - {kind: all, items: [{kind: has_modifier, modifier: multiattach}, {kind: has_modifier, modifier: session_name}]}
+        - kind: any
+          items:
+            - {kind: not, item: {kind: has_modifier, modifier: multiattach}}
+            - {kind: has_modifier_parameter_matching, modifier: multiattach, parameter: attach_session_name, matcher: &local_selector {kind: regex_pattern, pattern: '\A[A-Za-z0-9_.][A-Za-z0-9_.-]*\z'}}
+        - kind: any
+          items:
+            - {kind: not, item: {kind: has_modifier, modifier: session_name}}
+            - {kind: has_modifier_parameter_matching, modifier: session_name, parameter: session_name, matcher: *local_selector}
+        - kind: any
+          items:
+            - {kind: not, item: {kind: has_modifier, modifier: window}}
+            - {kind: has_modifier_parameter_matching, modifier: window, parameter: window, matcher: *local_selector}
+    parameters: *arguments
+    effects: [{kind: terminal_session_operation, terminal_session_operation: set_window_title, target: {kind: none}}]
+    stream_contract: *streams
+    extensions: &require_option_ownership {caushell.form/require_proven_option_ownership: true}
   - id: control_session
     selector: &control
       kind: all
       items:
+        - &not_set_title {kind: not, item: *set_title}
         - {kind: not, item: &inspect_form {kind: any, items: [*version, *list, *query]}}
         - {kind: not, item: &query_modes {kind: any, items: [{kind: has_modifier, modifier: version}, {kind: has_modifier, modifier: list}, {kind: has_modifier, modifier: query}]}}
         # Screen consumes a following session name for -x only while no
@@ -104,11 +153,12 @@ forms:
     parameters: *arguments
     effects: [{kind: terminal_session_operation, terminal_session_operation: control, target: {kind: none}}]
     stream_contract: *streams
-    extensions: &require_option_ownership {caushell.form/require_proven_option_ownership: true}
+    extensions: *require_option_ownership
   - id: attach_session
     selector: &attach
       kind: all
       items:
+        - *not_set_title
         - {kind: not, item: *inspect_form}
         - {kind: not, item: *query_modes}
         - {kind: not, item: *control}
@@ -122,6 +172,7 @@ forms:
     selector: &create
       kind: all
       items:
+        - *not_set_title
         - {kind: not, item: *inspect_form}
         - {kind: not, item: *query_modes}
         - {kind: not, item: *control}
@@ -134,7 +185,7 @@ forms:
       - {kind: load_config, target: {kind: configured_path, sources: [], environment: {name: SYSTEM_SCREENRC}, missing: unknown, purpose: tool_config}}
     stream_contract: *streams
   - id: opaque_session_operation
-    selector: {kind: all, items: [{kind: not, item: *inspect_form}, {kind: not, item: *control}, {kind: not, item: *attach}, {kind: not, item: *create}]}
+    selector: {kind: all, items: [*not_set_title, {kind: not, item: *inspect_form}, {kind: not, item: *control}, {kind: not, item: *attach}, {kind: not, item: *create}]}
     parameters: *arguments
     effects: [*opaque]
     stream_contract: *streams
@@ -182,7 +233,7 @@ extensions:
     - https://ftp.gnu.org/gnu/screen/screen-5.0.1.tar.gz
     - https://raw.githubusercontent.com/gnu-mirror-unofficial/screen/master/src/screen.c
   caushell.profile/known_limitations:
-    - Explicit version/list/query forms inspect state; creation, attachment, control and unknown syntax request approval. Query admission is not a whole-program zero-side-effect guarantee for runtime socket-registry bookkeeping.
+    - Explicit version/list/query forms inspect state. A proved -X title with one plain title and fixed local selectors changes only the selected window title. Creation, attachment, other control, and unknown syntax retain their approvals.
     - Query subcommands are case-sensitive and argumentless; title/number with values, select, echo and arbitrary query commands remain opaque.
     - Option spellings and common native clusters are declared explicitly. Other clusters, abbreviations, option arity gaps and mixed query/control modes remain opaque instead of being guessed safe.
     - Standalone -x can consume a following session name before option scanning continues. Competing session selectors and unresolved operand ownership retain conservative operation semantics. Other attach spellings retain their existing analysis.

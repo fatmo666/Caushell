@@ -242,6 +242,53 @@ fn more_reports_unobserved_input_hooks_independently_of_interactivity() {
 }
 
 #[test]
+fn more_requires_attested_util_linux_and_direct_stdout_pipeline() {
+    let known = Some("util_linux_more_2_38_1");
+    for (command, variant, expected) in [
+        ("more notes.txt | cat", known, Decision::Allow),
+        ("printf fixture | more | cat", known, Decision::Allow),
+        ("more notes.txt", known, Decision::NeedApproval),
+        ("printf fixture | more", known, Decision::NeedApproval),
+        ("more notes.txt >/dev/tty | cat", known, Decision::NeedApproval),
+        ("more notes.txt 1>&2 | cat", known, Decision::NeedApproval),
+        ("PATH=./bin:$PATH more notes.txt | cat", known, Decision::NeedApproval),
+        (
+            "more notes.txt | cat",
+            Some("less_compatible"),
+            Decision::NeedApproval,
+        ),
+        ("more notes.txt | cat", None, Decision::NeedApproval),
+    ] {
+        let mut request = request(command);
+        request.runtime.shell_runtime_capabilities = ShellRuntimeCapabilities::request_only();
+        let inventory = variant
+            .map(|variant| ("more".into(), variant.into()))
+            .into_iter()
+            .collect();
+        let response = ShellQueryCore::new()
+            .try_judge_static_shell_with_native_variants(request, &inventory)
+            .unwrap();
+        assert_eq!(
+            response.decision, expected,
+            "{command} [{variant:?}]: {:?}",
+            response.reasons,
+        );
+        if expected == Decision::Allow {
+            assert!(response.decision_trace.execution_semantics.iter().any(|s| {
+                s.normalized_command_name == "more"
+                    && s.form_id == "util_linux_read"
+                    && !s.opens_interactive_escape_surface
+            }));
+        }
+        if command == "more notes.txt" {
+            assert!(response.decision_trace.findings.iter().any(|finding| {
+                finding.rule_id == RuleId::InteractiveEscapeSurface
+            }));
+        }
+    }
+}
+
+#[test]
 fn more_keeps_observed_input_hooks_opaque_and_empty_overrides_inert() {
     for command in [
         "LESSOPEN=fixture-open LESSCLOSE='' more notes.txt | cat",

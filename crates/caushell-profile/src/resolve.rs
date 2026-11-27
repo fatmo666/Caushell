@@ -578,7 +578,7 @@ fn resolve_invocation_with_proofs<'a>(
                         arg.node_kind = "runtime_scalar".into();
                     }
                     crate::SubstitutionOutputProof::LocalFilenameFields
-                        if profile.primary_name() == "touch"
+                        if matches!(profile.primary_name(), "touch" | "mkdir")
                             && profile.trust.source == crate::ProfileSourceKind::BuiltIn =>
                     {
                         arg.implicit_input_source =
@@ -590,6 +590,7 @@ fn resolve_invocation_with_proofs<'a>(
                     }
                     crate::SubstitutionOutputProof::LocalFilenameFields
                     | crate::SubstitutionOutputProof::LocalMovePathFields
+                    | crate::SubstitutionOutputProof::OptionalMoveSourceFields(_)
                     | crate::SubstitutionOutputProof::DecimalCalendarFields
                     | crate::SubstitutionOutputProof::LineCountQuit
                     | crate::SubstitutionOutputProof::SedDayTemplate { .. }
@@ -607,14 +608,17 @@ fn resolve_invocation_with_proofs<'a>(
             .argument_regions
             .iter()
             .all(|r| matches!(r.id.as_str(), "exec" | "execdir" | "ok" | "okdir"));
-    let arithmetic_fields = constant_arithmetic_fields(command, &projection, bindings);
+    let mut supplemental_fields = constant_arithmetic_fields(command, &projection, bindings);
+    supplemental_fields.extend(crate::native_effect_envelope::optional_move_source_fields(
+        profile, &projection, bindings, proofs,
+    ));
     let mut all_fields;
-    let fields = if arithmetic_fields.is_empty() {
+    let fields = if supplemental_fields.is_empty() {
         fields
     } else {
         all_fields = fields.to_vec();
-        all_fields.extend(arithmetic_fields.into_iter().filter(|arithmetic| {
-            !fields.iter().any(|field| field.span == arithmetic.span)
+        all_fields.extend(supplemental_fields.into_iter().filter(|supplement| {
+            !fields.iter().any(|field| field.span == supplement.span)
         }));
         &all_fields
     };
@@ -669,6 +673,11 @@ fn resolve_invocation_with_proofs<'a>(
         .then(|| crate::native_effect_envelope::symbolic_shell_argv_prefix(profile, &materialized_projection))
         .flatten();
     let binding_projection = symbolic_prefix.as_ref().unwrap_or(original_projection);
+    let selected_native_variant = if symbolic_prefix.is_none() {
+        native_variant
+    } else {
+        None
+    };
     let selection = match symbolic_prefix.as_ref() {
         Some(prefix) => select_invocation_for_native_variant(profile, prefix, None),
         None => original_selection,
@@ -678,7 +687,13 @@ fn resolve_invocation_with_proofs<'a>(
             let bound = bind_invocation(profile, binding_projection, &selection);
             let bound =
                 attach_bound_argument_materialization(bound, &materialized_projection, bindings);
-            let bound = crate::environment_inputs::attach(profile, bound, command, bindings);
+            let bound = crate::environment_inputs::attach(
+                profile,
+                bound,
+                command,
+                bindings,
+                selected_native_variant,
+            );
             let mut bound = attach_argument_file_effects(profile, &materialized_projection, bound);
             let known_printf_format = crate::native_variable_writes::attach(
                 profile, &projection, &materialized_projection, &lookup_domain,
@@ -793,7 +808,12 @@ fn resolve_invocation_with_proofs<'a>(
                     &mut bound,
                 );
             }
-            crate::native_effect_envelope::close_symbolic_shell_argv(profile, &materialized_projection, &mut bound);
+            let gzip_read_mode = native_variant
+                .and(materialized_projection.invocation.args.first())
+                .and_then(|flag| crate::gnu_gzip_read_mode(profile, flag, bindings));
+            crate::native_effect_envelope::close_symbolic_shell_argv(
+                profile, &materialized_projection, gzip_read_mode, &mut bound,
+            );
             if !candidate_argv_only && !materialized_projection.shell_expansion_unresolved {
                 crate::native_effect_envelope::retain_chgrp_single_field_effects(
                     profile, &materialized_projection, &mut bound,
@@ -885,13 +905,14 @@ fn resolve_invocation_with_proofs<'a>(
                             ),
                             command,
                             bindings,
+                            None,
                         ),
                     )
                 } else {
                     attach_argument_file_effects(
                         profile,
                         &materialized_projection,
-                        crate::environment_inputs::attach(profile, bound, command, bindings),
+                        crate::environment_inputs::attach(profile, bound, command, bindings, None),
                     )
                 }
             }),

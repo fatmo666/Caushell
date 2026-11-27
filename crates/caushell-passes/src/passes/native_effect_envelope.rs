@@ -9,6 +9,7 @@ pub(super) fn refine(
     command: &caushell_parse::CommandFact,
     bindings: &SessionBindings,
     shell: ShellKind,
+    fixed_initial_argv: bool,
     result: &mut ResolveInvocationArtifactResult,
 ) {
     let name = match result {
@@ -34,7 +35,8 @@ pub(super) fn refine(
     let contract = profile
         .native_argv_effect_envelope
         .unwrap_or(NativeArgvEffectEnvelope::ContentRead);
-    if !super::symbolic_native_inputs::effect_profile(profile, contract) {
+    let effect_profile = super::symbolic_native_inputs::effect_profile(profile, contract);
+    if !effect_profile && !matches!(name.as_str(), "gzip" | "gunzip") {
         return;
     }
     let projection = project_invocation(
@@ -57,6 +59,23 @@ pub(super) fn refine(
         .position(|arg| argument_structure(arg).exact_value().is_none())
         .unwrap_or(shell_end);
     let mixed = prefix_end < shell_end;
+    let gzip_inspection = fixed_initial_argv
+        && start == Some(1)
+        && !mixed
+        && !materialized.shell_expansion_unresolved
+        && shell == ShellKind::Bash
+        && command.command_name.as_deref() == Some(profile.primary_name())
+        && command.prefix_assignments.is_empty()
+        && matches!(bindings.command_lookup_domain(), CommandLookupDomain::External)
+        && gnu_gzip_read_mode(profile, &argv.args[0], bindings).is_some_and(|mode| {
+            mode.is_inspection()
+                && matches!(result, ResolveInvocationArtifactResult::Resolved(r)
+                    if mode.owns_argv_gap(&r.bound)
+                        && r.bound.effects.iter().all(super::symbolic_native_inputs::read_effect))
+        });
+    if !effect_profile && !gzip_inspection {
+        return;
+    }
     // A native tail and an unresolved shell field have different origins.
     // Combine them only for a declared, audited total content-reader surface.
     // Later fixed controls and other implicit argument sources keep their gap.
@@ -186,6 +205,7 @@ pub(super) fn refine(
     }
     if start.is_some()
         && profile.native_argv_effect_envelope != Some(contract)
+        && !gzip_inspection
         && !selection
             .as_ref()
             .is_ok_and(|selection| !selection.option_terminators.is_empty())

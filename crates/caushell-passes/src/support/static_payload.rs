@@ -4,7 +4,7 @@ use caushell_graph::{NodeId, NodeKind};
 use caushell_parse::{CommandFact, CommandTokenKind, ParsedCommandArtifact, RedirectionKind};
 use caushell_profile::{SessionBindings, exact_scalar_shell_parameter_reference_value};
 use caushell_query::{
-    CommandInvocationRef, ExecutionUnitHistoryQuery, ExecutionUnitRef, IoTarget,
+    CommandInvocationRef, ExecutionUnitHistoryQuery, ExecutionUnitRef, IoTarget, IoTargetQuery,
     PathContentProduceQuery, QuerySession,
 };
 use caushell_types::{CommandSequenceNo, ProvenanceProduceKind, SessionId};
@@ -1170,6 +1170,7 @@ pub(crate) fn static_io_target_evidence(
         }
         IoTarget::Network { .. }
         | IoTarget::InheritedDescriptor { .. }
+        | IoTarget::ControllingTerminal
         | IoTarget::UnknownDescriptor { .. } => StaticStreamEvidence::unknown(),
     }
 }
@@ -1185,6 +1186,10 @@ fn immediate_file_write_evidence(
     home: Option<&str>,
     remaining_depth: u8,
 ) -> StaticStreamEvidence {
+    // Terminal output cannot supply bytes to a later open for input.
+    if path == IoTargetQuery::CONTROLLING_TERMINAL_PATH {
+        return StaticStreamEvidence::unknown();
+    }
     // Only a complete immediate replacement certifies this version. Older
     // literal fragments cannot certify bytes after an intervening writer.
     let Some(writer) = consumer.checked_sub(1) else {
@@ -1534,7 +1539,9 @@ fn known_literal_path_content_before_scoped_command_with_depth(
     home: Option<&str>,
     depth: usize,
 ) -> Option<String> {
-    if depth >= MAX_LITERAL_CONTENT_TRACE_HOPS {
+    if depth >= MAX_LITERAL_CONTENT_TRACE_HOPS
+        || path == IoTargetQuery::CONTROLLING_TERMINAL_PATH
+    {
         return None;
     }
 
@@ -1577,7 +1584,9 @@ fn known_literal_path_content_before_execution_unit_with_depth(
     home: Option<&str>,
     depth: usize,
 ) -> Option<String> {
-    if depth >= MAX_LITERAL_CONTENT_TRACE_HOPS {
+    if depth >= MAX_LITERAL_CONTENT_TRACE_HOPS
+        || path == IoTargetQuery::CONTROLLING_TERMINAL_PATH
+    {
         return None;
     }
 
@@ -1676,7 +1685,9 @@ fn known_literal_path_content_before_sequence_with_depth(
     home: Option<&str>,
     depth: usize,
 ) -> Option<String> {
-    if depth >= MAX_LITERAL_CONTENT_TRACE_HOPS {
+    if depth >= MAX_LITERAL_CONTENT_TRACE_HOPS
+        || path == IoTargetQuery::CONTROLLING_TERMINAL_PATH
+    {
         return None;
     }
 

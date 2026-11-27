@@ -1,7 +1,7 @@
 //! Optional byte recovery must not replace a closed symbolic effect proof.
 use caushell_profile::{
     CommandProfile, Effect, ProfileRegistry, ResolveInvocationArtifactResult,
-    ResolvedInvocationArtifact, bind_invocation, select_invocation,
+    ResolvedInvocationArtifact, SessionBindings, bind_invocation, select_invocation,
 };
 use caushell_runner::{ExecutionUnitOriginKind, RunnerContext};
 use caushell_types::NativeInputEffectEvidence;
@@ -19,13 +19,25 @@ pub(super) fn effect_profile(profile: &CommandProfile, contract: caushell_types:
     caushell_profile::native_effect_contract_is_closed(profile, contract)
 }
 
-fn closed_effects(profile: &CommandProfile, resolved: &ResolvedInvocationArtifact) -> bool {
+fn closed_effects(
+    profile: &CommandProfile,
+    resolved: &ResolvedInvocationArtifact,
+    bindings: &SessionBindings,
+) -> bool {
     let contract = resolved
         .bound
         .native_argv_effect_envelope
         .or(profile.native_argv_effect_envelope)
         .unwrap_or(caushell_types::NativeArgvEffectEnvelope::ContentRead);
-    if !effect_profile(profile, contract)
+    // Authorize only the proved inspection effects of this dispatched child.
+    let gzip_inspection = resolved.bound.native_argv_effect_envelope
+        == Some(caushell_types::NativeArgvEffectEnvelope::ContentRead)
+        && resolved.bound.form_id.as_str() == "__native_argv_effect_envelope__"
+        && resolved.materialized_projection.invocation.args.first().is_some_and(|flag| {
+            caushell_profile::gnu_gzip_read_mode(profile, flag, bindings)
+                .is_some_and(caushell_profile::GnuGzipReadMode::is_inspection)
+        });
+    if (!effect_profile(profile, contract) && !gzip_inspection)
         || resolved.bound.operation_semantics_unresolved
         || !resolved.bound.residuals.is_empty()
         || resolved
@@ -129,7 +141,7 @@ pub(super) fn prove(
             return None;
         };
         let profile = registry.lookup(&resolved.normalized_command_name).profile?;
-        if !closed_effects(profile, resolved) {
+        if !closed_effects(profile, resolved, &child.bindings) {
             return None;
         }
     }

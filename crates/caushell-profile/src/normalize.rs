@@ -205,6 +205,17 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 "invalid environment input semantic, name or modifier".into(),
             ));
         }
+        if input.unless_native_variant.as_deref().is_some_and(|variant| {
+            variant.is_empty()
+                || variant.len() > 128
+                || !variant.bytes().all(|b| {
+                    b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-' | b'.')
+                })
+        }) {
+            return Err(NormalizeError::InvalidStructuredProjection(
+                "environment input native variant requires a bounded identifier".into(),
+            ));
+        }
         if let Some(grammar) = &parameter.structured_projection {
             if grammar.branches.iter().any(|branch| {
                 branch.unless_parameter_matches.is_some()
@@ -248,6 +259,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
                 .into_iter()
                 .map(ModifierId::new)
                 .collect(),
+            unless_native_variant: input.unless_native_variant,
         });
     }
     validate_effect_input_contracts(&forms, &modifiers)?;

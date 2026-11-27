@@ -28,11 +28,29 @@ pub enum IoTarget {
     },
     Closed,
     Discard,
+    /// A content write to the calling process's Linux controlling terminal.
+    ControllingTerminal,
 }
 
 pub struct IoTargetQuery;
 
 impl IoTargetQuery {
+    pub const CONTROLLING_TERMINAL_PATH: &str = "/dev/tty";
+
+    /// The caller must establish device identity in the protected namespace.
+    /// Keep the original spelling so a normalized traversal cannot become a
+    /// terminal output. This channel is independent of stdout and stderr.
+    pub fn controlling_terminal_output(
+        spelling: &str,
+        resolved: &PathResolution,
+        verified_device: bool,
+    ) -> Option<IoTarget> {
+        (verified_device
+            && spelling == Self::CONTROLLING_TERMINAL_PATH
+            && resolved.concrete_path() == Some(Self::CONTROLLING_TERMINAL_PATH))
+        .then_some(IoTarget::ControllingTerminal)
+    }
+
     /// Already-decoded Bash redirect spelling, BEFORE filesystem normalization.
     /// Bash's special open pattern is /dev/{tcp,udp}/*/*, not a path alias.
     pub fn bash_network_redirection(spelling: &str) -> Option<IoTarget> {

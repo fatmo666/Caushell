@@ -266,6 +266,99 @@ fn native_surface_is_direct(profile: &CommandProfile) -> bool {
         && profile.selection_failure_effects.is_empty()
 }
 
+/// Nonmutating modes selected by an exact first native option word.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum GnuGzipReadMode {
+    List,
+    Test,
+    DecompressToStdout,
+}
+
+impl GnuGzipReadMode {
+    /// The symbolic inspection dispatch can bound the effects of each child.
+    /// Streamed decompression through a dispatcher still uses its existing
+    /// input-record and output-stream checks.
+    pub fn is_inspection(self) -> bool {
+        matches!(self, Self::List | Self::Test)
+    }
+
+    /// Recover just argv ownership for the selected nonmutating form.
+    pub fn owns_argv_gap(self, bound: &crate::BoundInvocation) -> bool {
+        use crate::{ResidualKind, ResidualSurface};
+        let known_form = match self {
+            Self::List => matches!(
+                bound.form_id.as_str(),
+                "inspect_files" | "inspect_stdin" | "list_files" | "list_stdin"
+            ),
+            Self::Test => matches!(bound.form_id.as_str(), "test_files" | "test_stdin"),
+            Self::DecompressToStdout => matches!(
+                bound.form_id.as_str(),
+                "decompress_stdout_files" | "decompress_stdout_stdin"
+            ),
+        };
+        known_form
+            && bound.operation_semantics_unresolved
+            && bound.payload_projections.is_empty()
+            && matches!(bound.residuals.as_slice(), [gap]
+                if gap.kind == ResidualKind::UnboundControlSurface
+                    && gap.surface == ResidualSurface::Control
+                    && gap.reason == crate::bind::ARGUMENT_REGION_OWNERSHIP_GAP
+                    && gap.slot.is_none())
+    }
+}
+
+/// Modern GNU gzip parses its environment options separately. A first option
+/// word containing only reviewed flag-only switches cannot lose its output or
+/// inspection mode to a subsequent operand. The gunzip wrapper must also be
+/// certified to forward argv to the protected gzip lookup in this environment.
+pub fn gnu_gzip_read_mode(
+    profile: &CommandProfile,
+    flag: &crate::ProjectedArg,
+    bindings: &crate::SessionBindings,
+) -> Option<GnuGzipReadMode> {
+    use GnuGzipReadMode::*;
+    let wrapper = match profile.primary_name() {
+        "gzip" => false,
+        "gunzip" if bindings.native_variant("gunzip") == Some("gnu_gzip_wrapper") => true,
+        _ => return None,
+    };
+    if bindings.native_variant("gzip") != Some("gnu_modern")
+        || profile.trust.source != crate::ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || profile.native_variable_writes.is_some()
+        || profile.modifiers.iter().any(|modifier| {
+            modifier.effects.iter().any(|effect| {
+                !native_effect_contract_allows_effect(NativeArgvEffectEnvelope::ContentRead, effect)
+            })
+        })
+        || flag.implicit_input_source.is_some()
+    {
+        return None;
+    }
+
+    let structure = crate::argument_structure(flag);
+    let word = structure.exact_value()?;
+    match word {
+        "--list" => return Some(List),
+        "--test" => return Some(Test),
+        "--stdout" | "--to-stdout" if wrapper => return Some(DecompressToStdout),
+        _ => {}
+    }
+    let flags = word.strip_prefix('-')?.as_bytes();
+    if !flags.iter().all(|flag| b"cdlqtv".contains(flag)) {
+        return None;
+    }
+    if flags.contains(&b'l') {
+        Some(List)
+    } else if flags.contains(&b't') {
+        Some(Test)
+    } else if flags.contains(&b'c') && (wrapper || flags.contains(&b'd')) {
+        Some(DecompressToStdout)
+    } else {
+        None
+    }
+}
+
 /// A fixed batch switch and process filter stay noninteractive when a
 /// decimal PID capture is missing, split, or rejected by the native parser.
 pub(crate) fn retain_top_batch_pid_fields(
@@ -326,6 +419,55 @@ pub(crate) fn retain_top_batch_pid_fields(
     // Keep the batch form's stream behavior. The bound does not prove
     // an exact process list or a finite successful output.
     bound.stdout_growth_complete = false;
+}
+
+/// Bind the populated branch normally once the same binder has proved that
+/// the empty branch is an operand error with no native effects.
+pub(crate) fn optional_move_source_fields(
+    profile: &CommandProfile,
+    argv: &crate::ProjectedInvocation,
+    bindings: &crate::SessionBindings,
+    proofs: &[(caushell_parse::SourceSpan, crate::SubstitutionOutputProof)],
+) -> Option<crate::ArgumentFieldsProof> {
+    use crate::{ArgumentFieldLayout, ArgumentFieldsProof, SubstitutionOutputProof};
+    let [(span, SubstitutionOutputProof::OptionalMoveSourceFields(fields))] = proofs else {
+        return None;
+    };
+    let [source, _destination] = argv.args.as_slice() else {
+        return None;
+    };
+    if profile.primary_name() != "mv"
+        || profile.trust.source != crate::ProfileSourceKind::BuiltIn
+        || !native_surface_is_direct(profile)
+        || span != &source.span
+        || fields.is_empty()
+        || fields.iter().any(|field| field.starts_with('-'))
+    {
+        return None;
+    }
+    let mut proof = ArgumentFieldsProof {
+        span: span.clone(),
+        source_word: source.text.clone(),
+        layout: ArgumentFieldLayout::Exact(Vec::new()),
+    };
+    let empty = crate::materialize::materialize_projected_invocation_with_argument_fields(
+        argv, bindings, std::slice::from_ref(&proof), false,
+    );
+    if empty.shell_expansion_unresolved || empty.invocation.args.len() != 1 {
+        return None;
+    }
+    let selection = crate::select_invocation(profile, &empty.invocation).ok()?;
+    let bound = crate::bind_invocation(profile, &empty.invocation, &selection);
+    if bound.form_id.as_str() != "missing_operands"
+        || !bound.applied_modifiers.is_empty()
+        || bound.operation_semantics_unresolved
+        || !bound.residuals.is_empty()
+        || !bound.effects.is_empty()
+    {
+        return None;
+    }
+    proof.layout = ArgumentFieldLayout::Exact(fields.clone());
+    Some(proof)
 }
 
 /// For an option-free native move the last surviving field is the destination.
@@ -968,13 +1110,26 @@ pub(crate) fn symbolic_shell_argv_prefix(
 pub(crate) fn close_symbolic_shell_argv(
     profile: &CommandProfile,
     materialized: &crate::MaterializedProjectedInvocation,
+    gzip_read_mode: Option<GnuGzipReadMode>,
     bound: &mut crate::BoundInvocation,
 ) {
     use crate::*;
-    let Some(prefix) = symbolic_shell_argv_prefix(profile, materialized) else {
+    let (contract, start) = if let Some(prefix) = symbolic_shell_argv_prefix(profile, materialized) {
+        (profile.native_argv_effect_envelope.unwrap(), prefix.args.len())
+    } else if let [flag, tail] = materialized.invocation.args.as_slice()
+        && materialized.invocation.shell_kind == caushell_types::ShellKind::Bash
+        && !materialized.shell_expansion_unresolved
+        && !flag.runtime_data
+        && !tail.runtime_data
+        && tail.implicit_input_source.is_none()
+        && tail.runtime_argument_domain.is_none()
+        && argument_structure(tail).exact_value().is_none()
+        && gzip_read_mode.is_some_and(|mode| mode.owns_argv_gap(bound))
+    {
+        (NativeArgvEffectEnvelope::ContentRead, 1)
+    } else {
         return;
     };
-    let contract = profile.native_argv_effect_envelope.unwrap();
     if bound
         .effects
         .iter()
@@ -982,7 +1137,6 @@ pub(crate) fn close_symbolic_shell_argv(
     {
         return;
     }
-    let start = prefix.args.len();
     let argv = &materialized.invocation;
     for (slot, role, effect) in [
         (

@@ -3,7 +3,7 @@ use caushell_profile::{
     BoundArgumentMaterialization, EffectKind, EffectTarget, FilesystemNamespaceImpact,
     SemanticValueRef, SemanticValueResolution,
 };
-use caushell_query::IoTarget;
+use caushell_query::{IoTarget, IoTargetQuery};
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
     PathResolution, PathTargetAccess, PathTargetFact, PathTargetOperation, SemanticGapKind,
@@ -47,6 +47,7 @@ struct Input {
     fact: PathTargetFact,
     namespace_write: bool,
     pending_resolution: bool,
+    direct_content_output: bool,
     cwd_dependent: bool,
     directory_anchor: Option<String>,
     namespace_effect: Option<caushell_types::PathNamespaceEffect>,
@@ -214,6 +215,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             // It cannot participate in a closed abstract namespace proof.
             std::collections::BTreeSet::new()
         };
+        let mut terminal_device = None;
         for index in 0..inputs.len() {
             if !inputs[index].pending_resolution {
                 continue;
@@ -285,6 +287,27 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     SemanticGapKind::UnresolvedOperation,
                     "directory family cannot be closed over opaque action semantics",
                 );
+            }
+            let input = &inputs[index];
+            if input.direct_content_output
+                && !input.cwd_dependent
+                && ctx.assumes_protected_defaults()
+                && let Some(spelling) = input.fact.spelling.as_deref()
+                && spelling == IoTargetQuery::CONTROLLING_TERMINAL_PATH
+                && let SemanticResolution::Resolved { value } = &resolution
+                && let Some(IoTarget::ControllingTerminal) =
+                    IoTargetQuery::controlling_terminal_output(
+                        spelling,
+                        value,
+                        *terminal_device.get_or_insert_with(|| {
+                            ctx.filesystem_view().has_controlling_terminal_device()
+                        }),
+                    )
+            {
+                resolution = SemanticResolution::NotApplicable {
+                    reason: "content output to the verified Linux controlling-terminal device"
+                        .into(),
+                };
             }
             inputs[index].fact.resolution = resolution;
             // A failed or budget-truncated proof must not leave a partial
@@ -443,6 +466,7 @@ fn new_input(
             && operation != PathTargetOperation::Metadata
             && access != PathTargetAccess::Follow,
         pending_resolution: true,
+        direct_content_output: false,
         cwd_dependent: false,
         directory_anchor: None,
         namespace_effect: None,
@@ -507,6 +531,22 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                         );
                         let mut spelling =
                             target_spelling(record, &target.slot_name, &lexical, base, home);
+                        let direct_content_output = operation == PathTargetOperation::Write
+                            && access == PathTargetAccess::Follow
+                            && !archive_members
+                            && effect.namespace_effect.is_none()
+                            && effect.path_access == Some(caushell_profile::PathAccessKind::ContentOpen)
+                            && matches!(&effect.target, EffectTarget::Slot(_))
+                            && matches!(
+                                record.result(),
+                                caushell_profile::ResolveInvocationArtifactResult::Resolved(_)
+                            );
+                        if ctx.assumes_protected_defaults()
+                            && direct_content_output
+                            && lexical.concrete_path() == Some(IoTargetQuery::CONTROLLING_TERMINAL_PATH)
+                        {
+                            spelling = target.terminal_operand_spelling.clone();
+                        }
                         let mut not_applicable = false;
                         if access == PathTargetAccess::Follow
                             && lexical.concrete_path().is_some_and(|p| {
@@ -557,6 +597,7 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             lexical,
                             spelling,
                         );
+                        input.direct_content_output = direct_content_output;
                         input.fact.metadata_mutation = target.metadata_mutation.clone();
                         // A plugin/config/wrapper may execute arbitrary logic;
                         // its declaration is not a closed namespace transformer.
@@ -757,6 +798,11 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                         reason: "redirection uses a non-filesystem channel".into(),
                     };
                 }
+                input.direct_content_output = path
+                    .fact
+                    .operator
+                    .as_deref()
+                    .is_some_and(is_file_write_redirection_operator);
                 input.cwd_dependent = path.cwd_dependent;
                 inputs.push(input);
             }
@@ -804,6 +850,12 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                 reason: "redirection uses a non-filesystem channel".into(),
             };
         }
+        input.direct_content_output = syntax
+            .path
+            .fact
+            .operator
+            .as_deref()
+            .is_some_and(is_file_write_redirection_operator);
         input.cwd_dependent = cwd_dependent;
         inputs.push(input);
     }

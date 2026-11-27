@@ -73,6 +73,8 @@ pub struct RawEnvironmentInput {
     pub structured_projection: Option<RawStructuredProjection>,
     #[serde(default)]
     pub unless_modifiers: Vec<String>,
+    #[serde(default)]
+    pub unless_native_variant: Option<String>,
 }
 
 /// A tool expands matching argv before parsing its ordinary options.

@@ -8,14 +8,34 @@ option_matching: exact_names
 opaque_on_unresolved: true
 
 forms:
+  # The attested Debian binary has no ABI helper selection code. Keep
+  # this closure scoped to the complete argv of the verified queries.
+  - id: attested_integer_width
+    selector: &attested_width
+      kind: all
+      items:
+        - &attested_query
+          kind: all
+          items:
+            - {kind: has_native_variant, variant: debian_getconf_2_36_deb12u14}
+            - {kind: exact_argument_count, count: 1}
+        - &width_query
+          kind: all
+          items:
+            - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(LONG|WORD)_BIT$'}}
+            - {kind: not, item: {kind: has_modifier, modifier: enumerate}}
+    parameters: &width_parameters
+      - {name: variable, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+    remaining_selector: {kind: no_positional_args}
+    stream_contract: &opaque_output {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+
   - id: print_integer_width
     selector:
       kind: all
       items:
-        - {kind: has_positional_at_matching, index: 0, matcher: {kind: regex_pattern, pattern: '^(LONG|WORD)_BIT$'}}
-        - {kind: not, item: {kind: has_modifier, modifier: enumerate}}
-    parameters:
-      - {name: variable, semantic: {kind: plain_value}, binding: {kind: next_positional}, cardinality: required_one}
+        - *width_query
+        - {kind: not, item: *attested_width}
+    parameters: *width_parameters
     remaining_selector: {kind: no_positional_args}
     # Some glibc builds consult their default ABI selection before reading
     # the variable. The selected installation and helper are unobserved.
@@ -23,22 +43,36 @@ forms:
     effects:
       - &abi_config {kind: load_config, target: {kind: configured_path, sources: [], missing: unknown, purpose: tool_config}}
       - &abi_helper {kind: execute_payload, target: {kind: configured_path, sources: [], missing: unknown, purpose: script_source}}
-    stream_contract: &opaque_output {stdin_mode: ignored, stdout_mode: opaque, stderr_mode: opaque}
+    stream_contract: *opaque_output
+
+  - id: attested_list_configuration
+    selector: &attested_listing
+      kind: all
+      items:
+        - *attested_query
+        - &list_default
+          kind: all
+          items:
+            - &listing {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -a}}
+            - &no_delimiter {kind: no_dash_dash}
+            - {kind: exact_positional_count, count: 0}
+            - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: &any_argument {kind: regex_pattern, pattern: '[\s\S]*'}}}
+    effects:
+      # glibc can query pathname limits at / even without a pathname operand.
+      - &default_path_read {kind: read_path, target: {kind: tool_convention_path, path: '/', convention: default_input, purpose: generic_operand}}
+    stream_contract: *opaque_output
 
   - id: list_configuration
     selector:
       kind: all
       items:
-        - &listing {kind: has_argument_at_matching, index: 0, matcher: {kind: literal, value: -a}}
-        - &no_delimiter {kind: no_dash_dash}
-        - {kind: exact_positional_count, count: 0}
-        - {kind: not, item: {kind: has_argument_at_matching, index: 1, matcher: &any_argument {kind: regex_pattern, pattern: '[\s\S]*'}}}
+        - *list_default
+        - {kind: not, item: *attested_listing}
     operation_semantics_unresolved: true
     effects:
       - *abi_config
       - *abi_helper
-      # glibc can query pathname limits at / even without a pathname operand.
-      - {kind: read_path, target: {kind: tool_convention_path, path: '/', convention: default_input, purpose: generic_operand}}
+      - *default_path_read
     stream_contract: *opaque_output
 
   - id: list_path_configuration
@@ -70,5 +104,5 @@ extensions:
     - https://github.com/bminor/glibc/blob/glibc-2.36/posix/getconf.c
   caushell.profile/known_limitations:
     - Supports integer-width queries and the shared leading -a forms with an optional ordinary pathname. A single named pathname variable and explicit ABI selection remain unresolved.
-    - Builds that select a default ABI can read configuration and delegate to an installation-specific helper even without an explicit option. The executable, configuration, and helper selection are not proved.
+    - Builds that select a default ABI can read configuration and delegate to an installation-specific helper even without an explicit option. Only the attested Debian implementation closes this gap, for one-argument width queries and enumeration without a pathname.
     - The width depends on the native ABI. Enumeration scope and output vary by implementation. No output value or downstream argument shape is certified.

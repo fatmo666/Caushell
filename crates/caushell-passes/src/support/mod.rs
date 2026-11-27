@@ -57,7 +57,10 @@ mod shell_redirections;
 pub(crate) use shell_redirections::shell_syntax_redirections;
 mod static_payload;
 mod substitution_shape;
-pub(crate) use substitution_shape::{plain_single_producer, quoted_find_positional_capture, substitution_shapes};
+pub(crate) use substitution_shape::{
+    attested_pipeline_tool, filtered_filename_stdout, grep_stdin_label_stdout, plain_single_producer,
+    quoted_find_positional_capture, substitution_shapes,
+};
 mod stream_records;
 mod stream_semantics;
 pub(crate) use shell_io_scope::{collect_shell_io_scope_mutations, projected_shell_scope_parents};

@@ -1,10 +1,12 @@
 //! Commands are analyzed only; no tested shell strings are executed.
 use caushell_core::ShellQueryCore;
 use caushell_graph::NodeKind;
+use caushell_runner::FilesystemView;
 use caushell_types::{
-    CheckRequest, CommandSequenceNo, Decision, ProvenanceArtifact, RuleId, RuntimeMetadata,
-    SessionId, ShellKind, ShellRuntimeCapabilities, ShellStateSnapshot,
+    CheckRequest, CommandSequenceNo, Decision, FilesystemEntry, ProvenanceArtifact, RuleId,
+    RuntimeMetadata, SessionId, ShellKind, ShellRuntimeCapabilities, ShellStateSnapshot,
 };
+use std::sync::Arc;
 
 fn request(command: &str) -> CheckRequest {
     CheckRequest {
@@ -26,6 +28,97 @@ fn request(command: &str) -> CheckRequest {
 fn expect(command: &str, expected: Decision) {
     let result = ShellQueryCore::new().check(request(command));
     assert_eq!(result.decision, expected, "{command}: {result:#?}");
+}
+
+struct TerminalNamespace {
+    verified: bool,
+    redirected: bool,
+}
+
+impl FilesystemView for TerminalNamespace {
+    fn entry(&self, path: &str) -> FilesystemEntry {
+        match path {
+            "/tmp" | "/tmp/project" | "/dev" | "/outside" => FilesystemEntry::Directory,
+            "/dev/tty" if self.redirected => FilesystemEntry::Symlink {
+                target: "/outside/file".into(),
+            },
+            "/dev/tty" | "/outside/file" => FilesystemEntry::File,
+            _ => FilesystemEntry::Missing,
+        }
+    }
+
+    fn has_controlling_terminal_device(&self) -> bool {
+        self.verified
+    }
+}
+
+#[test]
+fn static_terminal_content_outputs_need_device_and_namespace_proof() {
+    for command in [
+        "printf FIXTURE | tee /dev/tty local.txt",
+        "printf FIXTURE >/dev/tty",
+        "{ printf FIXTURE; } >/dev/tty",
+    ] {
+        for (verified, redirected, expected) in [
+            (true, false, Decision::Allow),
+            (false, false, Decision::NeedApproval),
+            (true, true, Decision::NeedApproval),
+        ] {
+            let mut core = ShellQueryCore::new()
+                .with_filesystem_view(Arc::new(TerminalNamespace { verified, redirected }));
+            let result = core.try_judge_static_shell(request(command)).unwrap();
+            assert_eq!(result.decision, expected, "{command}: {:?}", result.reasons);
+        }
+    }
+}
+
+#[test]
+fn static_terminal_output_does_not_cover_other_effects_or_path_spellings() {
+    for command in [
+        "printf FIXTURE | tee /dev/tty /outside/file",
+        "printf FIXTURE | tee /dev/tty /outside/../dev/tty",
+        "printf FIXTURE >/dev/tty 2>/outside/file",
+        "printf FIXTURE >/outside/../dev/tty",
+        "printf FIXTURE 3<>/dev/tty",
+        "chmod 600 /dev/tty",
+        "mkdir /dev/tty",
+    ] {
+        let mut core = ShellQueryCore::new().with_filesystem_view(Arc::new(TerminalNamespace {
+            verified: true,
+            redirected: false,
+        }));
+        let result = core.try_judge_static_shell(request(command)).unwrap();
+        assert_eq!(
+            result.decision,
+            Decision::NeedApproval,
+            "{command}: {:?}",
+            result.reasons
+        );
+        assert!(
+            result
+                .decision_trace
+                .findings
+                .iter()
+                .any(|finding| finding.rule_id == RuleId::OutsideWorkspaceMutation),
+            "{command}: {:?}",
+            result.reasons
+        );
+    }
+}
+
+#[test]
+fn terminal_output_does_not_prove_the_content_of_a_later_read() {
+    let mut core = ShellQueryCore::new().with_filesystem_view(Arc::new(TerminalNamespace {
+        verified: true,
+        redirected: false,
+    }));
+    let result = core
+        .try_judge_static_shell(request("printf 'printf FIXTURE' >/dev/tty; bash </dev/tty"))
+        .unwrap();
+    assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    assert!(!result.decision_trace.findings.iter().any(|finding| {
+        finding.rule_id == RuleId::OutsideWorkspaceMutation
+    }));
 }
 
 #[test]

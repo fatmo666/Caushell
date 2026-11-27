@@ -35,7 +35,13 @@ impl SessionAnalysisPass for InteractiveEscapeGuardPass {
             for operation in semantics
                 .terminal_session_operations()
                 .iter()
-                .filter(|op| **op != TerminalSessionOperationKind::Inspect)
+                .filter(|op| {
+                    !matches!(
+                        op,
+                        TerminalSessionOperationKind::Inspect
+                            | TerminalSessionOperationKind::SetWindowTitle
+                    )
+                })
             {
                 let rule = RuleId::TerminalSessionOperation;
                 let reason = format!(

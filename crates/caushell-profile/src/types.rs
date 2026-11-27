@@ -1570,6 +1570,8 @@ pub struct EnvironmentInput {
     pub require_observation: bool,
     pub structured_projection: Option<StructuredProjection>,
     pub unless_modifiers: Vec<ModifierId>,
+    /// An attested implementation that does not consume this input.
+    pub unless_native_variant: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

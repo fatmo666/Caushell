@@ -62,13 +62,16 @@ pub enum SubstitutionOutputProof {
     /// One quoted word whose complete pathname spelling is bounded, including
     /// the case where its command substitution emits nothing.
     PathWord(caushell_types::RuntimeArgumentDomain),
-    /// A calendar capture and its literal affixes are local filename fields
-    /// under all IFS settings. Their count and actual bytes remain unknown.
+    /// Capture fields are local filenames after the validated shell splitting.
+    /// Their actual bytes remain unknown and there may be no fields.
     LocalFilenameFields,
     /// Fields of one unquoted calendar pathname with a literal directory
     /// prefix and extension. All nonempty fields name working-directory
     /// descendants, but splitting can shift earlier fields into source roles.
     LocalMovePathFields,
+    /// An unquoted source word for a native move. It contributes either no
+    /// fields or these exact data fields. The destination is still separate.
+    OptionalMoveSourceFields(Vec<String>),
     /// An unquoted date capture whose stdout is empty or decimal digits.
     /// Field splitting may still remove it or produce more than one field.
     DecimalCalendarFields,

@@ -8006,19 +8006,41 @@ fn expanded_static_xargs_children(
             max_nested_parse_depth.saturating_sub(entry.depth),
         )
     };
-    let sequence_items = if native.is_none() && !evidence.complete
+    let possible_items = if native.is_none() && !evidence.complete
         && let XargsDispatchMode::ReplaceToken { token } = &config.dispatch_mode
         && dispatch_argument_scalar(&candidate.command).is_some_and(|name| !name.contains(token))
     {
-        fixed_sequence_replacement_items(registry, entry, resolved, &config)
+        fixed_sequence_replacement_items(registry, entry, resolved, &config).or_else(|| {
+            if candidate.lookup_domain != caushell_profile::CommandLookupDomain::External
+                || dispatch_argument_scalar(&candidate.command).as_deref() != Some("mv")
+                || entry.bindings.native_variant("mv") != Some("gnu_coreutils_9_1")
+            {
+                return None;
+            }
+            grep_label_replacement_items(registry, session, request, entry, resolved, &config)
+        })
     } else {
         None
     };
-    let enumerated_sequence = sequence_items.is_some();
+    let enumerated_input = possible_items.is_some();
+    let attested_mkdir_dispatch = resolved.bound.applied_modifiers.is_empty()
+        && config.decoding_proved
+        && matches!(config.item_mode, XargsItemMode::WhitespaceSeparated)
+        && matches!(config.dispatch_mode, XargsDispatchMode::AppendAll)
+        && candidate.lookup_domain == caushell_profile::CommandLookupDomain::External
+        && dispatch_argument_scalar(&candidate.command).as_deref() == Some("mkdir")
+        && candidate.argv.is_empty()
+        && attested_xargs_mkdir(registry, session, request, entry);
+    let filtered_filename = attested_mkdir_dispatch
+        && native.is_none() && !evidence.complete && !enumerated_input
+        && *arity_budget > 0
+        && filtered_filename_for_xargs(registry, session, request, entry);
     // A domain proof is useful even when none of the concrete input bytes are
     // known. Never reinterpret it as literal shell text or an exact argv list.
-    let input_domain = if native.is_none() && config.decoding_proved && !evidence.complete
-        && !enumerated_sequence
+    let input_domain = if filtered_filename {
+        Some(caushell_types::RuntimeArgumentDomain::LocalFilenameOrEmpty)
+    } else if native.is_none() && config.decoding_proved && !evidence.complete
+        && !enumerated_input
     {
         match config.item_mode {
             XargsItemMode::NullSeparated if !has_applied_modifier(&resolved.bound, "arg_file") => {
@@ -8046,11 +8068,11 @@ fn expanded_static_xargs_children(
     } else {
         &[]
     };
-    let decoded_items = sequence_items.or_else(|| {
+    let decoded_items = possible_items.or_else(|| {
         xargs_items_from_payloads(payloads, &config.item_mode, config.eof_marker.as_deref())
     });
     // A failed native input decoder is not proof of an empty argv batch.
-    let input_complete = config.decoding_proved && (evidence.complete || enumerated_sequence)
+    let input_complete = config.decoding_proved && (evidence.complete || enumerated_input)
         && decoded_items.is_some();
     let items = decoded_items
         .unwrap_or_default()
@@ -8089,7 +8111,16 @@ fn expanded_static_xargs_children(
     if groups.is_empty() && input_complete && config.run_if_empty {
         groups.push(Vec::new());
     }
-    if !input_complete {
+    if filtered_filename {
+        // The decoder can receive no filename or exactly one. Preserve the
+        // default launch on empty stdin as an independent argv alternative.
+        *arity_budget -= 1;
+        groups.clear();
+        if config.run_if_empty {
+            groups.push(Vec::new());
+        }
+        groups.push(vec![XargsItem::UnknownScalar]);
+    } else if !input_complete {
         // The unresolved portion may contain any number of argv items.
         // One typed tail marker keeps the child incomplete without claiming a
         // precise arity or turning input bytes into shell source.
@@ -8306,10 +8337,16 @@ fn expanded_static_xargs_children(
         }
 
         let mut command = child_candidate.to_command_fact();
+        if attested_mkdir_dispatch && child_candidate.argv.is_empty() {
+            // The launcher wrote the utility name literally. Default xargs
+            // can supply arguments from stdin, but cannot replace that name.
+            // Preserve its existing attestation for the missing-operand form.
+            command.command_name_runtime_data = false;
+        }
         // A tool-level confirmation is a possible execution branch, not proof
         // that the child has no effects. Preserve its conditional status.
         command.conditional_execution |=
-            config.requires_confirmation || arity_alternatives || alternative_order || enumerated_sequence;
+            config.requires_confirmation || arity_alternatives || alternative_order || enumerated_input;
         let child_bindings =
             dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
@@ -8326,6 +8363,16 @@ fn expanded_static_xargs_children(
                 &command,
                 &child_bindings,
                 entry.shell_kind,
+                // The launcher's own environment and initial argv must
+                // preserve the protected lookup and the first utility option.
+                matches!(config.dispatch_mode, XargsDispatchMode::AppendAll)
+                    && insertion_index.is_none()
+                    && entry.parsed_scope.commands.get(entry.command_ref.command_index)
+                        .is_some_and(|launcher| {
+                            launcher.command_name.as_deref() == Some("xargs")
+                                && !launcher.command_name_runtime_data
+                                && launcher.prefix_assignments.is_empty()
+                        }),
                 &mut resolved_child,
             );
         }
@@ -8400,6 +8447,110 @@ fn expanded_static_xargs_children(
         });
     }
     children
+}
+
+fn grep_label_replacement_items(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+    consumer: &caushell_profile::ResolvedInvocationArtifact,
+    config: &XargsStaticExpansionConfig,
+) -> Option<Vec<String>> {
+    let scope = &entry.static_payload_scope;
+    let parsed = &scope.parsed_scope;
+    if entry.origin_kind != ExecutionUnitOriginKind::TopLevel
+        || entry.depth != 0
+        || entry.shell_kind != caushell_types::ShellKind::Bash
+        || scope.stdin_is_parent_output
+        || scope.command_index + 1 != parsed.commands.len()
+        || !config.decoding_proved
+        || config.run_if_empty
+        || config.eof_marker.is_some()
+        || !matches!(config.item_mode, XargsItemMode::NewlineSeparated)
+        || consumer.bound.applied_modifiers.iter().any(|modifier| {
+            !matches!(modifier.as_str(), "replace_token" | "replace_token_optional" | "no_run_if_empty")
+        })
+    {
+        return None;
+    }
+    let launcher = parsed.commands.get(scope.command_index)?;
+    let aliases = alias_bindings(session.summary(), request);
+    if !crate::support::attested_pipeline_tool(
+        registry, launcher, &entry.bindings, &aliases, "xargs", "gnu_findutils_4_9_0",
+    ) {
+        return None;
+    }
+    let output = scope.command_index.checked_sub(1)?;
+    let streams = crate::support::grep_stdin_label_stdout(
+        registry, parsed, output, &entry.bindings, &aliases,
+    )?;
+    let mut items = Vec::new();
+    for stream in streams {
+        // Replacement mode launches one job per record and none for an
+        // empty stream. Keep all possible jobs as conditional children.
+        items.extend(xargs_items_from_payloads(&[stream.into()], &config.item_mode, None)?);
+    }
+    Some(items)
+}
+
+fn filtered_filename_for_xargs(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+) -> bool {
+    let scope = &entry.static_payload_scope;
+    let parsed = &scope.parsed_scope;
+    let consumer = scope.command_index;
+    if scope.stdin_is_parent_output || consumer + 1 != parsed.commands.len() {
+        return false;
+    }
+    let Some(output) = consumer.checked_sub(1) else {
+        return false;
+    };
+    let aliases = alias_bindings(session.summary(), request);
+    crate::support::filtered_filename_stdout(registry, parsed, output, &entry.bindings, &aliases)
+}
+
+fn attested_xargs_mkdir(
+    registry: &ProfileRegistry,
+    session: SessionView<'_>,
+    request: &CheckRequest,
+    entry: &ExpandedFrontierEntry,
+) -> bool {
+    let scope = &entry.static_payload_scope;
+    if entry.shell_kind != caushell_types::ShellKind::Bash
+        || entry.depth != 0
+        || entry.bindings.native_variant("mkdir") != Some("gnu_coreutils_9_1")
+    {
+        return false;
+    }
+    let Some(launcher) = scope.parsed_scope.commands.get(scope.command_index) else {
+        return false;
+    };
+    let [utility] = launcher.tokens.as_slice() else {
+        return false;
+    };
+    if caushell_parse::decode_static_shell_argument(
+        &utility.text,
+        utility.quoted,
+        &utility.node_kind,
+    )
+    .as_deref()
+        != Some("mkdir")
+    {
+        return false;
+    }
+    let aliases = alias_bindings(session.summary(), request);
+    crate::support::attested_pipeline_tool(
+        registry,
+        launcher,
+        &entry.bindings,
+        &aliases,
+        "xargs",
+        "gnu_findutils_4_9_0",
+    )
 }
 
 /// In replacement mode each complete line launches its own independent job.

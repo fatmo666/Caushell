@@ -122,6 +122,7 @@ pub(crate) struct MutationTargetCandidate {
     pub slot_name: String,
     pub resolution: PathResolution,
     pub cwd_dependent: bool,
+    pub terminal_operand_spelling: Option<String>,
     pub implicit_incidental_cache: bool,
     pub metadata_mutation: Option<PathMetadataMutation>,
 }
@@ -561,6 +562,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                     slot_name: effect_paths_slot(bound, effect_index),
                     resolution: effect_path_scope(effect, bound, resolution),
                     cwd_dependent,
+                    terminal_operand_spelling: None,
                     implicit_incidental_cache: false,
                     metadata_mutation: metadata_mutation.clone(),
                 }
@@ -577,6 +579,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                         slot_name: format!("configured_path_{effect_index}"),
                         resolution: effect_path_scope(effect, bound, path.resolution),
                         cwd_dependent: path.cwd_dependent,
+                        terminal_operand_spelling: None,
                         implicit_incidental_cache: path.implicit_incidental_cache,
                     });
                 }
@@ -601,6 +604,24 @@ pub(crate) fn collect_invocation_mutation_targets(
                         }
                         let (resolution, cwd_dependent) =
                             semantic_path_resolution(value, resolved, cwd, home);
+                        // Use this operand's own spelling. Multiple operands
+                        // in the same slot can normalize to the same path.
+                        let terminal_operand_spelling = if effect.kind == EffectKind::WritePath
+                            && effect.path_access == Some(caushell_profile::PathAccessKind::ContentOpen)
+                            && !cwd_dependent
+                            && resolution.concrete_path()
+                                == Some(caushell_query::IoTargetQuery::CONTROLLING_TERMINAL_PATH)
+                        {
+                            match caushell_profile::project_semantic_value(
+                                &caushell_profile::ValueProjection::Identity,
+                                value,
+                            ) {
+                                Some(SemanticValueResolution::Known(text)) => Some(text),
+                                _ => None,
+                            }
+                        } else {
+                            None
+                        };
                         targets.push(MutationTargetCandidate {
                             effect_index,
                             metadata_mutation: metadata_mutation.clone(),
@@ -608,6 +629,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                             operation: effect.kind,
                             slot_name: slot.as_str().to_string(),
                             cwd_dependent,
+                            terminal_operand_spelling,
                             resolution: effect_path_scope(effect, bound, resolution),
                         });
                     }
@@ -627,6 +649,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                         effect, bound, resolve_tool_convention_path(target, cwd),
                     ),
                     cwd_dependent: !target.path.starts_with('/'),
+                    terminal_operand_spelling: None,
                 });
             }
             EffectTarget::DerivedPath(target) => {
@@ -653,6 +676,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                     slot_name: path.slot_name,
                     resolution: path.resolution,
                     cwd_dependent: path.cwd_dependent,
+                    terminal_operand_spelling: None,
                 }));
             }
             EffectTarget::MutationScope(scope) => {
@@ -678,6 +702,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                     operation: effect.kind,
                     slot_name,
                     resolution,
+                    terminal_operand_spelling: None,
                     cwd_dependent: resolved
                         .map(|resolved| {
                             projected_mutation_scope_depends_on_cwd(scope, resolved, cwd, home)
@@ -703,6 +728,7 @@ pub(crate) fn collect_invocation_mutation_targets(
                     text: format!("unresolved mutation target for {:?}", effect.kind),
                 },
                 cwd_dependent: true,
+                terminal_operand_spelling: None,
             });
         }
     }
