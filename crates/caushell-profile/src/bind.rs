@@ -342,6 +342,7 @@ pub fn root_option_ownership(
         profile.option_operand_matcher.as_ref(),
         &profile.exact_option_words,
         &profile.trailing_option_words,
+        profile.dash_dash_before_operand,
     )
 }
 
@@ -358,6 +359,7 @@ fn scoped_options(
     operand_matcher: Option<&crate::OptionOperandMatcher>,
     exact_option_words: &[FlagName],
     trailing_option_words: &[FlagName],
+    dash_dash_before_operand: bool,
 ) -> Option<crate::ScopedOptions> {
     if !regions.is_empty() {
         return Some(crate::argument_regions::scan(
@@ -381,6 +383,7 @@ fn scoped_options(
                 operand_matcher,
                 exact_option_words,
                 trailing_option_words,
+                dash_dash_before_operand,
             ))
         }
     }
@@ -482,6 +485,7 @@ pub(crate) fn select_invocation_for_native_variant<'a>(
         profile.option_operand_matcher.as_ref(),
         &profile.exact_option_words,
         &profile.trailing_option_words,
+        profile.dash_dash_before_operand,
     );
     // A permuted grammar has no opaque child boundary. After a failed scan,
     // known controls can still select one possible form so its declared
@@ -1160,6 +1164,7 @@ pub(crate) fn bind_modifier_only_invocation(
                 profile.option_operand_matcher.as_ref(),
                 &profile.exact_option_words,
                 &profile.trailing_option_words,
+                profile.dash_dash_before_operand,
             );
             let modifiers = if let Some(options) = &root_options {
                 match_owned_modifiers(&profile.modifiers, options, &[], profile.option_matching)
@@ -1473,6 +1478,7 @@ fn scan_subcommand_path<'p, 'a>(
         profile.option_operand_matcher.as_ref(),
         &profile.exact_option_words,
         &profile.trailing_option_words,
+        profile.dash_dash_before_operand,
     );
     let mut error = ensure_option_scope(profile.primary_name(), root_options.as_ref()).err();
     let mut option_terminators: Vec<_> = root_options
@@ -1526,6 +1532,7 @@ fn scan_subcommand_path<'p, 'a>(
                     profile.option_operand_matcher.as_ref(),
                     &profile.exact_option_words,
                     &profile.trailing_option_words,
+                    profile.dash_dash_before_operand,
                 );
                 if let Err(problem) = ensure_option_scope(profile.primary_name(), prefix.as_ref()) {
                     error = Some(problem);
@@ -1615,6 +1622,7 @@ fn scan_subcommand_path<'p, 'a>(
             None,
             &[],
             &[],
+            false,
         );
         error = ensure_option_scope(profile.primary_name(), node_options.as_ref()).err();
         let node_modifiers = if let Some(options) = &node_options {
@@ -1659,6 +1667,7 @@ fn scan_subcommand_path<'p, 'a>(
             None,
             &[],
             &[],
+            false,
         );
         if let Err(problem) = ensure_option_scope(profile.primary_name(), node_options.as_ref()) {
             error = Some(BindError::IndeterminateDispatch {
@@ -3619,7 +3628,19 @@ impl<'p, 'm> BindingState<'p, 'm> {
                         continue;
                     }
 
-                    if let Some(value) = self.consume_flag_operand_after(
+                    if operand_mode == FlagOperandMode::ZipPatternList {
+                        let (end, delimiter, _) = crate::option_scope::zip_pattern_list(
+                            &self.projection.args, index + 1, scope.end_index,
+                        );
+                        for preceding in index..end.saturating_sub(1) {
+                            values.extend(self.consume_immediate_arg_after(
+                                preceding, scope, binding_source.clone(), value_constraints,
+                            ));
+                        }
+                        if delimiter {
+                            self.consumed[end] = true;
+                        }
+                    } else if let Some(value) = self.consume_flag_operand_after(
                         index,
                         scope,
                         binding_source,
@@ -3721,7 +3742,8 @@ impl<'p, 'm> BindingState<'p, 'm> {
                 }
                 Some(value)
             }
-            FlagOperandMode::InlineOnly
+            FlagOperandMode::ZipPatternList
+            | FlagOperandMode::InlineOnly
             | FlagOperandMode::WordAttached
             | FlagOperandMode::OptionalWordAttached
             | FlagOperandMode::OptionalInlineOnly
@@ -5154,6 +5176,10 @@ fn leading_positional_prefix_len(shape: &InvocationShape, matcher: &ValueMatcher
 
 pub(crate) fn argument_matches_value_matcher(text: &str, matcher: &ValueMatcher) -> bool {
     match matcher {
+        ValueMatcher::BasenameContainsDot => text
+            .rsplit('/')
+            .next()
+            .is_some_and(|basename| basename.contains('.')),
         ValueMatcher::StructuredValueContext(StructuredValueContext::AvFiltergraph) => {
             crate::av_filtergraph::data_only(text)
         }

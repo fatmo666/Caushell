@@ -37,6 +37,7 @@ pub struct RawCommandProfile {
     pub option_matching: RawOptionMatchingPolicy,
     pub exact_option_words: Vec<String>,
     pub trailing_option_words: Vec<String>,
+    pub dash_dash_before_operand: bool,
     pub option_prefixes: RawOptionPrefixPolicy,
     pub option_operand_matcher: Option<RawValueMatcher>,
     pub subcommands: Option<RawSubcommandTree>,
@@ -662,6 +663,7 @@ pub enum RawFlagOperandMode {
     WordAttachedOrNextArg,
     NextPositional,
     NextArg,
+    ZipPatternList,
     OptionalNextArg,
     SecondArg,
     FirstOfTwoArgs,
@@ -738,6 +740,7 @@ pub enum RawValueMatcher {
     StructuredValueContext { context: RawStructuredValueContext },
     Literal { value: String },
     AsciiCaseInsensitiveLiterals { values: Vec<String> },
+    BasenameContainsDot,
     RegexPattern { pattern: String },
 }
 

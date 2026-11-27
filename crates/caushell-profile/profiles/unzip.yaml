@@ -5,10 +5,12 @@ trust: {tier: tier_a, source: built_in}
 platform: {os_families: [posix, linux, macos], shell_families: [], requires_features: []}
 option_scope: leading_options
 trailing_option_words: [-d, -x]
+dash_dash_before_operand: true
 opaque_on_unresolved: true
 
 # Native options precede the archive; only -d/-x are recognized in its tail.
-# Negative option syntax is not GNU -- termination and remains unresolved.
+# A standalone -- before the archive leaves leading options unchanged.
+# Negated options remain unresolved.
 environment_inputs:
   - name: startup_options
     environment: {name: UNZIP, empty_is_unset: true}
@@ -46,7 +48,6 @@ forms:
           kind: all
           items:
             - *archive
-            - *no_terminator
             - {kind: not, item: *help}
             - {kind: not, item: *zipinfo}
             - {kind: not, item: {kind: has_positional_at_matching, index: 0, matcher: {kind: literal, value: '-'}}}

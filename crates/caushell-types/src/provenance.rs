@@ -180,6 +180,8 @@ pub enum RuntimeArgumentDomain {
         prefix: String,
         suffix: String,
     },
+    /// Decoded affixes surrounding possibly empty numeric calendar output.
+    CalendarFilename { prefix: String, suffix: String },
     /// Unknown native argv data surrounded by already-decoded literal bytes.
     /// This is a spelling bound only, not a path containment or content proof.
     TextTemplate {
@@ -236,7 +238,10 @@ impl RuntimeArgumentDomain {
     }
 
     pub fn is_spelling_template(&self) -> bool {
-        matches!(self, Self::TextTemplate { .. } | Self::ArithmeticTemplate { .. })
+        matches!(
+            self,
+            Self::TextTemplate { .. } | Self::ArithmeticTemplate { .. } | Self::CalendarFilename { .. }
+        )
     }
 
     pub fn unquoted_generated_field(&self) -> bool {
@@ -304,6 +309,18 @@ impl RuntimeArgumentDomain {
                     format!("{prefix}{inner_prefix}"),
                     format!("{inner_suffix}{suffix}"),
                 )
+            }
+            Self::CalendarFilename {
+                prefix: inner_prefix,
+                suffix: inner_suffix,
+            } => {
+                if prefix.len() + suffix.len() + inner_prefix.len() + inner_suffix.len() > 4096 {
+                    return Self::Unbounded;
+                }
+                return Self::CalendarFilename {
+                    prefix: format!("{prefix}{inner_prefix}"),
+                    suffix: format!("{inner_suffix}{suffix}"),
+                };
             }
             Self::Unbounded | Self::HexadecimalRelativePath | Self::LocalFilenameOrEmpty => {
                 return Self::TextTemplate {

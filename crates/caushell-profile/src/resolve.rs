@@ -558,6 +558,25 @@ fn resolve_invocation_with_proofs<'a>(
                         arg.runtime_data = true;
                         arg.node_kind = "runtime_scalar".into();
                     }
+                    crate::SubstitutionOutputProof::CalendarFilename { prefix, suffix } => {
+                        arg.implicit_input_source =
+                            Some(caushell_types::ImplicitInputSource::CommandSubstitution);
+                        arg.runtime_argument_domain = Some(
+                            caushell_types::RuntimeArgumentDomain::CalendarFilename {
+                                prefix: prefix.clone(),
+                                suffix: suffix.clone(),
+                            },
+                        );
+                        arg.runtime_data = true;
+                        arg.node_kind = "runtime_scalar".into();
+                    }
+                    crate::SubstitutionOutputProof::PathWord(domain) => {
+                        arg.implicit_input_source =
+                            Some(caushell_types::ImplicitInputSource::CommandSubstitution);
+                        arg.runtime_argument_domain = Some(domain.clone());
+                        arg.runtime_data = true;
+                        arg.node_kind = "runtime_scalar".into();
+                    }
                     crate::SubstitutionOutputProof::LocalFilenameFields
                         if profile.primary_name() == "touch"
                             && profile.trust.source == crate::ProfileSourceKind::BuiltIn =>

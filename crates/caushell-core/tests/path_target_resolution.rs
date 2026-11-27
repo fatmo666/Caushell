@@ -109,6 +109,280 @@ fn unknown_command_and_compound_redirects_keep_target_obligations() {
 }
 
 #[test]
+fn unzip_default_directory_follows_an_observed_cwd_link() {
+    let view = Arc::new(MemoryFilesystem::default());
+    view.link("/workspace/linked", "/outside");
+    let response = core(view).check(request(1, "cd linked && unzip archive.zip"));
+    assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
+}
+
+#[test]
+fn unzip_explicit_directory_follows_an_observed_destination_link() {
+    let view = Arc::new(MemoryFilesystem::default());
+    view.link("/workspace/linked", "/outside");
+    let response = core(view).check(request(1, "unzip archive.zip -d linked"));
+    assert_eq!(response.decision, Decision::NeedApproval, "{response:#?}");
+}
+
+#[test]
+fn directory_setup_orders_the_literal_transfer_on_success() {
+    for command in [
+        "mkdir -p temp && mv -- input temp/",
+        "mkdir -p temp && cp --backup=numbered input temp/",
+    ] {
+        let view = Arc::new(MemoryFilesystem::default());
+        view.0.lock().unwrap().extend([
+            ("/workspace/temp".into(), FilesystemEntry::Missing),
+            ("/workspace/input".into(), FilesystemEntry::File),
+        ]);
+        let result = core(view).check(request(1, command));
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.slot_name == "destination_path"
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &["/workspace/temp"])
+        }));
+    }
+}
+
+#[test]
+fn directory_setup_requires_success_and_a_stable_namespace() {
+    for command in [
+        "mkdir -p temp || mv -- input temp/",
+        "mkdir -p temp & mv -- input temp/",
+    ] {
+        let view = Arc::new(MemoryFilesystem::default());
+        view.0.lock().unwrap().extend([
+            ("/workspace/temp".into(), FilesystemEntry::Missing),
+            ("/workspace/input".into(), FilesystemEntry::File),
+        ]);
+        let result = core(view).check(request(1, command));
+        assert_eq!(result.decision, Decision::NeedApproval, "{command}: {:?}", result.reasons);
+    }
+
+    let view = Arc::new(MemoryFilesystem::default());
+    view.link("/workspace/temp", "/outside/temp");
+    assert_eq!(
+        core(view).check(request(1, "mkdir -p temp && cp -- input temp/")).decision,
+        Decision::NeedApproval
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_setup_checks_entries_in_an_existing_transfer_destination() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-transfer-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let destination = root.join("temp");
+    std::fs::create_dir(&destination).unwrap();
+    std::fs::write(root.join("input"), "fixture").unwrap();
+    let mut input = request(1, "mkdir -p temp && cp -- input temp/");
+    input.workspace_root = Some(root.to_string_lossy().into_owned());
+    input.shell_state_before = ShellStateSnapshot::new(root.to_string_lossy());
+
+    let ordinary = ShellQueryCore::new().check(input.clone());
+    std::os::unix::fs::symlink("/outside/input", destination.join("input")).unwrap();
+    let linked = ShellQueryCore::new().check(input);
+    std::fs::remove_dir_all(&root).unwrap();
+    assert_eq!(ordinary.decision, Decision::Allow, "{:?}", ordinary.reasons);
+    assert_eq!(linked.decision, Decision::NeedApproval, "{:?}", linked.reasons);
+}
+
+#[cfg(unix)]
+#[test]
+fn directory_setup_orders_bounded_glob_moves_and_preserves_path_checks() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-glob-{}", std::process::id()));
+    std::fs::create_dir(&root).unwrap();
+    let checkout_root = root.to_str().unwrap();
+
+    let check = |command| {
+        let mut input = request(1, command);
+        input.workspace_root = Some(checkout_root.into());
+        input.shell_state_before = ShellStateSnapshot::new(checkout_root);
+        ShellQueryCore::new().check(input)
+    };
+    let with_nullglob = "mkdir -p templates && shopt -s nullglob && mv -- *.py templates/";
+    let zero_matches = check(with_nullglob);
+    std::fs::write(root.join("sample.py"), "fixture").unwrap();
+    let matched = check(with_nullglob);
+    let verbose = check("mkdir -p templates && mv -v -- *.py templates/");
+    let overlapping = check("mkdir -p templates.py && mv -- *.py templates.py/");
+    let unordered = check("mkdir -p templates & mv -- *.py templates/");
+
+    let destination = root.join("templates");
+    std::fs::create_dir(&destination).unwrap();
+    std::os::unix::fs::symlink("/outside/sample.py", destination.join("sample.py")).unwrap();
+    let linked = check("mkdir -p templates && mv -v -- *.py templates/");
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for result in [zero_matches, matched, verbose] {
+        assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.slot_name == "destination_path"
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &[destination.to_string_lossy().into_owned()])
+        }));
+    }
+    for result in [overlapping, unordered, linked] {
+        assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn directory_setup_orders_direct_find_transfers_and_preserves_path_checks() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-find-{}", std::process::id()));
+    let source = root.join("source");
+    let destination = root.join("out");
+    std::fs::create_dir_all(&source).unwrap();
+    std::fs::write(source.join("report.txt"), "fixture").unwrap();
+
+    let check = |command| {
+        let mut input = request(1, command);
+        let cwd = root.to_str().unwrap();
+        input.workspace_root = Some(cwd.into());
+        input.shell_state_before = ShellStateSnapshot::new(cwd);
+        ShellQueryCore::new().check(input)
+    };
+    let copy = "mkdir -p out && find . -name report.txt -exec cp -t out {} +";
+    let move_files = "mkdir -p out && find source -name report.txt -exec mv -t out {} +";
+    let ordered_copy = check(copy);
+    let ordered_move = check(move_files);
+    let unordered = check("mkdir -p out & find . -name report.txt -exec cp -t out {} +");
+    let different_cwd = check("mkdir -p out && find source -name report.txt -execdir cp -t out {} +");
+    let overlapping = check("mkdir -p out && find . -name report.txt -exec mv -t out {} +");
+
+    std::fs::create_dir(&destination).unwrap();
+    std::os::unix::fs::symlink(source.join("report.txt"), destination.join("report.txt")).unwrap();
+    let linked_destination = check(copy);
+    std::fs::remove_file(destination.join("report.txt")).unwrap();
+    std::os::unix::fs::symlink(destination.join("report.txt"), source.join("linked.txt")).unwrap();
+    let linked_source = check(move_files);
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for result in [&ordered_copy, &ordered_move] {
+        assert_eq!(result.decision, Decision::Allow, "{:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|fact| {
+            fact.slot_name == "destination_directory"
+                && matches!(&fact.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &[destination.to_str().unwrap()])
+        }));
+    }
+    assert!(ordered_move.decision_trace.path_targets.iter().any(|fact| {
+        fact.operation == PathTargetOperation::MoveSource
+            && matches!(&fact.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, may_escape: false },
+            } if roots == &[source.to_str().unwrap()])
+    }));
+    assert!(!different_cwd.decision_trace.path_targets.iter().any(|fact| {
+        fact.slot_name == "destination_directory"
+            && matches!(&fact.resolution, SemanticResolution::Resolved {
+                value: PathResolution::BoundedPathSet { roots, .. },
+            } if roots == &[destination.to_str().unwrap()])
+    }));
+    for result in [unordered, overlapping, linked_destination, linked_source] {
+        assert_eq!(result.decision, Decision::NeedApproval, "{:?}", result.reasons);
+    }
+}
+
+#[test]
+#[cfg(unix)]
+fn directory_setup_closes_find_shell_loop_paths_and_records_local_order() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-find-loop-{}", std::process::id()));
+    let source = root.join("input");
+    let destination = root.join("archive").join("input");
+    std::fs::create_dir_all(source.join("nested")).unwrap();
+    std::fs::write(source.join("nested/report.txt"), "fixture").unwrap();
+
+    let check = |body: &str| {
+        let command = format!("mkdir -p archive && find input -type f -exec sh -c '{body}' _ {{}} +");
+        let mut input = request(1, &command);
+        let cwd = root.to_str().unwrap();
+        input.workspace_root = Some(cwd.into());
+        input.shell_state_before = ShellStateSnapshot::new(cwd);
+        ShellQueryCore::new().check(input)
+    };
+    let body = r#"for item; do mkdir -p "archive/$(dirname "$item")" && mv -- "$item" "archive/$item"; done"#;
+    let ordered = check(body);
+    let explicit = check(&body.replacen("for item;", "for item in \"$@\";", 1));
+    let failure_branch = check(&body.replace("&& mv", "|| mv"));
+    let later_loop = check(
+        r#"for item; do mkdir -p "archive/$(dirname "$item")"; done && for item; do mv -- "$item" "archive/$item"; done"#,
+    );
+
+    std::fs::create_dir_all(destination.join("nested")).unwrap();
+    let existing = check(body);
+    let outside = root.with_extension("outside");
+    std::os::unix::fs::symlink(&outside, destination.join("nested/report.txt")).unwrap();
+    let linked_destination = check(body);
+    std::fs::remove_file(destination.join("nested/report.txt")).unwrap();
+    std::os::unix::fs::symlink(&outside, source.join("nested/linked.txt")).unwrap();
+    let linked_source = check(body);
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for (case, response) in [
+        ("implicit positionals", ordered),
+        ("explicit positionals", explicit),
+        ("existing destination", existing),
+    ] {
+        let targets = &response.decision_trace.path_targets;
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{case}: {:?}, paths: {:?}",
+            response.reasons,
+            targets
+                .iter()
+                .map(|f| (&f.slot_name, &f.lexical, &f.resolution))
+                .collect::<Vec<_>>(),
+        );
+        for (slot, path) in [
+            ("source_paths", source.as_path()),
+            ("destination_path", destination.as_path()),
+        ] {
+            assert!(targets.iter().any(|fact| {
+                fact.slot_name == slot
+                    && matches!(&fact.resolution, SemanticResolution::Resolved {
+                        value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                    } if roots == &[path.to_str().unwrap()])
+            }));
+        }
+        assert!(targets.iter().any(|fact| {
+            fact.slot_name == "destination_path"
+                && fact.namespace_proofs.iter().any(|proof| proof.same_iteration_success)
+        }));
+    }
+    for response in [failure_branch, later_loop] {
+        assert!(!response.decision_trace.path_targets.iter().any(|fact| {
+            fact.namespace_proofs.iter().any(|proof| proof.same_iteration_success)
+        }));
+    }
+    for response in [linked_source, linked_destination] {
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            response.reasons
+        );
+    }
+}
+
+#[test]
 fn unavailable_namespace_is_not_a_workspace_proof() {
     let mut core = ShellQueryCore::new()
         .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem));

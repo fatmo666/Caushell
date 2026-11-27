@@ -186,7 +186,8 @@ fn runtime_input_path_depends_on_cwd(
     use caushell_types::RuntimeArgumentDomain;
     match domain {
         Some(RuntimeArgumentDomain::GeneratedFileName { prefix, .. }
-             | RuntimeArgumentDomain::ArithmeticTemplate { prefix, .. }) => !prefix.starts_with('/'),
+             | RuntimeArgumentDomain::ArithmeticTemplate { prefix, .. }
+             | RuntimeArgumentDomain::CalendarFilename { prefix, .. }) => !prefix.starts_with('/'),
         Some(RuntimeArgumentDomain::PathSet { roots, .. }) => {
             roots.is_empty() || roots.iter().any(|root| !root.starts_with('/'))
         }

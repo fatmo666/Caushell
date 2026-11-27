@@ -21,9 +21,11 @@ use crate::support::{
 };
 
 mod consumption;
+mod directory_setup;
 mod directory_tree;
 mod entry_relocation;
 mod namespace_state;
+mod unzip_setup;
 
 pub struct ResolvePathTargetsPass;
 
@@ -152,22 +154,20 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             }
             baselines.push((resolution, observations));
         }
-        if namespace_operations_complete(ctx, true) {
+        let closed_tree = namespace_operations_complete(ctx, true);
+        let ordered_transfers = if closed_tree {
             tree_evidence.extend(entry_relocation::close_families(
                 &mut inputs, &mut baselines, &mut resolver,
                 ctx.filesystem_view(), &mut tree_budget,
                 ctx.request().shell_state_before.cwd(),
             ));
-        }
-        for proof in tree_evidence {
-            ctx.add_evidence(caushell_types::Evidence {
-                rule_id: caushell_types::RuleId::OutsideWorkspaceMutation,
-                summary: proof.gap.clone().unwrap_or_else(|| {
-                    "link-free directory output family resolved without granting authority".into()
-                }),
-                kind: caushell_types::EvidenceKind::DirectoryTree(proof),
-            });
-        }
+            directory_setup::prove_transfers(
+                ctx, &inputs, &mut baselines, &records, &mut resolver, &mut tree_budget,
+                &mut tree_evidence,
+            )
+        } else {
+            std::collections::BTreeMap::new()
+        };
         let namespace_writes: Vec<_> = inputs
             .iter()
             .enumerate()
@@ -190,7 +190,16 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             })
             .collect();
         let mut comparisons = 0usize;
-        let closed_tree = namespace_operations_complete(ctx, true);
+        let completes_before_writer = |target: &Input, writer: &Input| {
+            unzip_setup::completes_before_unzip(
+                target,
+                writer,
+                &records,
+                ctx.parsed_command(),
+            ) || target.namespace_effect == Some(caushell_types::PathNamespaceEffect::DirectoryCreate)
+                && ordered_transfers.get(writer.fact.source_node_id.as_str())
+                    == Some(&target.fact.source_node_id)
+        };
         let stable_producers = if namespace_operations_complete(ctx, false) {
             namespace_state::stable_producers(
                 &inputs,
@@ -198,6 +207,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 &namespace_writes,
                 &mut comparisons,
                 closed_tree,
+                &completes_before_writer,
             )
         } else {
             // An opaque sibling may have no declared mutation target at all.
@@ -220,7 +230,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     if comparisons > 65536 {
                         return true;
                     }
-                    if *other == index {
+                    if *other == index || completes_before_writer(&inputs[index], &inputs[*other]) {
                         return false;
                     }
                     let overlaps = namespace_state::overlaps(
@@ -229,12 +239,22 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                         root.as_deref(),
                     );
                     if overlaps && stable_producers.contains(other) {
-                        if let Some(proof) = namespace_state::scope_preservation(
+                        if let Some(mut proof) = namespace_state::scope_preservation(
                             &inputs[*other],
                             &baselines[*other],
                             &inputs[index],
                             &baselines[index],
                         ) {
+                            if proof.effect == caushell_types::PathNamespaceEffect::DirectoryCreate
+                                && inputs[index].fact.operation == PathTargetOperation::Write
+                                && let (Some(setup), Some(consumer)) = (
+                                    records.get(proof.producer_node_id.as_str()),
+                                    records.get(inputs[index].fact.source_node_id.as_str()),
+                                )
+                            {
+                                proof.same_iteration_success =
+                                    directory_setup::guarded_in_same_iteration(setup, consumer);
+                            }
                             proofs.push(proof);
                             return false;
                         }
@@ -288,6 +308,15 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                 .fact
                 .observations
                 .dedup_by(|a, b| a.path == b.path && a.entry == b.entry);
+        }
+        for proof in tree_evidence {
+            ctx.add_evidence(caushell_types::Evidence {
+                rule_id: caushell_types::RuleId::OutsideWorkspaceMutation,
+                summary: proof.gap.clone().unwrap_or_else(|| {
+                    "link-free directory output family resolved without granting authority".into()
+                }),
+                kind: caushell_types::EvidenceKind::DirectoryTree(proof),
+            });
         }
         for (index, input) in inputs.into_iter().enumerate() {
             ctx.stage_mutation(PendingMutation::AddPathTargetFact {

@@ -85,13 +85,20 @@ fn shell_effects_and_ordinary_extraction_remain_guarded() {
     for command in [
         "unzip -p archive.zip > /opt/out",
         "unzip -t archive.zip > /opt/log",
-        "unzip archive.zip",
+        "cd /opt && unzip archive.zip",
+        "cd \"$dir\" && unzip archive.zip",
+        "unzip archive.zip > /opt/out",
+        "unzip archive.zip && rm old.zip",
         "unzip -o archive.zip -d /opt/out",
-        "unzip -n archive.zip -d ./out",
-        "unzip archive.zip -p",
-        "unzip archive.zip -t",
-        "unzip archive.zip -l",
-        "unzip archive.zip -h",
+        "unzip archive.zip -d \"$dir\"",
+        "cd \"$dir\" && unzip archive.zip -d ./out",
+        "unzip archive.zip -d ./out > /opt/out",
+        "unzip archive.zip -d ./out && rm old.zip",
+        "cd /opt && unzip archive.zip -p",
+        "cd /opt && unzip archive.zip -t",
+        "cd /opt && unzip archive.zip -l",
+        "cd /opt && unzip archive.zip -h",
+        "UNZIPOPT='-d /opt/out' unzip archive.zip",
         "find . -name '*.zip' -exec unzip {} \\;",
         "unzip -l archive.zip; touch /opt/out",
     ] {
@@ -105,6 +112,74 @@ fn shell_effects_and_ordinary_extraction_remain_guarded() {
         NodeKind::PathFact {role: ResolvedPathRole::Write, resolution, ..}
         if resolution.concrete_path() == Some("/opt/out")))
     );
+}
+
+#[test]
+fn workspace_default_extraction_retains_unknown_member_paths() {
+    for command in [
+        "unzip archive.zip",
+        "unzip -o -- archive.zip",
+        "cd videos_backup && unzip archive.zip",
+    ] {
+        let result = check(command, Decision::Allow);
+        assert!(
+            result.decision_trace.path_targets.iter().any(|fact| {
+                fact.operation == PathTargetOperation::Write
+                    && matches!(
+                        &fact.lexical,
+                        PathResolution::DerivedUnresolved {
+                            rule: DerivedPathRule::ArchiveMembers,
+                            reason: DerivedPathUnresolvedReason::UnknownArchiveMembers,
+                            ..
+                        }
+                    )
+                    && matches!(&fact.resolution, SemanticResolution::Unresolved { .. })
+            }),
+            "{command}: {result:#?}"
+        );
+    }
+}
+
+#[test]
+fn workspace_explicit_extraction_keeps_setup_and_member_effects_distinct() {
+    for command in [
+        "unzip -n archive.zip -d ./out",
+        "unzip -o -- archive.zip -d ./out",
+        "mkdir -p out && [ -f archive.zip ] && unzip -d out archive.zip",
+    ] {
+        let result = check(command, Decision::Allow);
+        let targets = &result.decision_trace.path_targets;
+        assert!(targets.iter().any(|fact| {
+            fact.slot_name == "extraction_directory" && matches!(
+                &fact.resolution,
+                SemanticResolution::Resolved { value } if value.concrete_path() == Some("/workspace/out")
+            )
+        }), "{command}: {result:#?}");
+        assert!(
+            targets.iter().any(|fact| matches!(
+                &fact.lexical,
+                PathResolution::DerivedUnresolved {
+                    rule: DerivedPathRule::ArchiveMembers,
+                    reason: DerivedPathUnresolvedReason::UnknownArchiveMembers,
+                    ..
+                }
+            ) && matches!(
+                fact.resolution,
+                SemanticResolution::Unresolved { .. }
+            )),
+            "{command}: {result:#?}"
+        );
+    }
+    let result = check(
+        "unzip -d out archive.zip && mkdir -p out/nested",
+        Decision::NeedApproval,
+    );
+    assert!(result.decision_trace.path_targets.iter().any(|fact| {
+        fact.slot_name == "directory_paths" && matches!(
+            &fact.resolution,
+            SemanticResolution::Unresolved { gap } if gap.kind == SemanticGapKind::NamespaceMutation
+        )
+    }), "{result:#?}");
 }
 #[test]
 fn timestamp_mutates_archive_not_ignored_output_directory() {
@@ -148,11 +223,40 @@ fn timestamp_mutates_archive_not_ignored_output_directory() {
     }
 }
 #[test]
+fn standalone_dash_dash_before_archive_preserves_infozip_effects() {
+    for flags in ["-l", "-tq", "-p"] {
+        let command = format!("unzip {flags} -- archive.zip");
+        check(&command, Decision::Allow);
+        assert!(!graph(&command).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::PathFact {
+                role: ResolvedPathRole::Write,
+                ..
+            }
+        )));
+    }
+
+    let command = "unzip -o -- archive.zip -d /opt/out";
+    let response = check(command, Decision::NeedApproval);
+    assert!(
+        graph(command).iter().any(|node| matches!(
+            &node.kind,
+            NodeKind::PathFact { role: ResolvedPathRole::Write, resolution, .. }
+                if resolution.concrete_path() == Some("/opt/out")
+        )),
+        "{response:#?}"
+    );
+}
+
+#[test]
 fn unresolved_controls_cannot_silently_enable_file_extraction() {
     for command in [
         "unzip -p --p archive.zip",
         "unzip -p -p--p archive.zip",
-        "unzip -p -- archive.zip",
+        "unzip -- -l archive.zip",
+        "unzip -l -- \"$archive\"",
+        "unzip -l -- -- archive.zip",
+        "unzip -l archive.zip -- item.txt",
         "unzip -p - -T archive.zip",
         "unzip -pt archive.zip",
         "unzip -pu archive.zip",

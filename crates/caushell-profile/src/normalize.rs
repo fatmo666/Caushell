@@ -319,6 +319,13 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         .into_iter()
         .map(FlagName::new)
         .collect::<Vec<_>>();
+    if raw.dash_dash_before_operand
+        && (trailing_option_words.is_empty() || option_prefixes != OptionPrefixPolicy::DashOnly)
+    {
+        return Err(NormalizeError::InvalidOptionScope(
+            "dash_dash_before_operand requires dash-only leading and trailing options".into(),
+        ));
+    }
     if !trailing_option_words.is_empty() {
         if option_scope != OptionScopePolicy::LeadingOptions
             || !raw.argument_regions.is_empty()
@@ -670,6 +677,7 @@ pub fn normalize_command_profile(raw: RawCommandProfile) -> Result<CommandProfil
         option_prefixes,
         exact_option_words,
         trailing_option_words,
+        dash_dash_before_operand: raw.dash_dash_before_operand,
         option_operand_matcher,
         subcommands,
         dispatch_overrides,
@@ -2825,6 +2833,7 @@ fn normalize_flag_operand_mode(raw: RawFlagOperandMode) -> FlagOperandMode {
         RawFlagOperandMode::WordAttachedOrNextArg => FlagOperandMode::WordAttachedOrNextArg,
         RawFlagOperandMode::NextPositional => FlagOperandMode::NextPositional,
         RawFlagOperandMode::NextArg => FlagOperandMode::NextArg,
+        RawFlagOperandMode::ZipPatternList => FlagOperandMode::ZipPatternList,
         RawFlagOperandMode::OptionalNextArg => FlagOperandMode::OptionalNextArg,
         RawFlagOperandMode::SecondArg => FlagOperandMode::SecondArg,
         RawFlagOperandMode::FirstOfTwoArgs => FlagOperandMode::FirstOfTwoArgs,
@@ -2847,6 +2856,7 @@ fn normalize_value_matcher(raw: RawValueMatcher) -> Result<ValueMatcher, Normali
             ValueMatcher::StructuredValueContext(normalize_structured_value_context(context)),
         ),
         RawValueMatcher::Literal { value } => Ok(ValueMatcher::Literal(value)),
+        RawValueMatcher::BasenameContainsDot => Ok(ValueMatcher::BasenameContainsDot),
         RawValueMatcher::AsciiCaseInsensitiveLiterals { values } => {
             if values.is_empty() {
                 return Err(NormalizeError::EmptyIdentifier {
@@ -4540,6 +4550,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4759,6 +4770,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -4892,6 +4904,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -5025,6 +5038,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),
@@ -5279,6 +5293,7 @@ mod tests {
             option_matching: Default::default(),
             exact_option_words: Vec::new(),
             trailing_option_words: Vec::new(),
+            dash_dash_before_operand: false,
             option_prefixes: Default::default(),
             option_operand_matcher: None,
             dsl_version: "caushell.profile/v1alpha1".to_string(),

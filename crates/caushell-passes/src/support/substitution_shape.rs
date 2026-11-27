@@ -11,7 +11,7 @@ use caushell_profile::{
     StdoutScalarShape, SubstitutionOutputProof, observed_ifs_value,
     resolve_invocation_artifact_with_bindings,
 };
-use caushell_types::{ARITHMETIC_STDOUT_CHARS, SessionAliasBinding, ShellKind};
+use caushell_types::{ARITHMETIC_STDOUT_CHARS, RuntimeArgumentDomain, SessionAliasBinding, ShellKind};
 
 /// A direct literal echo pipeline captures only the recognized encoder's stdout.
 pub(super) fn encoded_stdout_shape(
@@ -235,6 +235,11 @@ pub(crate) fn substitution_shapes(
             let [substitution] = token.command_substitutions.as_slice() else {
                 return None;
             };
+            if let Some(domain) =
+                quoted_dirname_path(registry, token, substitution, shell_kind, bindings, aliases)
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::PathWord(domain)));
+            }
             if shell_kind == ShellKind::Bash
                 && command.command_name.as_deref() == Some("touch")
                 && matches!(command.tokens.as_slice(), [flag, timestamp, _]
@@ -257,6 +262,15 @@ pub(crate) fn substitution_shapes(
                 return Some((token.span.clone(), SubstitutionOutputProof::LocalFilenameFields));
             }
             let quoted = token.quoted && token.node_kind == "string";
+            if shell_kind == ShellKind::Bash
+                && quoted
+                && command.command_name.as_deref() == Some("zip")
+                && let Some((prefix, suffix)) = calendar_filename_affixes(token, substitution, true, false)
+                && calendar_date_format(registry, substitution, bindings, aliases, false)
+                    .is_some_and(|format| calendar_filename_format(&format, true))
+            {
+                return Some((token.span.clone(), SubstitutionOutputProof::CalendarFilename { prefix, suffix }));
+            }
             if shell_kind == ShellKind::Bash
                 && !token.quoted
                 && command.command_name.as_deref() == Some("sed")
@@ -355,6 +369,94 @@ pub(crate) fn substitution_shapes(
         .collect()
 }
 
+fn quoted_dirname_path(
+    registry: &ProfileRegistry,
+    token: &CommandToken,
+    capture: &CommandSubstitutionFact,
+    shell_kind: ShellKind,
+    bindings: &SessionBindings,
+    aliases: &BTreeMap<String, SessionAliasBinding>,
+) -> Option<RuntimeArgumentDomain> {
+    if !token.quoted
+        || token.node_kind != "string"
+        || token.text.len() > 8192
+        || capture.body_text.len() > 8192
+        || !capture.body_text.trim_start().starts_with("dirname")
+    {
+        return None;
+    }
+    let (parts, marker) = substitution_word_parts(token, capture)?;
+    let [ScalarArgumentPart::Literal(prefix), ScalarArgumentPart::CommandSubstitution(word)] =
+        parts.as_slice()
+    else {
+        return None;
+    };
+    let anchor = prefix.strip_suffix('/')?;
+    if word != marker || !ordinary_relative_anchor(anchor) {
+        return None;
+    }
+    let parsed = parse_command(&capture.body_text, shell_kind).ok()?;
+    let producer = plain_single_producer(&parsed)?;
+    let name = producer.command_name.as_deref()?;
+    if name != "dirname"
+        || producer.command_name_runtime_data
+        || aliases.contains_key(name)
+        || bindings.function_binding(name).is_some()
+        || bindings.profile_has_alias_shadow(name)
+        || !registry.lookup(name).profile.is_some_and(|profile| {
+            profile.trust.source == caushell_profile::ProfileSourceKind::BuiltIn
+        })
+    {
+        return None;
+    }
+    let ResolveInvocationArtifactResult::Resolved(resolved) =
+        resolve_invocation_artifact_with_bindings(
+            registry,
+            producer,
+            InvocationRuntimeContext::default().with_shell_kind(shell_kind),
+            bindings,
+        )
+    else {
+        return None;
+    };
+    let [arg] = resolved.materialized_projection.invocation.args.as_slice() else {
+        return None;
+    };
+    let Some(RuntimeArgumentDomain::PathSet { roots, may_escape: false, .. }) =
+        &arg.runtime_argument_domain
+    else {
+        return None;
+    };
+    if resolved.bound.operation_semantics_unresolved
+        || !resolved.bound.residuals.is_empty()
+        || caushell_profile::argument_structure(arg).fields
+            != caushell_profile::ArgumentFieldCount::ExactlyOne
+        || roots.is_empty()
+        || !roots.iter().all(|root| ordinary_relative_anchor(root))
+    {
+        return None;
+    }
+    // dirname may return "." for a root operand. A failed capture may be
+    // empty, and command substitution strips all trailing newlines. The last
+    // directory component can therefore change. The fixed ordinary component
+    // of each input keeps any such parent step under the literal prefix.
+    Some(RuntimeArgumentDomain::PathSet {
+        roots: vec![prefix.clone()],
+        may_escape: false,
+        basename_suffix: None,
+        no_adjacent_slashes: false,
+        dot_relative_components: false,
+        execdir_leaf: false,
+    })
+}
+
+fn ordinary_relative_anchor(path: &str) -> bool {
+    let path = path.strip_prefix("./").unwrap_or(path);
+    !path.starts_with(['-', '+', '~'])
+        && !path.contains(['\0', '\n'])
+        && path.split('/').all(|part| !matches!(part, "" | "." | ".."))
+}
+
 /// In the default calendar format, the only possible sign is before the
 /// first year digit. The literal prefix keeps it in the initial filename or
 /// IFS consumes it. Other fields contain digits, the literal extension, or
@@ -367,47 +469,55 @@ fn calendar_filename_fields(
     aliases: &BTreeMap<String, SessionAliasBinding>,
     directory_prefix: bool,
 ) -> bool {
+    calendar_filename_affixes(token, capture, false, directory_prefix).is_some()
+        && calendar_date_format(registry, capture, bindings, aliases, directory_prefix)
+            .is_some_and(|format| calendar_filename_format(&format, false))
+}
+
+fn calendar_filename_affixes(
+    token: &CommandToken,
+    capture: &CommandSubstitutionFact,
+    quoted: bool,
+    directory_prefix: bool,
+) -> Option<(String, String)> {
     if token.text.len() > 8192 || capture.body_text.len() > 8192 {
-        return false;
+        return None;
     }
-    let Some((parts, marker)) = substitution_word_parts(token, capture) else {
-        return false;
-    };
-    let [
-        ScalarArgumentPart::Literal(prefix),
-        ScalarArgumentPart::UnquotedCommandSubstitution(word),
-        ScalarArgumentPart::Literal(suffix),
-    ] = parts.as_slice()
+    let (parts, marker) = substitution_word_parts(token, capture)?;
+    let [ScalarArgumentPart::Literal(prefix), capture, ScalarArgumentPart::Literal(suffix)] =
+        parts.as_slice()
     else {
-        return false;
+        return None;
+    };
+    match capture {
+        ScalarArgumentPart::CommandSubstitution(word) if quoted && word == marker => {}
+        ScalarArgumentPart::UnquotedCommandSubstitution(word) if !quoted && word == marker => {}
+        _ => return None,
     };
     let prefix_name = if directory_prefix {
-        let Some(name) = prefix.strip_suffix('/') else {
-            return false;
-        };
-        name
+        prefix.strip_suffix('/')?
     } else {
         prefix.as_str()
     };
     let name_byte = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
-    if word != marker
-        || !prefix_name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
-        || !prefix_name.bytes().all(name_byte)
-        || !suffix.strip_prefix('.').is_some_and(|s| !s.is_empty() && s.bytes().all(name_byte))
-    {
-        return false;
-    }
-    let Some(format) = calendar_date_format(registry, capture, bindings, aliases, directory_prefix)
-    else {
-        return false;
-    };
+    (prefix_name.as_bytes().first().is_some_and(|b| b.is_ascii_alphabetic() || *b == b'_')
+        && prefix_name.bytes().all(|b| name_byte(b) || quoted && b == b'-')
+        && suffix.strip_prefix('.').is_some_and(|s| !s.is_empty() && s.bytes().all(name_byte)))
+        .then(|| (prefix.clone(), suffix.clone()))
+}
+
+fn calendar_filename_format(format: &str, allow_separator: bool) -> bool {
     let Some(rest) = format.strip_prefix("+%Y") else {
         return false;
     };
-    let chunks = rest.as_bytes().chunks_exact(2);
     !rest.is_empty()
-        && chunks.remainder().is_empty()
-        && chunks.into_iter().all(|part| matches!(part, b"%m" | b"%d" | b"%H" | b"%M" | b"%S"))
+        && (allow_separator || !rest.contains('_'))
+        && rest.split('_').all(|run| {
+            let chunks = run.as_bytes().chunks_exact(2);
+            !run.is_empty()
+                && chunks.remainder().is_empty()
+                && chunks.into_iter().all(|part| matches!(part, b"%m" | b"%d" | b"%H" | b"%M" | b"%S"))
+        })
 }
 
 fn calendar_date_format(
@@ -450,6 +560,11 @@ fn calendar_date_format(
             registry, producer, InvocationRuntimeContext::default(), bindings,
         ),
         ResolveInvocationArtifactResult::Resolved(r) if r.proven_arithmetic_stdout()
+            || (!allow_date_operand
+                && format.contains('_')
+                && calendar_filename_format(&format, true)
+                && r.bound.form_id.as_str() == "print_or_parse_date"
+                && r.proven_stream_contract().is_some())
     ).then_some(format)
 }
 

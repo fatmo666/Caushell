@@ -130,19 +130,30 @@ pub(super) fn iteration_domain(
         return None;
     }
     let mut roots = Vec::new();
-    let Some(items) = &iteration.items else {
-        if !bindings.positional_parameters_are_complete()
-            || bindings.positional_parameters().len() > MAX_ITEMS
-        {
-            return None;
-        }
-        for value in bindings.positional_parameters() {
-            let SessionValue::ExactScalar(value) = value else {
+    // A for loop without "in" expands the same argv vector as quoted $@.
+    // In particular, an unknown batch length does not erase its item domain.
+    let positional_words;
+    let items = match &iteration.items {
+        Some(items) => items.as_slice(),
+        None => {
+            if !matches!(shell_kind, caushell_types::ShellKind::Bash | caushell_types::ShellKind::Sh)
+                || bindings.positional_parameters().len() > MAX_ITEMS
+            {
                 return None;
-            };
-            roots.push(value.clone());
+            }
+            positional_words = [caushell_parse::CommandToken {
+                text: "$@".into(),
+                quoted: true,
+                node_kind: "string".into(),
+                span: iteration.span.clone(),
+                kind: caushell_parse::CommandTokenKind::Arg,
+                implicit_input_source: None,
+                runtime_argument_domain: None,
+                runtime_data: false,
+                command_substitutions: Vec::new(),
+            }];
+            &positional_words
         }
-        return path_domain(roots).map(|domain| (domain, false));
     };
     if items.len() > MAX_ITEMS {
         return None;

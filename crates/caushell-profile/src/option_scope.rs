@@ -367,6 +367,35 @@ pub(crate) fn temporal_option_is_value_only(
     })
 }
 
+/// Zip consumes the first separated pattern even if it begins with '-'.
+/// Subsequent patterns end at another option or an explicit '@' delimiter.
+pub(crate) fn zip_pattern_list(
+    args: &[crate::ProjectedArg],
+    start: usize,
+    end: usize,
+) -> (usize, bool, bool) {
+    if start >= end {
+        return (start, false, false);
+    }
+    let mut next = start + 1;
+    let mut unresolved = false;
+    while next < end {
+        let structure = crate::argument_structure(&args[next]);
+        if !structure.exact && (structure.may_start_with("-") || structure.may_equal("@")) {
+            unresolved = true;
+        }
+        let value = &args[next].text;
+        if value == "@" {
+            return (next, true, unresolved);
+        }
+        if value.starts_with('-') {
+            break;
+        }
+        next += 1;
+    }
+    (next, false, unresolved)
+}
+
 pub(crate) fn scan_leading_options(
     projection: &ProjectedInvocation,
     scope: ArgumentScope,
@@ -379,6 +408,7 @@ pub(crate) fn scan_leading_options(
     operand_matcher: Option<&crate::OptionOperandMatcher>,
     exact_option_words: &[FlagName],
     trailing_option_words: &[FlagName],
+    dash_dash_before_operand: bool,
 ) -> ScopedOptions {
     let mut result = ScopedOptions {
         exact_argv: false,
@@ -468,6 +498,26 @@ pub(crate) fn scan_leading_options(
         }
         let token = projection.args[index].text.as_str();
         if prefixes.is_terminator(token) {
+            if dash_dash_before_operand {
+                // Info-ZIP carries a minus into the next leading option.
+                // With a plain archive operand next, option scanning ends
+                // before the minus can affect any option.
+                let next = index + 1;
+                if trailing
+                    || !structure.exact
+                    || next == scope.end_index
+                    || !crate::argument_structure(&projection.args[next]).exact
+                    || projection.args[next].text.is_empty()
+                    || projection.args[next].text.starts_with('-')
+                {
+                    result.error = Some("unsupported standalone -- placement".into());
+                    break;
+                }
+                result.terminator = Some(index);
+                index = next;
+                result.scope.end_index = index;
+                continue;
+            }
             if permuted && result.error.is_some() {
                 // A preceding unknown arity may consume this word as data.
                 // Retain hazards in either possible tail; do not certify a
@@ -674,6 +724,7 @@ pub(crate) fn scan_leading_options(
                         mode,
                         Some(
                             FlagOperandMode::NextArg
+                                | FlagOperandMode::ZipPatternList
                                 | FlagOperandMode::WordAttached
                                 | FlagOperandMode::OptionalWordAttached
                                 | FlagOperandMode::WordAttachedOrNextArg
@@ -694,6 +745,7 @@ pub(crate) fn scan_leading_options(
             }
             break;
         }
+        let mut list_delimiter = false;
         let extra = if inline {
             0
         } else {
@@ -703,6 +755,13 @@ pub(crate) fn scan_leading_options(
                     | FlagOperandMode::NextPositional
                     | FlagOperandMode::WordAttachedOrNextArg,
                 ) => 1,
+                Some(FlagOperandMode::ZipPatternList) => {
+                    let (end, delimiter, unresolved) =
+                        zip_pattern_list(&projection.args, index + 1, scope.end_index);
+                    result.ownership_unresolved |= unresolved;
+                    list_delimiter = delimiter;
+                    (end - index - 1).max(1)
+                }
                 Some(FlagOperandMode::OptionalNextArg) => usize::from(
                     index + 1 < scope.end_index
                         && projection.args.get(index + 1).is_some_and(|arg| {
@@ -753,7 +812,11 @@ pub(crate) fn scan_leading_options(
         // After a gap, a preceding option may consume the apparent owner of
         // the next value. Scan those argv words as possible controls too. A
         // known operand/terminator before the gap keeps its exact boundary.
-        index += if result.error.is_some() { 1 } else { 1 + extra };
+        index += if result.error.is_some() {
+            1
+        } else {
+            1 + extra + usize::from(list_delimiter)
+        };
         result.scope.end_index = index;
         if ends {
             return result;

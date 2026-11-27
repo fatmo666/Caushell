@@ -57,6 +57,11 @@ pub enum SubstitutionOutputProof {
     /// An unquoted capture can still expand into zero or several fields.
     DecimalPidFields,
     ArithmeticField { prefix: String, suffix: String },
+    /// One quoted pathname word surrounding a verified calendar capture.
+    CalendarFilename { prefix: String, suffix: String },
+    /// One quoted word whose complete pathname spelling is bounded, including
+    /// the case where its command substitution emits nothing.
+    PathWord(caushell_types::RuntimeArgumentDomain),
     /// A calendar capture and its literal affixes are local filename fields
     /// under all IFS settings. Their count and actual bytes remain unknown.
     LocalFilenameFields,

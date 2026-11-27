@@ -379,6 +379,56 @@ fn bare_and_attached_temporal_layouts_keep_the_union_of_writes() {
 }
 
 #[test]
+fn quoted_calendar_archive_is_bounded_by_the_execution_directory() {
+    let workspace = SubstitutionWorkspace::new();
+    for (command, directory) in [
+        (r#"zip "archive_$(date +%Y%m%d_%H%M%S).zip" server.log"#, ""),
+        (r#"zip -r "archive-$(date +%Y%m%d).zip" logs"#, ""),
+        (r#"cd logs && zip "archive_$(date +%Y%m%d).zip" ../server.log"#, "logs"),
+    ] {
+        let result = workspace.check(command, None);
+        let expected = if directory.is_empty() {
+            workspace.0.clone()
+        } else {
+            workspace.0.join(directory)
+        };
+        assert_eq!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+        assert!(result.decision_trace.path_targets.iter().any(|target| {
+            target.slot_name == "archive_path"
+                && target.operation == PathTargetOperation::Write
+                && matches!(&target.resolution, SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                } if roots == &[expected.to_string_lossy().into_owned()])
+        }), "{command}: {:?}", result.decision_trace.path_targets);
+    }
+}
+
+#[test]
+fn calendar_archive_still_requires_a_proven_capture_and_namespace() {
+    let workspace = SubstitutionWorkspace::new();
+    for command in [
+        r#"zip "archive_$(date +%Y/%m/%d).zip" server.log"#,
+        r#"zip "archive_$(date +%Y%m%d 2>&1).zip" server.log"#,
+        r#"date() { printf '%s' example; }; zip "archive_$(date +%Y%m%d).zip" server.log"#,
+        r#"zip archive_$(date +%Y%m%d_%H%M%S).zip server.log"#,
+        r#"zip "../archive_$(date +%Y%m%d).zip" server.log"#,
+    ] {
+        let result = workspace.check(command, None);
+        assert_ne!(result.decision, Decision::Allow, "{command}: {:?}", result.reasons);
+    }
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            workspace.0.join("server.log"),
+            workspace.0.join("archive_20261127_000000.zip"),
+        ).unwrap();
+        let result = workspace.check(r#"zip "archive_$(date +%Y%m%d_%H%M%S).zip" server.log"#, None);
+        assert_ne!(result.decision, Decision::Allow, "{:?}", result.reasons);
+    }
+}
+
+#[test]
 fn split_calendar_output_keeps_all_touch_targets_in_the_workspace() {
     let workspace = SubstitutionWorkspace::new();
     for (command, ifs) in [
