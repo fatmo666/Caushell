@@ -239,12 +239,22 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                         root.as_deref(),
                     );
                     if overlaps && stable_producers.contains(other) {
-                        if let Some(proof) = namespace_state::scope_preservation(
+                        if let Some(mut proof) = namespace_state::scope_preservation(
                             &inputs[*other],
                             &baselines[*other],
                             &inputs[index],
                             &baselines[index],
                         ) {
+                            if proof.effect == caushell_types::PathNamespaceEffect::DirectoryCreate
+                                && inputs[index].fact.operation == PathTargetOperation::Write
+                                && let (Some(setup), Some(consumer)) = (
+                                    records.get(proof.producer_node_id.as_str()),
+                                    records.get(inputs[index].fact.source_node_id.as_str()),
+                                )
+                            {
+                                proof.same_iteration_success =
+                                    directory_setup::guarded_in_same_iteration(setup, consumer);
+                            }
                             proofs.push(proof);
                             return false;
                         }

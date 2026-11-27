@@ -298,6 +298,91 @@ fn directory_setup_orders_direct_find_transfers_and_preserves_path_checks() {
 }
 
 #[test]
+#[cfg(unix)]
+fn directory_setup_closes_find_shell_loop_paths_and_records_local_order() {
+    let root = std::env::temp_dir()
+        .canonicalize()
+        .unwrap()
+        .join(format!("caushell-ordered-find-loop-{}", std::process::id()));
+    let source = root.join("input");
+    let destination = root.join("archive").join("input");
+    std::fs::create_dir_all(source.join("nested")).unwrap();
+    std::fs::write(source.join("nested/report.txt"), "fixture").unwrap();
+
+    let check = |body: &str| {
+        let command = format!("mkdir -p archive && find input -type f -exec sh -c '{body}' _ {{}} +");
+        let mut input = request(1, &command);
+        let cwd = root.to_str().unwrap();
+        input.workspace_root = Some(cwd.into());
+        input.shell_state_before = ShellStateSnapshot::new(cwd);
+        ShellQueryCore::new().check(input)
+    };
+    let body = r#"for item; do mkdir -p "archive/$(dirname "$item")" && mv -- "$item" "archive/$item"; done"#;
+    let ordered = check(body);
+    let explicit = check(&body.replacen("for item;", "for item in \"$@\";", 1));
+    let failure_branch = check(&body.replace("&& mv", "|| mv"));
+    let later_loop = check(
+        r#"for item; do mkdir -p "archive/$(dirname "$item")"; done && for item; do mv -- "$item" "archive/$item"; done"#,
+    );
+
+    std::fs::create_dir_all(destination.join("nested")).unwrap();
+    let existing = check(body);
+    let outside = root.with_extension("outside");
+    std::os::unix::fs::symlink(&outside, destination.join("nested/report.txt")).unwrap();
+    let linked_destination = check(body);
+    std::fs::remove_file(destination.join("nested/report.txt")).unwrap();
+    std::os::unix::fs::symlink(&outside, source.join("nested/linked.txt")).unwrap();
+    let linked_source = check(body);
+    std::fs::remove_dir_all(&root).unwrap();
+
+    for (case, response) in [
+        ("implicit positionals", ordered),
+        ("explicit positionals", explicit),
+        ("existing destination", existing),
+    ] {
+        let targets = &response.decision_trace.path_targets;
+        assert_eq!(
+            response.decision,
+            Decision::Allow,
+            "{case}: {:?}, paths: {:?}",
+            response.reasons,
+            targets
+                .iter()
+                .map(|f| (&f.slot_name, &f.lexical, &f.resolution))
+                .collect::<Vec<_>>(),
+        );
+        for (slot, path) in [
+            ("source_paths", source.as_path()),
+            ("destination_path", destination.as_path()),
+        ] {
+            assert!(targets.iter().any(|fact| {
+                fact.slot_name == slot
+                    && matches!(&fact.resolution, SemanticResolution::Resolved {
+                        value: PathResolution::BoundedPathSet { roots, may_escape: false },
+                    } if roots == &[path.to_str().unwrap()])
+            }));
+        }
+        assert!(targets.iter().any(|fact| {
+            fact.slot_name == "destination_path"
+                && fact.namespace_proofs.iter().any(|proof| proof.same_iteration_success)
+        }));
+    }
+    for response in [failure_branch, later_loop] {
+        assert!(!response.decision_trace.path_targets.iter().any(|fact| {
+            fact.namespace_proofs.iter().any(|proof| proof.same_iteration_success)
+        }));
+    }
+    for response in [linked_source, linked_destination] {
+        assert_eq!(
+            response.decision,
+            Decision::NeedApproval,
+            "{:?}",
+            response.reasons
+        );
+    }
+}
+
+#[test]
 fn unavailable_namespace_is_not_a_workspace_proof() {
     let mut core = ShellQueryCore::new()
         .with_filesystem_view(Arc::new(caushell_runner::UnavailableFilesystem));

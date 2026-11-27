@@ -121,6 +121,10 @@ pub struct PathNamespaceProof {
     pub effect: PathNamespaceEffect,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub additional_paths: Vec<String>,
+    /// The producer's success guards the consumer in the same shell loop
+    /// iteration. Other iterations still participate in namespace closure.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub same_iteration_success: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]

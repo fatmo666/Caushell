@@ -159,6 +159,7 @@ pub(super) fn scope_preservation(
             path: path.clone(),
             effect: PathNamespaceEffect::EntryRelocation,
             additional_paths: scope.disjoint_destination.iter().cloned().collect(),
+            same_iteration_success: false,
         });
     }
     if writer.namespace_effect == Some(PathNamespaceEffect::EntryRemoval)
@@ -187,6 +188,7 @@ pub(super) fn scope_preservation(
             path: path.clone(),
             effect: PathNamespaceEffect::EntryRemoval,
             additional_paths: Vec::new(),
+            same_iteration_success: false,
         });
     }
     if writer.namespace_effect == Some(PathNamespaceEffect::DirectoryCreate)
@@ -225,6 +227,7 @@ pub(super) fn scope_preservation(
             path: path.clone(),
             effect: PathNamespaceEffect::DirectoryCreate,
             additional_paths: Vec::new(),
+            same_iteration_success: false,
         });
     }
     // In a closed, observed link-free tree, regular-file writes at bounded
@@ -288,7 +291,21 @@ pub(super) fn scope_preservation(
         {
             return None;
         }
-        if consumer_roots.iter().all(|path| {
+        // Both relocation operands use the observations from their shared
+        // closed tree, so a sibling directory creation can overlap those
+        // observations without containing the consumer's own target. It can
+        // only add ordinary directories. Preserve the family invariant while
+        // keeping the stricter conditions for an exact ordinary source.
+        let preserves_closed_relocation = writer.namespace_effect
+            == Some(PathNamespaceEffect::DirectoryCreate)
+            && consumer.relocation_scope.as_ref().is_some_and(|scope| {
+                scope.ordinary_source.is_none()
+                    && scope.disjoint_destination.is_none()
+                    && roots.iter().all(|root| {
+                        caushell_query::path_is_within_root(root, &scope.root)
+                    })
+            });
+        if preserves_closed_relocation || consumer_roots.iter().all(|path| {
             roots
                 .iter()
                 .any(|root| caushell_query::path_is_within_root(path, root))
@@ -299,6 +316,7 @@ pub(super) fn scope_preservation(
                 path: roots[0].clone(),
                 effect: writer.namespace_effect.expect("typed output effect"),
                 additional_paths: roots.iter().skip(1).cloned().collect(),
+                same_iteration_success: false,
             });
         }
         return None;
@@ -333,6 +351,7 @@ pub(super) fn scope_preservation(
             path,
             effect: PathNamespaceEffect::RegularFileWrite,
             additional_paths: Vec::new(),
+            same_iteration_success: false,
         });
     }
     if concrete(&consumer_state.0)? != path {
@@ -347,6 +366,7 @@ pub(super) fn scope_preservation(
         path,
         effect: PathNamespaceEffect::RegularFileWrite,
         additional_paths: Vec::new(),
+        same_iteration_success: false,
     })
 }
 

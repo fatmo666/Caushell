@@ -1,6 +1,6 @@
 use std::collections::BTreeMap;
 
-use caushell_parse::{CommandFact, ParsedCommandArtifact, StatementTerminator};
+use caushell_parse::{CommandFact, ParsedCommandArtifact, SourceSpan, StatementTerminator};
 use caushell_profile::{
     DispatchWorkingDirectory, PathnamePattern, ResolveInvocationArtifactResult, argument_structure,
 };
@@ -30,14 +30,66 @@ pub(super) fn guarded_by_success(
     ) else {
         return false;
     };
+    has_success_guard(parsed, setup, successor)
+}
+
+/// Prove a local ordering between occurrences, not between all executions of
+/// the two nodes. This can annotate a closed namespace proof but cannot remove
+/// overlaps across loop iterations from the mutation graph.
+pub(super) fn guarded_in_same_iteration(
+    setup: &ExecutionUnitResolveRecord,
+    successor: &ExecutionUnitResolveRecord,
+) -> bool {
+    if setup.origin_kind != successor.origin_kind
+        || !matches!(
+            setup.origin_kind,
+            ExecutionUnitOriginKind::TopLevel | ExecutionUnitOriginKind::ShellCommandStringPayload
+        )
+        || setup.parent_execution_node_id != successor.parent_execution_node_id
+        || setup.parsed_scope.for_loops.is_empty()
+        || setup.parsed_scope != successor.parsed_scope
+    {
+        return false;
+    }
+    let parsed = &setup.parsed_scope;
+    let (Some(setup), Some(successor)) = (
+        command_in_frame(parsed, setup),
+        command_in_frame(parsed, successor),
+    ) else {
+        return false;
+    };
+    let enclosing_iteration = |command: &CommandFact| {
+        parsed
+            .for_loops
+            .iter()
+            .enumerate()
+            .filter(|(_, iteration)| {
+                iteration.shell_scope_span.is_none()
+                    && contains(&iteration.body_span, &command.span)
+            })
+            .min_by_key(|(_, iteration)| iteration.span.end_byte - iteration.span.start_byte)
+            .map(|(index, _)| index)
+    };
+    enclosing_iteration(setup).is_some_and(|i| enclosing_iteration(successor) == Some(i))
+        && has_success_guard(parsed, setup, successor)
+}
+
+fn has_success_guard(
+    parsed: &ParsedCommandArtifact,
+    setup: &CommandFact,
+    successor: &CommandFact,
+) -> bool {
     parsed.status_conditions.iter().any(|condition| {
         condition.success
             && condition.shell_scope_span.is_none()
             && condition.command_span == setup.span
             && setup.span.end_byte <= successor.span.start_byte
-            && condition.guarded_region.start_byte <= successor.span.start_byte
-            && successor.span.end_byte <= condition.guarded_region.end_byte
+            && contains(&condition.guarded_region, &successor.span)
     })
+}
+
+fn contains(outer: &SourceSpan, inner: &SourceSpan) -> bool {
+    outer.start_byte <= inner.start_byte && inner.end_byte <= outer.end_byte
 }
 
 fn foreground_command<'a>(
@@ -47,10 +99,16 @@ fn foreground_command<'a>(
     if record.origin_kind != ExecutionUnitOriginKind::TopLevel {
         return None;
     }
+    command_in_frame(parsed, record).filter(|command| command.control_flow_span.is_none())
+}
+
+fn command_in_frame<'a>(
+    parsed: &'a ParsedCommandArtifact,
+    record: &ExecutionUnitResolveRecord,
+) -> Option<&'a CommandFact> {
     parsed.commands.iter().find(|command| {
         command.span == record.command_ref.span
             && command.shell_scope_span.is_none()
-            && command.control_flow_span.is_none()
             && !command.in_pipeline
             && command.terminator != Some(StatementTerminator::Background)
     })
