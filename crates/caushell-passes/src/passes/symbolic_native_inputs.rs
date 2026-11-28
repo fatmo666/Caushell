@@ -37,7 +37,11 @@ fn closed_effects(
             caushell_profile::gnu_gzip_read_mode(profile, flag, bindings)
                 .is_some_and(caushell_profile::GnuGzipReadMode::is_inspection)
         });
-    if (!effect_profile(profile, contract) && !gzip_inspection)
+    let info_zip_listing = resolved.bound.form_id.as_str() == "__info_zip_listing_effect_envelope__"
+        && resolved.bound.native_argv_effect_envelope
+            == Some(caushell_types::NativeArgvEffectEnvelope::ContentRead)
+        && caushell_profile::is_attested_info_zip_listing(profile, bindings.native_variant("zipinfo"));
+    if (!effect_profile(profile, contract) && !gzip_inspection && !info_zip_listing)
         || resolved.bound.operation_semantics_unresolved
         || !resolved.bound.residuals.is_empty()
         || resolved

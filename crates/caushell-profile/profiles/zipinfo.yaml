@@ -19,8 +19,18 @@ environment_inputs:
     semantic: *env_options
 
 forms:
+  # An empty native invocation can display usage. The resolver also uses
+  # this form to bind the attested listing surface without claiming exact argv.
+  - id: listing_usage
+    selector:
+      kind: all
+      items:
+        - &info_zip {kind: has_native_variant, variant: info_zip_3_0_debian}
+        - {kind: no_positional_args}
+    implicit_inputs: [{source: stdin_data, semantic: {kind: plain_value}}]
+    effects: [{kind: consume_stdin, target: {kind: implicit_input, source: stdin_data}}]
   - id: list_members
-    selector: {kind: all, items: [{kind: no_dash_dash}, {kind: has_positional_at, index: 0}]}
+    selector: {kind: all, items: [*info_zip, {kind: no_dash_dash}, {kind: has_positional_at, index: 0}]}
     parameters:
       - name: archive_file
         semantic: {kind: path, role: read, purpose: generic_operand}
@@ -50,4 +60,4 @@ extensions:
   caushell.profile/review_scope:
     - Listing uses the read-only ZipInfo parser. Its -T formats timestamps in the listing.
     - With a literal archive operand, include both POSIX suffix fallbacks as possible content reads.
-    - Archive wildcard expansion, unsupported options and unproved startup options remain opaque. Member patterns name entries inside the archive.
+    - The attested listing persona retains possible archive reads and stream inputs even if argv selection or startup options are unknown. Member patterns name entries inside the archive.

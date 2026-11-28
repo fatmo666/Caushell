@@ -8347,8 +8347,13 @@ fn expanded_static_xargs_children(
         // that the child has no effects. Preserve its conditional status.
         command.conditional_execution |=
             config.requires_confirmation || arity_alternatives || alternative_order || enumerated_input;
+        let parent_bindings = crate::support::command_environment_bindings(
+            &entry.bindings,
+            &entry.parsed_scope,
+            &entry.command_ref,
+        );
         let child_bindings =
-            dispatch_child_session_bindings(&entry.bindings, &child_candidate, &command);
+            dispatch_child_session_bindings(&parent_bindings, &child_candidate, &command);
         let parsed_child = empty_dispatch_scope(command.clone(), entry.shell_kind);
         let mut resolved_child = caushell_profile::resolve_invocation_artifact_with_stdout_proofs(
             registry,

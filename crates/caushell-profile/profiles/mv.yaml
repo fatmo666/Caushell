@@ -97,10 +97,39 @@ forms:
       - {kind: write_path, namespace_effect: entry_relocation, path_scope: {kind: subtree}, target: {kind: slot, name: destination_path}}
     stream_contract: *streams
 
-  # Other backup modes still have an unproved operation envelope.
+  # GNU backup names address an entry beside the old target. Keep the
+  # trailing-slash numbered form above for its directory placement proof.
+  - id: gnu_backup_move
+    selector: &gnu_backup_shape
+      kind: all
+      items:
+        - *running
+        - *backups
+        - *implicit_target
+        - {kind: not, item: {kind: has_modifier, modifier: no_target_directory}}
+        - {kind: exact_positional_count, count: 2}
+        - {kind: has_native_variant, variant: gnu_coreutils_9_1}
+        - {kind: not, item: *numbered_directory}
+    remaining_selector: {kind: no_positional_args}
+    parameters: *move_parameters
+    effects:
+      - *source_move
+      - *destination_write
+      - {kind: write_path, namespace_effect: entry_replacement_backup, target: {kind: slot, name: destination_path}}
+    stream_contract: *streams
+
+  # Other backup modes retain the unresolved backup effect.
   - id: backup_move
     operation_semantics_unresolved: true
-    selector: {kind: all, items: [*running, *backups, {kind: not, item: *numbered_directory}, {kind: not, item: {kind: has_modifier, modifier: target_directory}}, {kind: has_positional_at, index: 1}]}
+    selector:
+      kind: all
+      items:
+        - *running
+        - *backups
+        - *implicit_target
+        - *has_source_and_destination
+        - {kind: not, item: *numbered_directory}
+        - {kind: not, item: *gnu_backup_shape}
     remaining_selector: {kind: no_positional_args}
     parameters: *move_parameters
     effects:
@@ -150,4 +179,4 @@ extensions:
   caushell.profile/sources: [https://github.com/coreutils/coreutils/blob/master/src/mv.c]
   caushell.profile/no_path_effects_without_file_operands: true
   caushell.profile/known_limitations:
-    - Automatic backup names and their old-destination content origin need a separate output-specific transfer declaration. --exchange and unmodeled modes remain unresolved.
+    - The numbered-directory form and attested single-source GNU move have bounded backup locations. Backup names and contents are not predicted. --exchange and unmodeled modes remain unresolved.

@@ -3,7 +3,7 @@ use super::{
     Input, directory_tree,
     namespace_state::{Baseline, ordinary_leaf},
 };
-use crate::path::namespace::NamespaceResolver;
+use crate::path::namespace::{NamespaceResolver, unresolved};
 use caushell_runner::{DirectoryReadBudget, FilesystemView};
 use caushell_types::*;
 use std::{collections::{BTreeMap, BTreeSet}, sync::Arc};
@@ -14,6 +14,106 @@ pub(super) struct RelocationScope {
     pub(super) ordinary_source: Option<String>,
     pub(super) ordinary_destination: Option<String>,
     pub(super) disjoint_destination: Option<String>,
+}
+
+pub(super) fn resolve_backup(spelling: &str, resolver: &mut NamespaceResolver) -> Baseline {
+    let (entry, mut observations) = resolver.resolve(spelling, PathTargetAccess::Entry);
+    let (followed, followed_observations) = resolver.resolve(spelling, PathTargetAccess::Follow);
+    observations.extend(followed_observations);
+    let result = (|| {
+        let SemanticResolution::Resolved { value: PathResolution::Concrete { path: entry } } = entry else {
+            return entry;
+        };
+        let SemanticResolution::Resolved { value: PathResolution::Concrete { path: followed } } = followed else {
+            return followed;
+        };
+        // GNU mv uses a directory (including a link to one) as the parent
+        // of the placed entry. Otherwise it replaces the destination entry
+        // itself. Appending a backup name never follows the backup leaf.
+        let directory = if followed == "/" || observations.iter().any(|observation| {
+            observation.path == followed && observation.entry == FilesystemEntry::Directory
+        }) {
+            followed
+        } else {
+            let (parent, _) = entry.rsplit_once('/').expect("resolved absolute path");
+            if parent.is_empty() { "/".into() } else { parent.into() }
+        };
+        let (parent, parent_observations) = resolver.resolve(&directory, PathTargetAccess::Follow);
+        observations.extend(parent_observations);
+        match parent {
+            SemanticResolution::Resolved { value: PathResolution::Concrete { path } }
+                if path == "/" || observations.iter().any(|observation| {
+                    observation.path == path && observation.entry == FilesystemEntry::Directory
+                }) =>
+            {
+                SemanticResolution::Resolved {
+                    value: PathResolution::BoundedPathSet { roots: vec![path], may_escape: false },
+                }
+            }
+            SemanticResolution::Unresolved { .. } => parent,
+            _ => unresolved(SemanticGapKind::UnknownTarget, "backup parent directory is unproved"),
+        }
+    })();
+    (result, observations)
+}
+
+/// A backup and the paired move are effects of one native invocation. With
+/// one observed ordinary source, this invocation cannot reparent its own
+/// backup directory. Other execution units still depend on these writes.
+pub(super) fn closed_backup_groups(
+    inputs: &[Input],
+    baselines: &[Baseline],
+) -> BTreeSet<String> {
+    let mut groups = BTreeMap::<&str, Vec<usize>>::new();
+    for input in inputs {
+        if input.namespace_effect == Some(PathNamespaceEffect::EntryReplacementBackup) {
+            groups.entry(input.fact.source_node_id.as_str()).or_default();
+        }
+    }
+    if groups.is_empty() {
+        return BTreeSet::new();
+    }
+    for (index, input) in inputs.iter().enumerate() {
+        if input.namespace_write && let Some(group) = groups.get_mut(input.fact.source_node_id.as_str()) {
+            group.push(index);
+        }
+    }
+    groups.into_iter().filter_map(|(node, indices)| {
+        let [source, destination, backup] = indices[..] else {
+            return None;
+        };
+        let source_fact = &inputs[source];
+        let destination_fact = &inputs[destination];
+        let backup_fact = &inputs[backup];
+        if ![source_fact, destination_fact, backup_fact].iter().all(|input| input.pending_resolution)
+            || source_fact.fact.operation != PathTargetOperation::MoveSource
+            || destination_fact.fact.operation != PathTargetOperation::Write
+            || source_fact.namespace_effect != Some(PathNamespaceEffect::EntryRelocation)
+            || destination_fact.namespace_effect != Some(PathNamespaceEffect::EntryRelocation)
+            || backup_fact.namespace_effect != Some(PathNamespaceEffect::EntryReplacementBackup)
+            || destination_fact.fact.spelling != backup_fact.fact.spelling
+            || !matches!(baselines[backup].0, SemanticResolution::Resolved { .. })
+        {
+            return None;
+        }
+        match &baselines[source].0 {
+            SemanticResolution::Resolved { value: PathResolution::Concrete { path } }
+                if source_fact.fact.lexical.concrete_path() == Some(path)
+                    && ordinary_leaf(path, &baselines[source].1) => Some(node.to_owned()),
+            _ => None,
+        }
+    }).collect()
+}
+
+pub(super) fn same_backup_operation(
+    target: &Input,
+    writer: &Input,
+    groups: &BTreeSet<String>,
+) -> bool {
+    (target.namespace_effect == Some(PathNamespaceEffect::EntryReplacementBackup)
+        || writer.namespace_effect == Some(PathNamespaceEffect::EntryReplacementBackup))
+        && target.fact.source_node_id == writer.fact.source_node_id
+        && groups.contains(target.fact.source_node_id.as_str())
 }
 
 pub(super) fn close_families(

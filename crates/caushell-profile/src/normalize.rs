@@ -3245,6 +3245,11 @@ fn normalize_effect(raw: RawEffect) -> Result<Effect, NormalizeError> {
                     matches!(kind, EffectKind::MovePath | EffectKind::WritePath)
                         && matches!(target, EffectTarget::Slot(_))
                 }
+                caushell_types::PathNamespaceEffect::EntryReplacementBackup => {
+                    kind == EffectKind::WritePath
+                        && matches!(target, EffectTarget::Slot(_))
+                        && raw.path_access.is_none()
+                }
                 caushell_types::PathNamespaceEffect::EntryRemoval => {
                     matches!(kind, EffectKind::MovePath | EffectKind::DeletePath)
                         && matches!(target, EffectTarget::Slot(_))

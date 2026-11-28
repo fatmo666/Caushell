@@ -40,6 +40,7 @@ mod diff_pagination;
 mod native_effect_envelope;
 pub use native_effect_envelope::{
     GnuGzipReadMode, gnu_gzip_read_mode,
+    is_attested_info_zip_listing,
     native_effect_contract_allows_effect, native_effect_contract_allows_parameter,
     native_effect_contract_is_closed, native_effect_contract_is_closed_in_domain,
     retain_symbolic_argv_stream_contract,
