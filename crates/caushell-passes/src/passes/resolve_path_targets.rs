@@ -6,7 +6,7 @@ use caushell_profile::{
 use caushell_query::{IoTarget, IoTargetQuery};
 use caushell_runner::{PendingMutation, RunnerContext, SessionTransformPass, SessionView};
 use caushell_types::{
-    PathResolution, PathTargetAccess, PathTargetFact, PathTargetOperation, SemanticGapKind,
+    PathNamespaceEffect, PathResolution, PathTargetAccess, PathTargetFact, PathTargetOperation, SemanticGapKind,
     SemanticResolution,
 };
 
@@ -104,6 +104,10 @@ impl SessionTransformPass for ResolvePathTargetsPass {
                     ),
                     Vec::new(),
                 )
+            } else if inputs[index].namespace_effect == Some(PathNamespaceEffect::EntryReplacementBackup)
+                && let Some(spelling) = spelling
+            {
+                entry_relocation::resolve_backup(spelling, &mut resolver)
             } else if inputs[index].namespace_effect
                 == Some(caushell_types::PathNamespaceEffect::DirectoryTreeWrite)
                 || matches!(
@@ -156,6 +160,7 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             baselines.push((resolution, observations));
         }
         let closed_tree = namespace_operations_complete(ctx, true);
+        let backup_groups = entry_relocation::closed_backup_groups(&inputs, &baselines);
         let ordered_transfers = if closed_tree {
             tree_evidence.extend(entry_relocation::close_families(
                 &mut inputs, &mut baselines, &mut resolver,
@@ -202,7 +207,8 @@ impl SessionTransformPass for ResolvePathTargetsPass {
             .collect();
         let mut comparisons = 0usize;
         let completes_before_writer = |target: &Input, writer: &Input| {
-            unzip_setup::completes_before_unzip(
+            entry_relocation::same_backup_operation(target, writer, &backup_groups)
+                || unzip_setup::completes_before_unzip(
                 target,
                 writer,
                 &records,
@@ -534,11 +540,12 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                     }
                     let start = inputs.len();
                     for target in targets.iter().filter(|t| t.effect_index == effect_index) {
+                        let backup = effect.namespace_effect == Some(PathNamespaceEffect::EntryReplacementBackup);
                         let archive_members =
                             bound.bound_archive_members.contains_key(&effect_index);
                         let access = if archive_members {
                             PathTargetAccess::Follow
-                        } else if matches!(
+                        } else if backup || matches!(
                             operation,
                             PathTargetOperation::Delete | PathTargetOperation::MoveSource
                         ) {
@@ -621,6 +628,14 @@ fn collect_inputs(ctx: &RunnerContext) -> Vec<Input> {
                             lexical,
                             spelling,
                         );
+                        if backup {
+                            // The original spelling anchors directory/link
+                            // resolution. It is not the spelling of a backup.
+                            input.fact.slot_name = "backup_entry".into();
+                            input.fact.lexical = PathResolution::UnsupportedDynamicText {
+                                text: "backup beside the effective move destination".into(),
+                            };
+                        }
                         input.direct_content_output = direct_content_output;
                         input.fact.metadata_mutation = target.metadata_mutation.clone();
                         // A plugin/config/wrapper may execute arbitrary logic;

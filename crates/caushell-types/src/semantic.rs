@@ -109,6 +109,10 @@ pub enum PathNamespaceEffect {
     /// link-free family closure can preserve containment; never exact entry
     /// identity, content, execution order, or successful relocation.
     EntryRelocation,
+    /// A conditional backup of the entry replaced by a move. The target slot
+    /// supplies the move's destination operand. The backup itself is a
+    /// separate entry in the effective destination's parent directory.
+    EntryReplacementBackup,
 }
 
 /// Request-local abstract-state dependency. Current filesystem observations
