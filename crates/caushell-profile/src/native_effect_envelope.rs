@@ -266,6 +266,80 @@ fn native_surface_is_direct(profile: &CommandProfile) -> bool {
         && profile.selection_failure_effects.is_empty()
 }
 
+pub fn is_attested_info_zip_listing(profile: &CommandProfile, variant: Option<&str>) -> bool {
+    profile.primary_name() == "zipinfo"
+        && profile.trust.source == crate::ProfileSourceKind::BuiltIn
+        && variant == Some("info_zip_3_0_debian")
+}
+
+pub(crate) fn bind_info_zip_listing<'a>(
+    profile: &'a CommandProfile,
+    materialized: &crate::MaterializedProjectedInvocation,
+    variant: Option<&str>,
+    environment_may_supply_args: bool,
+) -> Option<(crate::InvocationSelection<'a>, crate::BoundInvocation)> {
+    use crate::*;
+    // Only the protected listing persona fixes the complete native effect
+    // class. Startup words are parsed after persona selection by this build.
+    if !is_attested_info_zip_listing(profile, variant)
+        || materialized.shell_expansion_unresolved
+    {
+        return None;
+    }
+    let argv = &materialized.invocation;
+    let mut usage = argv.clone();
+    usage.args.clear();
+    let selection = crate::bind::select_invocation_for_native_variant(profile, &usage, variant).ok()?;
+    let mut bound = bind_invocation(profile, &usage, &selection);
+    let archive = SlotName::new("possible_archive_inputs");
+    let mut paths = BoundParameter::new(
+        archive.clone(),
+        SemanticType::Path(PathSemantic {
+            role: PathRole::Read,
+            purpose: Some(PathPurpose::GenericOperand),
+        }),
+    );
+    if environment_may_supply_args {
+        paths.values.push(BoundValue::implicit_input(ImplicitInputSource::InheritedEnvironment));
+    }
+    for arg in &argv.args {
+        let value = match arg.implicit_input_source {
+            Some(source) => BoundValue::ImplicitInput {
+                source: ImplicitInputSource::from_caushell_types_implicit_input_source(source),
+                domain: Some(caushell_types::RuntimeArgumentDomain::Unbounded),
+                origin: Some(BoundImplicitArgumentOrigin {
+                    span: arg.span.clone(),
+                    single_field: argument_structure(arg).fields == ArgumentFieldCount::ExactlyOne,
+                }),
+            },
+            None => {
+                let value = BoundValue::argument_with_node_kind(
+                    arg.text.clone(),
+                    arg.quoted,
+                    arg.node_kind.clone(),
+                    arg.span.clone(),
+                    ArgumentBindingSource::RemainingArg,
+                );
+                if arg.runtime_data {
+                    value.with_materialization(BoundArgumentMaterialization::RuntimeData)
+                } else {
+                    value
+                }
+            }
+        };
+        paths.values.push(value);
+    }
+    if !paths.values.is_empty() {
+        let mut read = Effect::new(EffectKind::ReadPath).for_slot(archive.as_str());
+        read.path_access = Some(PathAccessKind::ContentOpen);
+        bound.effects.push(read);
+        bound.bound_parameters.push(paths);
+    }
+    bound.form_id = FormId::new("__info_zip_listing_effect_envelope__");
+    retain_symbolic_argv_stream_contract(&mut bound, NativeArgvEffectEnvelope::ContentRead);
+    Some((selection, bound))
+}
+
 /// Nonmutating modes selected by an exact first native option word.
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum GnuGzipReadMode {

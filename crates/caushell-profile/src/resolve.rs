@@ -434,10 +434,8 @@ fn resolve_invocation_with_proofs<'a>(
     } else {
         bindings
     };
-    let literal_executable = command
-        .command_name
-        .as_deref()
-        .filter(|_| !command.command_name_runtime_data);
+    let executable_spelling = command.command_name.as_deref();
+    let literal_executable = executable_spelling.filter(|_| !command.command_name_runtime_data);
     let recovered_command = materialize_structured_command(command, bindings)
         .map(|command| (command, true))
         .or_else(|| recover_ifs_field_split_command(command, bindings));
@@ -664,8 +662,61 @@ fn resolve_invocation_with_proofs<'a>(
                 && bindings.function_binding(name).is_none()
         })
         .and_then(|name| bindings.native_variant(name));
+    // Externally dispatched argv already has its own executable lookup. A
+    // resolved, exact argv[0] there can identify the ZipInfo persona without
+    // treating its data-derived spelling as shell syntax. Shell aliases,
+    // functions and assignments that can change lookup retain their checks.
+    let info_zip_variant = (command_name == "zipinfo"
+        && executable_spelling == Some(command_name)
+        && (matches!(lookup_domain, crate::CommandLookupDomain::External)
+            || literal_executable == Some(command_name)
+            && matches!(lookup_domain, crate::CommandLookupDomain::Shell)
+            && !bindings.profile_has_alias_shadow(command_name)
+            && bindings.function_binding(command_name).is_none())
+        && command.prefix_assignments.iter().all(|assignment| {
+            matches!(assignment.name.as_str(), "ZIPINFO" | "ZIPINFOOPT")
+        }))
+        .then(|| bindings.native_variant(command_name))
+        .flatten()
+        .filter(|variant| crate::is_attested_info_zip_listing(profile, Some(variant)));
+    let native_variant = info_zip_variant.or(native_variant);
     let original_selection =
         select_invocation_for_native_variant(profile, original_projection, native_variant);
+    if info_zip_variant.is_some() && !candidate_argv_only {
+        let prefix = crate::materialize_prefix_environment(command, bindings);
+        let environment_may_supply_args = ["ZIPINFO", "ZIPINFOOPT"].iter().any(|name| {
+            use crate::{EnvironmentValueRef, SessionValue};
+            let value = prefix
+                .iter()
+                .rev()
+                .find(|(key, _)| key == name)
+                .map_or_else(|| bindings.environment_value(name), |(_, value)| {
+                    EnvironmentValueRef::Present(value)
+                });
+            !matches!(value, EnvironmentValueRef::Absent)
+                && !matches!(value, EnvironmentValueRef::Present(SessionValue::ExactScalar(text)) if text.is_empty())
+        });
+        let precisely_bound = !environment_may_supply_args
+            && original_selection.as_ref().is_ok_and(|selection| {
+                let bound = bind_invocation(profile, original_projection, selection);
+                !bound.operation_semantics_unresolved && bound.residuals.is_empty()
+                    && selection.form.id.as_str() == "list_members"
+            });
+        if !precisely_bound
+            && let Some((selection, bound)) = crate::native_effect_envelope::bind_info_zip_listing(
+                profile, &materialized_projection, info_zip_variant, environment_may_supply_args,
+            )
+        {
+            return ResolveInvocationResult::Resolved(ResolvedInvocation {
+                normalized_command_name,
+                profile,
+                projection,
+                materialized_projection,
+                selection,
+                bound,
+            });
+        }
+    }
     // A symbolic control word can fail lexical option selection before the
     // native effect closure is reached. Recover only a certified exact prefix,
     // then retain the entire symbolic tail as possible inputs in the shared
